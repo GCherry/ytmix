@@ -127,41 +127,68 @@ func validateTrackFile(path string) error {
 	return nil
 }
 
+// NamedTrackFile pairs a local .mp3 file path with its original display filename.
+type NamedTrackFile struct {
+	Path     string
+	FileName string
+}
+
 // ProbeTrackFiles probes an ordered list of .mp3 file paths without re-scanning or re-sorting a directory.
 func ProbeTrackFiles(ctx context.Context, files []string, runner CommandRunner) ([]Track, error) {
+	named := make([]NamedTrackFile, len(files))
+	for i, p := range files {
+		named[i] = NamedTrackFile{Path: p, FileName: filepath.Base(p)}
+	}
+	return ProbeNamedTrackFiles(ctx, named, runner)
+}
+
+// ProbeNamedTrackFiles probes an ordered list of .mp3 files while resolving Display Titles from FileName.
+func ProbeNamedTrackFiles(ctx context.Context, files []NamedTrackFile, runner CommandRunner) ([]Track, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if len(files) < 1 {
 		return nil, errors.New("at least one .mp3 Track is required")
 	}
-	for _, path := range files {
-		if err := validateTrackFile(path); err != nil {
+	for _, f := range files {
+		if err := validateTrackFile(f.Path); err != nil {
 			return nil, err
 		}
 	}
-	return probeFiles(ctx, files, runner)
+	return probeNamedFiles(ctx, files, runner)
 }
 
 func probeFiles(ctx context.Context, files []string, runner CommandRunner) ([]Track, error) {
+	named := make([]NamedTrackFile, len(files))
+	for i, p := range files {
+		named[i] = NamedTrackFile{Path: p, FileName: filepath.Base(p)}
+	}
+	return probeNamedFiles(ctx, named, runner)
+}
+
+func probeNamedFiles(ctx context.Context, files []NamedTrackFile, runner CommandRunner) ([]Track, error) {
 	ctxRunner := func(name string, args ...string) ([]byte, error) {
 		return runner(ctx, name, args...)
 	}
 
 	tracks := make([]Track, 0, len(files))
-	for _, path := range files {
+	for _, f := range files {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		dur, id3Title, err := probe.ProbeFile(path, ctxRunner)
+		dur, id3Title, err := probe.ProbeFile(f.Path, ctxRunner)
 		if err != nil {
 			return nil, err
 		}
+		displaySource := f.FileName
+		if strings.TrimSpace(displaySource) == "" {
+			displaySource = filepath.Base(f.Path)
+		}
 		tracks = append(tracks, Track{
-			Path:         path,
-			FileName:     filepath.Base(path),
+			Path:         f.Path,
+			FileName:     displaySource,
 			Duration:     dur,
-			DisplayTitle: probe.ResolveDisplayTitle(id3Title, path),
+			DisplayTitle: probe.ResolveDisplayTitle(id3Title, displaySource),
 		})
 	}
 	return tracks, nil

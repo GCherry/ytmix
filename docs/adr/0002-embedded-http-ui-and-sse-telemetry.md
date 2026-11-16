@@ -12,6 +12,6 @@ Status: accepted
 
 ## Consequences
 
-- `ytmix ui` binds to `127.0.0.1:8080` by default; passing `--host 0.0.0.0` (or receiving any non-loopback `RemoteAddr`) automatically disables local-filesystem path inputs/outputs (`--audio-dir`, `--bg`, `/api/preview-bg`, arbitrary `--out`/`--timestamps` disk writes) so LAN/mobile clients can only upload media (`512 MiB` cap) and download job-scoped artifacts.
+- `ytmix ui` binds to `127.0.0.1:8080` by default; passing `--host 0.0.0.0` (or receiving any non-loopback `RemoteAddr`) automatically disables local-filesystem path inputs/outputs (`--audio-dir`, `--bg`, `/api/preview-bg`, arbitrary `--out`/`--timestamps` disk writes) so LAN/mobile clients can only upload media (`512 MiB` cap) and download job-scoped artifacts. When local paths are enabled on loopback, paths are confined within the server's working directory (`resolveWorkspacePath`), uploaded temp files use fixed non-tainted names (`track_0001.mp3`, `bg_upload.<ext>`), and API endpoints enforce same-origin (`Sec-Fetch-Site`/`Origin`) and strict `application/json` `Content-Type` checks.
 - Frontend typography uses pure offline system font stacks (`Georgia`/`system-ui`/`ui-monospace` fallbacks) with zero external network requests so local execution works air-gapped.
 - Only one active Mix render executes at a time (`409 Conflict` if busy), retaining up to 5 completed jobs for download and cleaning up all temporary session/job workspaces on shutdown.

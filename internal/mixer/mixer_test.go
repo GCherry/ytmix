@@ -339,6 +339,16 @@ func TestProbeTrackFilesAndRunWithTracks(t *testing.T) {
 		if tracks[1].FileName != "01 - Alpha.mp3" || tracks[1].DisplayTitle != "Alpha" || tracks[1].Duration != 8.25 {
 			t.Fatalf("unexpected tracks[1]: %+v", tracks[1])
 		}
+
+		namedTracks, err := ProbeNamedTrackFiles(context.Background(), []NamedTrackFile{
+			{Path: pZ, FileName: "09 - Custom Upload Name.mp3"},
+		}, stubRunner)
+		if err != nil {
+			t.Fatalf("ProbeNamedTrackFiles error: %v", err)
+		}
+		if namedTracks[0].FileName != "09 - Custom Upload Name.mp3" || namedTracks[0].DisplayTitle != "Zeta Custom" {
+			t.Fatalf("unexpected namedTracks[0]: %+v", namedTracks[0])
+		}
 	})
 
 	t.Run("RunWithTracks honors caller Track ordering without re-scanning AudioDir", func(t *testing.T) {

@@ -262,11 +262,13 @@ func TestProbeUploadValidationAndOpaqueTokens(t *testing.T) {
 }
 
 func TestRenderUploadFlowSSEAndDownloads(t *testing.T) {
+	outDir := t.TempDir()
 	srv, err := NewServer(Config{
 		Host:           "127.0.0.1",
 		Port:           8080,
+		WorkspaceDir:   outDir,
 		LookPath:       okLookPath,
-		Runner:         stubPipelineRunner(t, map[string]string{"Second": "10.0", "First": "6.0"}),
+		Runner:         stubPipelineRunner(t, map[string]string{"track_0002": "10.0", "track_0001": "6.0"}),
 		GOOS:           "linux",
 		MaxUploadBytes: 10 * 1024 * 1024,
 	})
@@ -292,7 +294,6 @@ func TestRenderUploadFlowSSEAndDownloads(t *testing.T) {
 	}
 
 	// 2. Render with REORDERED trackIds ([Second, First]) and uploaded PNG Background Visual.
-	outDir := t.TempDir()
 	var renderBuf bytes.Buffer
 	mw := multipart.NewWriter(&renderBuf)
 	cfgJSON, err := json.Marshal(map[string]any{
@@ -402,21 +403,6 @@ func TestRenderRejectsConcurrentAndInvalidInputs(t *testing.T) {
 		return nil, nil
 	}
 
-	srv, err := NewServer(Config{
-		Host:     "127.0.0.1",
-		Port:     8080,
-		LookPath: okLookPath,
-		Runner:   blockingRunner,
-		GOOS:     "linux",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		once.Do(func() { close(gate) })
-		srv.Close()
-	}()
-
 	workDir := t.TempDir()
 	audioDir := filepath.Join(workDir, "tracks")
 	if err := os.Mkdir(audioDir, 0755); err != nil {
@@ -429,6 +415,22 @@ func TestRenderRejectsConcurrentAndInvalidInputs(t *testing.T) {
 	if err := os.WriteFile(bgPath, []byte("png"), 0644); err != nil {
 		t.Fatal(err)
 	}
+
+	srv, err := NewServer(Config{
+		Host:         "127.0.0.1",
+		Port:         8080,
+		WorkspaceDir: workDir,
+		LookPath:     okLookPath,
+		Runner:       blockingRunner,
+		GOOS:         "linux",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		once.Do(func() { close(gate) })
+		srv.Close()
+	}()
 
 	// Probe local dir.
 	probeBody, _ := json.Marshal(map[string]any{"audioDir": audioDir})
@@ -548,7 +550,7 @@ func TestLocalBackgroundPreviewGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv, err := NewServer(Config{Host: "127.0.0.1", Port: 8080, LookPath: okLookPath, Runner: stubPipelineRunner(t, nil)})
+	srv, err := NewServer(Config{Host: "127.0.0.1", Port: 8080, WorkspaceDir: dir, LookPath: okLookPath, Runner: stubPipelineRunner(t, nil)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -632,6 +634,12 @@ func TestCSRFSameOriginAndContentTypeGuards(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, "01_A.mp3"), []byte("a"), 0644); err != nil {
 			t.Fatal(err)
 		}
+		localSrv, err := NewServer(Config{Host: "127.0.0.1", Port: 8080, WorkspaceDir: dir, LookPath: okLookPath, Runner: stubPipelineRunner(t, nil)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer localSrv.Close()
+
 		req := httptest.NewRequest(http.MethodPost, "/api/probe", strings.NewReader(`{"audioDir":`+strconvQuote(dir)+`}`))
 		req.Host = "127.0.0.1:8080"
 		req.RemoteAddr = "127.0.0.1:50000"
@@ -639,9 +647,28 @@ func TestCSRFSameOriginAndContentTypeGuards(t *testing.T) {
 		req.Header.Set("Origin", "http://127.0.0.1:8080")
 		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		rec := httptest.NewRecorder()
-		srv.Handler().ServeHTTP(rec, req)
+		localSrv.Handler().ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200 for same-origin request, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		// Path traversal outside WorkspaceDir must be rejected with 403 Forbidden.
+		escReq := httptest.NewRequest(http.MethodPost, "/api/probe", strings.NewReader(`{"audioDir":"../outside"}`))
+		escReq.Host = "127.0.0.1:8080"
+		escReq.RemoteAddr = "127.0.0.1:50000"
+		escReq.Header.Set("Content-Type", "application/json")
+		escRec := httptest.NewRecorder()
+		localSrv.Handler().ServeHTTP(escRec, escReq)
+		if escRec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for workspace escape, got %d: %s", escRec.Code, escRec.Body.String())
+		}
+
+		bgEscReq := httptest.NewRequest(http.MethodGet, "/api/preview-bg?path=../secret.png", nil)
+		bgEscReq.RemoteAddr = "127.0.0.1:50000"
+		bgEscRec := httptest.NewRecorder()
+		localSrv.Handler().ServeHTTP(bgEscRec, bgEscReq)
+		if bgEscRec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for preview-bg workspace escape, got %d: %s", bgEscRec.Code, bgEscRec.Body.String())
 		}
 	})
 }

@@ -31,6 +31,7 @@ const defaultMaxUploadBytes int64 = 512 << 20 // 512 MiB
 type Config struct {
 	Host           string
 	Port           int
+	WorkspaceDir   string
 	AudioDir       string
 	BG             string
 	LookPath       func(string) (string, error)
@@ -42,12 +43,13 @@ type Config struct {
 
 // Server serves the embedded Editorial Mix Studio web UI and REST/SSE endpoints.
 type Server struct {
-	cfg      Config
-	baseCtx  context.Context
-	cancel   context.CancelFunc
-	store    *jobStore
-	mux      *http.ServeMux
-	assetsFS fs.FS
+	cfg           Config
+	workspaceRoot string
+	baseCtx       context.Context
+	cancel        context.CancelFunc
+	store         *jobStore
+	mux           *http.ServeMux
+	assetsFS      fs.FS
 }
 
 type healthResponse struct {
@@ -122,6 +124,21 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.MaxUploadBytes <= 0 {
 		cfg.MaxUploadBytes = defaultMaxUploadBytes
 	}
+	wsRoot := strings.TrimSpace(cfg.WorkspaceDir)
+	if wsRoot == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("resolve working directory: %w", err)
+		}
+		wsRoot = wd
+	}
+	absRoot, err := filepath.Abs(wsRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve workspace root: %w", err)
+	}
+	if evalRoot, err := filepath.EvalSymlinks(absRoot); err == nil {
+		absRoot = evalRoot
+	}
 	sub, err := fs.Sub(embeddedAssets, "assets")
 	if err != nil {
 		return nil, fmt.Errorf("load embedded assets: %w", err)
@@ -129,12 +146,13 @@ func NewServer(cfg Config) (*Server, error) {
 
 	baseCtx, cancel := context.WithCancel(context.Background())
 	s := &Server{
-		cfg:      cfg,
-		baseCtx:  baseCtx,
-		cancel:   cancel,
-		store:    newJobStore(cfg.MaxJobs),
-		mux:      http.NewServeMux(),
-		assetsFS: sub,
+		cfg:           cfg,
+		workspaceRoot: absRoot,
+		baseCtx:       baseCtx,
+		cancel:        cancel,
+		store:         newJobStore(cfg.MaxJobs),
+		mux:           http.NewServeMux(),
+		assetsFS:      sub,
 	}
 	s.registerRoutes()
 	return s, nil
@@ -237,19 +255,24 @@ func (s *Server) handlePreviewBG(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "local Background Visual preview is disabled on non-loopback or --host 0.0.0.0 sessions")
 		return
 	}
-	bgPath := strings.TrimSpace(r.URL.Query().Get("path"))
-	if bgPath == "" {
+	rawPath := strings.TrimSpace(r.URL.Query().Get("path"))
+	if rawPath == "" {
 		writeError(w, http.StatusBadRequest, "path query parameter is required")
 		return
 	}
-	if !mixer.IsSupportedBackgroundExt(filepath.Ext(bgPath)) {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported Background Visual extension %q", filepath.Ext(bgPath)))
+	if !mixer.IsSupportedBackgroundExt(filepath.Ext(rawPath)) {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported Background Visual extension %q", filepath.Ext(rawPath)))
 		return
 	}
-	// #nosec G304 -- strictly gated to loopback sessions and supported Background Visual media extensions.
+	bgPath, err := s.resolveWorkspacePath(rawPath, true)
+	if err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	// #nosec G304 G703 -- bgPath is confined to s.workspaceRoot via resolveWorkspacePath and restricted to supported Background Visual extensions.
 	f, err := os.Open(bgPath)
 	if err != nil {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("cannot open Background Visual %q: %v", bgPath, err))
+		writeError(w, http.StatusNotFound, fmt.Sprintf("cannot open Background Visual: %v", err))
 		return
 	}
 	defer func() { _ = f.Close() }()
@@ -301,7 +324,7 @@ func (s *Server) handleProbeMultipart(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	var uploadedPaths []string
+	var uploaded []mixer.NamedTrackFile
 	var totalWritten int64
 	idx := 0
 
@@ -334,13 +357,7 @@ func (s *Server) handleProbeMultipart(w http.ResponseWriter, r *http.Request) {
 		}
 
 		idx++
-		trackSubdir := filepath.Join(sessionDir, fmt.Sprintf("%04d", idx))
-		if err := os.MkdirAll(trackSubdir, 0700); err != nil {
-			_ = part.Close()
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("create track dir: %v", err))
-			return
-		}
-		dstPath := filepath.Join(trackSubdir, safeName)
+		dstPath := filepath.Join(sessionDir, fmt.Sprintf("track_%04d.mp3", idx))
 		written, err := saveUploadedPart(part, dstPath, s.cfg.MaxUploadBytes-totalWritten)
 		_ = part.Close()
 		if err != nil {
@@ -352,15 +369,18 @@ func (s *Server) handleProbeMultipart(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		totalWritten += written
-		uploadedPaths = append(uploadedPaths, dstPath)
+		uploaded = append(uploaded, mixer.NamedTrackFile{
+			Path:     dstPath,
+			FileName: safeName,
+		})
 	}
 
-	if len(uploadedPaths) == 0 {
+	if len(uploaded) == 0 {
 		writeError(w, http.StatusBadRequest, "no .mp3 Track files uploaded")
 		return
 	}
 
-	tracks, err := mixer.ProbeTrackFiles(r.Context(), uploadedPaths, s.cfg.Runner)
+	tracks, err := mixer.ProbeNamedTrackFiles(r.Context(), uploaded, s.cfg.Runner)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -392,8 +412,13 @@ func (s *Server) handleProbeLocal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "audioDir is required")
 		return
 	}
+	safeDir, err := s.resolveWorkspacePath(req.AudioDir, true)
+	if err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
 
-	tracks, err := mixer.ProbeTracks(r.Context(), req.AudioDir, req.Shuffle, nil, s.cfg.Runner)
+	tracks, err := mixer.ProbeTracks(r.Context(), safeDir, req.Shuffle, nil, s.cfg.Runner)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -484,7 +509,30 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "local Background Visual paths are disabled on non-loopback or --host 0.0.0.0 sessions; upload a Background Visual file instead")
 			return
 		}
-		bgPath = strings.TrimSpace(req.BGPath)
+		rawBG := strings.TrimSpace(req.BGPath)
+		if rawBG == "" {
+			writeError(w, http.StatusBadRequest, "--bg is required (supported: .jpg, .jpeg, .png, .webp, .mp4, .mov, .gif)")
+			return
+		}
+		if !mixer.IsSupportedBackgroundExt(filepath.Ext(rawBG)) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported Background Visual extension %q", filepath.Ext(rawBG)))
+			return
+		}
+		safeBG, err := s.resolveWorkspacePath(rawBG, true)
+		if err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		bgPath = safeBG
+	}
+
+	var safeAudioDir string
+	if localAllowed && strings.TrimSpace(req.AudioDir) != "" {
+		safeAudioDir, err = s.resolveWorkspacePath(req.AudioDir, true)
+		if err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
 	}
 
 	var tracks []mixer.Track
@@ -494,8 +542,8 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-	} else if localAllowed && strings.TrimSpace(req.AudioDir) != "" {
-		tracks, err = mixer.ProbeTracks(r.Context(), req.AudioDir, req.Shuffle, nil, s.cfg.Runner)
+	} else if localAllowed && safeAudioDir != "" {
+		tracks, err = mixer.ProbeTracks(r.Context(), safeAudioDir, req.Shuffle, nil, s.cfg.Runner)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -507,14 +555,24 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 
 	outName := sanitizeBaseName(req.Out, "output.mp4")
 	tsName := sanitizeBaseName(req.Timestamps, "timestamps.txt")
-	outPath := filepath.Join(jobDir, outName)
-	tsPath := filepath.Join(jobDir, tsName)
+	outPath := filepath.Join(jobDir, "mix.mp4")
+	tsPath := filepath.Join(jobDir, "timestamps.txt")
 	if localAllowed {
 		if trimmedOut := strings.TrimSpace(req.Out); trimmedOut != "" {
-			outPath = trimmedOut
+			safeOut, err := s.resolveWorkspacePath(trimmedOut, false)
+			if err != nil {
+				writeError(w, http.StatusForbidden, err.Error())
+				return
+			}
+			outPath = safeOut
 		}
 		if trimmedTS := strings.TrimSpace(req.Timestamps); trimmedTS != "" {
-			tsPath = trimmedTS
+			safeTS, err := s.resolveWorkspacePath(trimmedTS, false)
+			if err != nil {
+				writeError(w, http.StatusForbidden, err.Error())
+				return
+			}
+			tsPath = safeTS
 		}
 	}
 
@@ -524,7 +582,7 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mixCfg := mixer.Config{
-		AudioDir:      req.AudioDir,
+		AudioDir:      safeAudioDir,
 		BG:            bgPath,
 		Out:           outPath,
 		Timestamps:    tsPath,
@@ -540,6 +598,7 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// #nosec G703 -- mixCfg.BG is either a server-created temp file or confined within s.workspaceRoot.
 	bgInfo, err := os.Stat(mixCfg.BG)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("cannot access Background Visual %q: %v", mixCfg.BG, err))
@@ -563,7 +622,7 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jobCtx, jobCancel := context.WithCancel(s.baseCtx)
-	job := newRenderJob(jobID, jobDir, outPath, filepath.Base(outPath), tsPath, filepath.Base(tsPath), string(pathKind), jobCancel)
+	job := newRenderJob(jobID, jobDir, outPath, outName, tsPath, tsName, string(pathKind), jobCancel)
 	if err := s.store.claimRenderSlot(job, req.SessionID); err != nil {
 		jobCancel()
 		writeError(w, http.StatusConflict, err.Error())
@@ -627,11 +686,12 @@ func (s *Server) parseRenderRequest(w http.ResponseWriter, r *http.Request, jobD
 			hasConfig = true
 		case "bg":
 			safeName := sanitizeBaseName(part.FileName(), "upload.bin")
-			if !mixer.IsSupportedBackgroundExt(filepath.Ext(safeName)) {
+			literalExt, ok := canonicalBackgroundExt(filepath.Ext(safeName))
+			if !ok {
 				_ = part.Close()
 				return req, "", http.StatusBadRequest, fmt.Errorf("unsupported Background Visual extension %q (supported: .jpg, .jpeg, .png, .webp, .mp4, .mov, .gif)", filepath.Ext(safeName))
 			}
-			dstPath := filepath.Join(jobDir, "bg_"+safeName)
+			dstPath := filepath.Join(jobDir, "bg_upload"+literalExt)
 			_, err := saveUploadedPart(part, dstPath, s.cfg.MaxUploadBytes)
 			_ = part.Close()
 			if err != nil {
@@ -668,7 +728,7 @@ func (s *Server) runRenderJob(ctx context.Context, job *renderJob, cfg mixer.Con
 		return
 	}
 
-	// #nosec G304 -- reads the Chapter Timestamps file produced by this job's validated mixer run.
+	// #nosec G304 G703 -- reads the Chapter Timestamps file produced by this job's validated mixer run.
 	tsBytes, readErr := os.ReadFile(job.tsPath)
 	tsText := ""
 	if readErr == nil {
@@ -771,7 +831,7 @@ func (s *Server) serveJobArtifact(w http.ResponseWriter, r *http.Request, isOutp
 		contentType = "video/mp4"
 	}
 
-	// #nosec G304 -- serves artifact produced by a completed server-side renderJob.
+	// #nosec G304 G703 -- serves artifact produced by a completed server-side renderJob.
 	f, err := os.Open(filePath)
 	if err != nil {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("artifact not available: %v", err))
@@ -788,6 +848,67 @@ func (s *Server) serveJobArtifact(w http.ResponseWriter, r *http.Request, isOutp
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, sanitizeHeaderFilename(fileName)))
 	http.ServeContent(w, r, fileName, info.ModTime(), f)
+}
+
+func (s *Server) resolveWorkspacePath(raw string, mustExist bool) (string, error) {
+	cleanedInput := strings.TrimSpace(raw)
+	if cleanedInput == "" || strings.ContainsRune(cleanedInput, '\x00') {
+		return "", errors.New("path must not be empty")
+	}
+
+	var candidate string
+	if filepath.IsAbs(cleanedInput) {
+		candidate = filepath.Clean(cleanedInput)
+	} else {
+		candidate = filepath.Join(s.workspaceRoot, cleanedInput)
+	}
+	absCandidate, err := filepath.Abs(candidate)
+	if err != nil {
+		return "", fmt.Errorf("invalid path: %w", err)
+	}
+
+	rel, err := filepath.Rel(s.workspaceRoot, absCandidate)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("path %q escapes workspace root", raw)
+	}
+	if absCandidate != s.workspaceRoot && !strings.HasPrefix(absCandidate, s.workspaceRoot+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q escapes workspace root", raw)
+	}
+
+	if mustExist {
+		realTarget, err := filepath.EvalSymlinks(absCandidate)
+		if err != nil {
+			return "", fmt.Errorf("cannot resolve path %q: %w", raw, err)
+		}
+		realRel, err := filepath.Rel(s.workspaceRoot, realTarget)
+		if err != nil || realRel == ".." || strings.HasPrefix(realRel, ".."+string(filepath.Separator)) || filepath.IsAbs(realRel) {
+			return "", fmt.Errorf("symlink target for %q escapes workspace root", raw)
+		}
+		return filepath.Join(s.workspaceRoot, realRel), nil
+	}
+
+	return filepath.Join(s.workspaceRoot, rel), nil
+}
+
+func canonicalBackgroundExt(ext string) (string, bool) {
+	switch strings.ToLower(ext) {
+	case ".jpg":
+		return ".jpg", true
+	case ".jpeg":
+		return ".jpeg", true
+	case ".png":
+		return ".png", true
+	case ".webp":
+		return ".webp", true
+	case ".mp4":
+		return ".mp4", true
+	case ".mov":
+		return ".mov", true
+	case ".gif":
+		return ".gif", true
+	default:
+		return "", false
+	}
 }
 
 func requireSameOrigin(r *http.Request) error {
@@ -858,7 +979,7 @@ func saveUploadedPart(part *multipart.Part, dstPath string, remainingLimit int64
 	if remainingLimit <= 0 {
 		return 0, errors.New("upload exceeds maximum allowed size")
 	}
-	// #nosec G304 -- dstPath is constructed strictly inside server-owned tempDir with sanitized base filename.
+	// #nosec G304 G703 -- dstPath is constructed strictly inside server-owned tempDir using fixed literal filenames.
 	f, err := os.OpenFile(dstPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return 0, err
