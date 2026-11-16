@@ -301,3 +301,106 @@ func TestRunPipelineSteps1To5(t *testing.T) {
 		}
 	})
 }
+
+func TestProbeTrackFilesAndRunWithTracks(t *testing.T) {
+	okLookPath := func(name string) (string, error) { return "/usr/bin/" + name, nil }
+
+	t.Run("ProbeTrackFiles preserves explicit non-alphabetical order and resolves Display Titles", func(t *testing.T) {
+		dir := t.TempDir()
+		pZ := filepath.Join(dir, "02 - Zeta.mp3")
+		pA := filepath.Join(dir, "01 - Alpha.mp3")
+		for _, p := range []string{pZ, pA} {
+			if err := os.WriteFile(p, []byte("mp3"), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		stubRunner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name != "ffprobe" {
+				return nil, errors.New("unexpected binary: " + name)
+			}
+			target := args[len(args)-1]
+			if strings.HasSuffix(target, "02 - Zeta.mp3") {
+				return []byte(`{"format":{"duration":"12.500000","tags":{"title":"Zeta Custom"}}}`), nil
+			}
+			return []byte(`{"format":{"duration":"8.250000","tags":{}}}`), nil
+		}
+
+		tracks, err := ProbeTrackFiles(context.Background(), []string{pZ, pA}, stubRunner)
+		if err != nil {
+			t.Fatalf("ProbeTrackFiles error: %v", err)
+		}
+		if len(tracks) != 2 {
+			t.Fatalf("expected 2 tracks, got %d", len(tracks))
+		}
+		if tracks[0].FileName != "02 - Zeta.mp3" || tracks[0].DisplayTitle != "Zeta Custom" || tracks[0].Duration != 12.5 {
+			t.Fatalf("unexpected tracks[0]: %+v", tracks[0])
+		}
+		if tracks[1].FileName != "01 - Alpha.mp3" || tracks[1].DisplayTitle != "Alpha" || tracks[1].Duration != 8.25 {
+			t.Fatalf("unexpected tracks[1]: %+v", tracks[1])
+		}
+	})
+
+	t.Run("RunWithTracks honors caller Track ordering without re-scanning AudioDir", func(t *testing.T) {
+		workDir, audioDir, bgPath := setupStubMixWorkspace(t, "cover.png")
+		tsPath := filepath.Join(workDir, "timestamps.txt")
+		cfg := Config{
+			AudioDir:   filepath.Join(workDir, "nonexistent-dir"),
+			BG:         bgPath,
+			Out:        filepath.Join(workDir, "out_custom.mp4"),
+			Timestamps: tsPath,
+		}
+		tracks := []Track{
+			{
+				Path:         filepath.Join(audioDir, "02_Second.mp3"),
+				FileName:     "02_Second.mp3",
+				Duration:     10.0,
+				DisplayTitle: "Second First",
+			},
+			{
+				Path:         filepath.Join(audioDir, "01_First.mp3"),
+				FileName:     "01_First.mp3",
+				Duration:     5.0,
+				DisplayTitle: "First Second",
+			},
+		}
+
+		runner := func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "ffprobe" {
+				t.Fatal("ffprobe should not be called when tracks are already probed and normalize=false")
+			}
+			return nil, nil
+		}
+
+		var stdout bytes.Buffer
+		if err := RunWithTracks(context.Background(), cfg, tracks, &stdout, okLookPath, runner); err != nil {
+			t.Fatalf("RunWithTracks error: %v", err)
+		}
+
+		logOut := stdout.String()
+		for _, step := range []string{"[1/5]", "[2/5]", "[3/5]", "[4/5]", "[5/5]", "Path C"} {
+			if !strings.Contains(logOut, step) {
+				t.Errorf("expected %q in stdout, got:\n%s", step, logOut)
+			}
+		}
+
+		tsBytes, err := os.ReadFile(tsPath)
+		if err != nil {
+			t.Fatalf("read timestamps: %v", err)
+		}
+		if string(tsBytes) != "00:00 Second First\n00:10 First Second\n" {
+			t.Fatalf("timestamps =\n%s", string(tsBytes))
+		}
+	})
+
+	t.Run("RunWithTracks rejects empty Track slice", func(t *testing.T) {
+		workDir, _, bgPath := setupStubMixWorkspace(t, "cover.png")
+		cfg := Config{BG: bgPath, Out: filepath.Join(workDir, "out.mp4"), Timestamps: filepath.Join(workDir, "ts.txt")}
+		err := RunWithTracks(context.Background(), cfg, nil, &bytes.Buffer{}, okLookPath, func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+			return nil, nil
+		})
+		if err == nil {
+			t.Fatal("expected error for empty track slice")
+		}
+	})
+}

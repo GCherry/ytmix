@@ -12,6 +12,7 @@
 - **Sample-Accurate Chapter Timestamps:** Probes exact audio durations via `ffprobe`, accounts for `--crossfade` overlap and post-normalization lengths, and writes a YouTube-ready `timestamps.txt` starting at `00:00`.
 - **Optional EBU R128 Loudness Normalization:** Normalizes each Track to YouTube's `-14 LUFS` target (`loudnorm=I=-14:TP=-1.5:LRA=11`).
 - **Burned-In `.ass` Title Overlays:** Generates Advanced SubStation Alpha (`titles.ass`) subtitles with 500ms fade-in/out tags (`\fad(500,500)`) instead of fragile FFmpeg `drawtext` chains.
+- **Embedded Web & Mobile Studio (`ytmix ui`):** Serves the Editorial Mix Studio UI directly from the single Go binary via `net/http` + `embed.FS` + Server-Sent Events (`text/event-stream`), supporting drag-and-drop MP3/Background Visual uploads, live Track reordering, Dark/Light themes, live 16:9 stage previews, and real-time 5-step telemetry.
 
 ## Prerequisites
 
@@ -45,7 +46,23 @@ go build -o ytmix.exe ./cmd/ytmix
 
 # Path C: Static cover art with shuffled tracks and full-track title overlays
 ./ytmix --audio-dir ./tracks --bg cover_art.png --shuffle --overlay-titles --out mix.mp4
+
+# Launch the Editorial Mix Studio web UI (default: http://127.0.0.1:8080)
+./ytmix ui
+
+# Expose the studio on your LAN for mobile uploads (restricts local filesystem path access)
+./ytmix ui --host 0.0.0.0 --port 8080 --no-open
 ```
+
+## Web UI Subcommand (`ytmix ui`)
+
+| Flag | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--host` | `string` | `127.0.0.1` | HTTP bind host (`0.0.0.0` enables LAN/mobile upload access with local filesystem paths disabled). |
+| `--port` | `int` | `8080` | HTTP listen port (`0` selects an ephemeral port). |
+| `--no-open` | `bool` | `false` | Do not automatically launch the default browser on startup. |
+| `--audio-dir` | `string` | `./tracks` | Default local folder path prefilled in the UI (loopback sessions only). |
+| `--bg` | `string` | `""` | Default local Background Visual path prefilled in the UI (loopback sessions only). |
 
 ## CLI Flags
 
@@ -66,4 +83,4 @@ go build -o ytmix.exe ./cmd/ytmix
 
 - [Technical Specification](docs/specs/ytmix_technical_specification.md) — full pipeline rules, FFmpeg filter chains, and end-to-end verification suite.
 - [Interactive Architecture & Pipeline Blueprint](docs/specs/ytmix_architecture_pipeline_blueprint.html) — interactive HTML simulator of CLI flags and Rendering Paths.
-- [Domain Glossary](GLOSSARY.md) & [ADR 0001](docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md).
+- [Domain Glossary](GLOSSARY.md) & [ADR 0001](docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md) & [ADR 0002](docs/adr/0002-embedded-http-ui-and-sse-telemetry.md).

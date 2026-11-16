@@ -37,3 +37,49 @@ func TestParseFlags(t *testing.T) {
 		}
 	})
 }
+
+func TestParseUIFlags(t *testing.T) {
+	t.Run("detects ui subcommand and parses defaults and overrides", func(t *testing.T) {
+		if !IsUISubcommand([]string{"ui"}) || !IsUISubcommand([]string{"ui", "--port", "9090"}) {
+			t.Fatal("expected IsUISubcommand to return true for ui subcommand")
+		}
+		if IsUISubcommand(nil) || IsUISubcommand([]string{"--bg", "cover.png"}) {
+			t.Fatal("expected IsUISubcommand to return false for root Mix CLI args")
+		}
+
+		defCfg, err := ParseUIFlags(nil)
+		if err != nil {
+			t.Fatalf("unexpected default ui flags error: %v", err)
+		}
+		if defCfg.Host != "127.0.0.1" || defCfg.Port != 8080 || defCfg.NoOpen || defCfg.AudioDir != "./tracks" || defCfg.BG != "" {
+			t.Fatalf("unexpected default ui config: %+v", defCfg)
+		}
+
+		customCfg, err := ParseUIFlags([]string{
+			"--host", "0.0.0.0",
+			"--port", "9091",
+			"--no-open",
+			"--audio-dir", "./custom_tracks",
+			"--bg", "loop.mp4",
+		})
+		if err != nil {
+			t.Fatalf("unexpected custom ui flags error: %v", err)
+		}
+		if customCfg.Host != "0.0.0.0" || customCfg.Port != 9091 || !customCfg.NoOpen ||
+			customCfg.AudioDir != "./custom_tracks" || customCfg.BG != "loop.mp4" {
+			t.Fatalf("unexpected custom ui config: %+v", customCfg)
+		}
+	})
+
+	t.Run("rejects invalid port and empty host", func(t *testing.T) {
+		if _, err := ParseUIFlags([]string{"--port", "-1"}); err == nil {
+			t.Fatal("expected error for negative port")
+		}
+		if _, err := ParseUIFlags([]string{"--port", "70000"}); err == nil {
+			t.Fatal("expected error for port > 65535")
+		}
+		if _, err := ParseUIFlags([]string{"--host", "   "}); err == nil {
+			t.Fatal("expected error for empty host")
+		}
+	})
+}
