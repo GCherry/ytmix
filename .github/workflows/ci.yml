@@ -1,0 +1,160 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workflow-lint:
+    name: Validate Workflows (actionlint)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Install actionlint
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+      - name: Run actionlint
+        run: actionlint
+
+  detect:
+    name: Detect Go Module
+    runs-on: ubuntu-latest
+    outputs:
+      has_go_mod: ${{ steps.check.outputs.has_go_mod }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check for go.mod
+        id: check
+        run: |
+          if [ -f go.mod ]; then
+            echo "has_go_mod=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_go_mod=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  lint:
+    name: Format, Vet & Lint
+    needs: detect
+    if: needs.detect.outputs.has_go_mod == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Enforce gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "Unformatted Go files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15.0
+
+  test:
+    name: Build & Unit Tests (${{ matrix.os }})
+    needs: detect
+    if: needs.detect.outputs.has_go_mod == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build packages
+        run: go build ./...
+
+      - name: Cross-compile macOS build check
+        if: runner.os == 'Linux'
+        env:
+          GOOS: darwin
+        run: go build ./...
+
+      - name: Run unit tests with race detector (Linux)
+        if: runner.os == 'Linux'
+        run: go test -race -v -coverprofile=coverage.out ./...
+
+      - name: Publish coverage summary
+        if: runner.os == 'Linux'
+        run: |
+          {
+            echo "### Go Unit Test Coverage"
+            echo '```text'
+            go tool cover -func=coverage.out
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run unit tests (Windows)
+        if: runner.os == 'Windows'
+        run: go test -v ./...
+
+  e2e:
+    name: FFmpeg E2E Pipeline (Paths A, B, C)
+    needs: detect
+    if: needs.detect.outputs.has_go_mod == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version
+          ffprobe -version
+
+      - name: Run E2E pipeline tests
+        run: go test -race -count=1 -v -run TestE2EPipeline ./internal/mixer

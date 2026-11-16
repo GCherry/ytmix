@@ -137,7 +137,7 @@ func ProcessAndMerge(paths []string, fileNames []string, durations []float64, te
 			concatPaths[i] = absPath
 		}
 		concatPath := filepath.Join(tempDir, "concat_list.txt")
-		if err := os.WriteFile(concatPath, []byte(BuildConcatList(concatPaths)), 0644); err != nil {
+		if err := os.WriteFile(concatPath, []byte(BuildConcatList(concatPaths)), 0600); err != nil {
 			return "", nil, nil, fmt.Errorf("write concat_list.txt: %w", err)
 		}
 		if _, err := runner(

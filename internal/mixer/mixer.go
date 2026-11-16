@@ -51,6 +51,7 @@ func ExecCommandRunner(ctx context.Context, name string, args ...string) ([]byte
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// #nosec G204 -- ADR-0001: intentional ffmpeg/ffprobe subprocess wrapper; callers pass hardcoded binary names and discrete arg slices.
 	cmd := exec.CommandContext(ctx, name, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

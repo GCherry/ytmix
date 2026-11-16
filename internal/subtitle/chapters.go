@@ -73,6 +73,7 @@ func BuildChapterSchedule(titles []string, durations []float64, crossfade float6
 // WriteChapters calculates the ChapterSchedule and writes it to path.
 func WriteChapters(path string, titles []string, durations []float64, crossfade float64) (ChapterSchedule, error) {
 	sched := BuildChapterSchedule(titles, durations, crossfade)
+	// #nosec G306 -- timestamps.txt is a non-sensitive user-facing Chapter Timestamps artifact intended to be world-readable.
 	if err := os.WriteFile(path, []byte(sched.Content), 0644); err != nil {
 		return ChapterSchedule{}, fmt.Errorf("write Chapter Timestamps to %q: %w", path, err)
 	}

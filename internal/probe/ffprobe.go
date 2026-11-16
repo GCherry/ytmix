@@ -49,6 +49,7 @@ func DiscoverAudioFiles(audioDir string, shuffle bool, shuffleFn func(n int, swa
 
 	if shuffle {
 		if shuffleFn == nil {
+			// #nosec G404 -- non-cryptographic randomness used solely for --shuffle Track playback ordering.
 			shuffleFn = rand.Shuffle
 		}
 		shuffleFn(len(files), func(i, j int) {

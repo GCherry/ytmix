@@ -105,7 +105,7 @@ func BuildASS(titles []string, starts []float64, totalDuration float64, titleDur
 // WriteASS generates an ASS subtitle script and writes it to path.
 func WriteASS(path string, titles []string, starts []float64, totalDuration float64, titleDuration int, fontName string) error {
 	content := BuildASS(titles, starts, totalDuration, titleDuration, fontName)
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		return fmt.Errorf("write ASS subtitles to %q: %w", path, err)
 	}
 	return nil

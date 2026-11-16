@@ -1,0 +1,43 @@
+version: "2"
+
+run:
+  timeout: 5m
+  relative-path-mode: gomod
+
+linters:
+  default: none
+  enable:
+    - depguard
+    - errcheck
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nolintlint
+    - staticcheck
+    - unused
+  settings:
+    depguard:
+      rules:
+        main:
+          list-mode: strict
+          allow:
+            - $gostd
+            - github.com/GCherry/ytmix/
+    errcheck:
+      check-type-assertions: true
+      exclude-functions:
+        - os.RemoveAll
+        - fmt.Fprintf
+        - fmt.Fprintln
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+  exclusions:
+    presets:
+      - common-false-positives
+    rules:
+      # Test fixtures write temporary files and use deterministic math/rand/v2 seeds.
+      - path: _test\.go
+        linters:
+          - gosec
