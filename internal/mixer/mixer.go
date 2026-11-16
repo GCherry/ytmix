@@ -107,51 +107,165 @@ func ProbeTracks(ctx context.Context, audioDir string, shuffle bool, shuffleFn f
 	if err != nil {
 		return nil, err
 	}
+	return probeFiles(ctx, files, runner)
+}
 
+func validateTrackFile(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("track file path is empty")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("cannot access Track %q: %w", path, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("track path %q is a directory, expected an .mp3 file", path)
+	}
+	if !strings.EqualFold(filepath.Ext(path), ".mp3") {
+		return fmt.Errorf("unsupported Track extension %q for %q (expected .mp3)", filepath.Ext(path), filepath.Base(path))
+	}
+	return nil
+}
+
+// NamedTrackFile pairs a local .mp3 file path with its original display filename.
+type NamedTrackFile struct {
+	Path     string
+	FileName string
+}
+
+// ProbeTrackFiles probes an ordered list of .mp3 file paths without re-scanning or re-sorting a directory.
+func ProbeTrackFiles(ctx context.Context, files []string, runner CommandRunner) ([]Track, error) {
+	named := make([]NamedTrackFile, len(files))
+	for i, p := range files {
+		named[i] = NamedTrackFile{Path: p, FileName: filepath.Base(p)}
+	}
+	return ProbeNamedTrackFiles(ctx, named, runner)
+}
+
+// ProbeNamedTrackFiles probes an ordered list of .mp3 files while resolving Display Titles from FileName.
+func ProbeNamedTrackFiles(ctx context.Context, files []NamedTrackFile, runner CommandRunner) ([]Track, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if len(files) < 1 {
+		return nil, errors.New("at least one .mp3 Track is required")
+	}
+	for _, f := range files {
+		if err := validateTrackFile(f.Path); err != nil {
+			return nil, err
+		}
+	}
+	return probeNamedFiles(ctx, files, runner)
+}
+
+func probeFiles(ctx context.Context, files []string, runner CommandRunner) ([]Track, error) {
+	named := make([]NamedTrackFile, len(files))
+	for i, p := range files {
+		named[i] = NamedTrackFile{Path: p, FileName: filepath.Base(p)}
+	}
+	return probeNamedFiles(ctx, named, runner)
+}
+
+func probeNamedFiles(ctx context.Context, files []NamedTrackFile, runner CommandRunner) ([]Track, error) {
 	ctxRunner := func(name string, args ...string) ([]byte, error) {
 		return runner(ctx, name, args...)
 	}
 
 	tracks := make([]Track, 0, len(files))
-	for _, path := range files {
+	for _, f := range files {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		dur, id3Title, err := probe.ProbeFile(path, ctxRunner)
+		dur, id3Title, err := probe.ProbeFile(f.Path, ctxRunner)
 		if err != nil {
 			return nil, err
 		}
+		displaySource := f.FileName
+		if strings.TrimSpace(displaySource) == "" {
+			displaySource = filepath.Base(f.Path)
+		}
 		tracks = append(tracks, Track{
-			Path:         path,
-			FileName:     filepath.Base(path),
+			Path:         f.Path,
+			FileName:     displaySource,
 			Duration:     dur,
-			DisplayTitle: probe.ResolveDisplayTitle(id3Title, path),
+			DisplayTitle: probe.ResolveDisplayTitle(id3Title, displaySource),
 		})
 	}
 	return tracks, nil
 }
 
-// Run executes the full 5-step ytmix Mix pipeline.
-func Run(ctx context.Context, cfg Config, stdout io.Writer, lookPath func(string) (string, error), runner CommandRunner) error {
+func prepareRun(ctx context.Context, cfg Config, stdout io.Writer, lookPath func(string) (string, error)) (context.Context, io.Writer, time.Time, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if stdout == nil {
+		stdout = io.Discard
+	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return ctx, stdout, time.Time{}, err
 	}
 
 	start := time.Now()
 	if err := ValidateConfig(cfg, lookPath); err != nil {
-		return err
+		return ctx, stdout, start, err
 	}
 	bgInfo, err := os.Stat(cfg.BG)
 	if err != nil {
-		return fmt.Errorf("cannot access Background Visual %q: %w", cfg.BG, err)
+		return ctx, stdout, start, fmt.Errorf("cannot access Background Visual %q: %w", cfg.BG, err)
 	}
 	if bgInfo.IsDir() {
-		return fmt.Errorf("background visual path %q is a directory, expected a file", cfg.BG)
+		return ctx, stdout, start, fmt.Errorf("background visual path %q is a directory, expected a file", cfg.BG)
+	}
+	return ctx, stdout, start, nil
+}
+
+// Run executes the full 5-step ytmix Mix pipeline from cfg.AudioDir.
+func Run(ctx context.Context, cfg Config, stdout io.Writer, lookPath func(string) (string, error), runner CommandRunner) error {
+	ctx, stdout, start, err := prepareRun(ctx, cfg, stdout, lookPath)
+	if err != nil {
+		return err
 	}
 
+	fmt.Fprintf(stdout, "[1/5] Probing Tracks in %s...\n", cfg.AudioDir)
+	tracks, err := ProbeTracks(ctx, cfg.AudioDir, cfg.Shuffle, nil, runner)
+	if err != nil {
+		return err
+	}
+	return runPipeline(ctx, cfg, tracks, stdout, start, runner)
+}
+
+// RunWithTracks executes the 5-step ytmix Mix pipeline using an explicit, caller-ordered Track slice.
+func RunWithTracks(ctx context.Context, cfg Config, tracks []Track, stdout io.Writer, lookPath func(string) (string, error), runner CommandRunner) error {
+	ctx, stdout, start, err := prepareRun(ctx, cfg, stdout, lookPath)
+	if err != nil {
+		return err
+	}
+	if len(tracks) < 1 {
+		return errors.New("at least one .mp3 Track is required")
+	}
+
+	resolved := make([]Track, len(tracks))
+	for i, tr := range tracks {
+		if err := validateTrackFile(tr.Path); err != nil {
+			return fmt.Errorf("track %d: %w", i+1, err)
+		}
+		if tr.FileName == "" {
+			tr.FileName = filepath.Base(tr.Path)
+		}
+		if tr.Duration <= 0 || math.IsNaN(tr.Duration) || math.IsInf(tr.Duration, 0) {
+			return fmt.Errorf("track %q must have a positive duration (got %v)", tr.FileName, tr.Duration)
+		}
+		if strings.TrimSpace(tr.DisplayTitle) == "" {
+			tr.DisplayTitle = probe.ResolveDisplayTitle("", tr.Path)
+		}
+		resolved[i] = tr
+	}
+
+	fmt.Fprintf(stdout, "[1/5] Using %d selected Track(s)...\n", len(resolved))
+	return runPipeline(ctx, cfg, resolved, stdout, start, runner)
+}
+
+func runPipeline(ctx context.Context, cfg Config, tracks []Track, stdout io.Writer, start time.Time, runner CommandRunner) error {
 	tempDir, err := os.MkdirTemp("", "ytmix-*")
 	if err != nil {
 		return fmt.Errorf("create temp workspace: %w", err)
@@ -160,12 +274,6 @@ func Run(ctx context.Context, cfg Config, stdout io.Writer, lookPath func(string
 
 	ctxRunner := func(name string, args ...string) ([]byte, error) {
 		return runner(ctx, name, args...)
-	}
-
-	fmt.Fprintf(stdout, "[1/5] Probing Tracks in %s...\n", cfg.AudioDir)
-	tracks, err := ProbeTracks(ctx, cfg.AudioDir, cfg.Shuffle, nil, runner)
-	if err != nil {
-		return err
 	}
 
 	paths := make([]string, len(tracks))

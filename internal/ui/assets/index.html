@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ytmix — Editorial Mix Studio</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="chassis">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <div>
+          <h1 class="brand-title">ytmix</h1>
+          <p class="brand-sub">Editorial Mix Studio</p>
+        </div>
+      </div>
+
+      <div class="topbar-meta">
+        <div class="health-pill" id="health-pill" role="status" aria-live="polite">
+          <span class="health-dot" id="health-dot"></span>
+          <span class="mono" id="health-text">Checking ffmpeg…</span>
+        </div>
+        <button type="button" class="btn btn-ghost" id="theme-toggle" aria-label="Toggle Dark and Light Mode">
+          <span id="theme-label">Studio Paper</span>
+        </button>
+      </div>
+    </header>
+
+    <div class="alert-banner" id="health-banner" hidden role="alert"></div>
+
+    <main class="studio-grid">
+      <!-- Left Column: 01 - 03 -->
+      <div class="col-left">
+        <section class="panel" aria-labelledby="sec-tracks">
+          <div class="panel-head">
+            <div class="panel-title-wrap">
+              <span class="panel-index mono">01</span>
+              <h2 id="sec-tracks">Tracks &amp; Sequence</h2>
+            </div>
+            <div class="segmented" role="tablist" aria-label="Track Source Mode">
+              <button type="button" class="seg-btn is-active" id="tracks-mode-upload" role="tab" aria-selected="true">Upload MP3s</button>
+              <button type="button" class="seg-btn" id="tracks-mode-local" role="tab" aria-selected="false">Local Folder</button>
+            </div>
+          </div>
+
+          <div id="tracks-upload-pane" class="source-pane">
+            <label class="dropzone" id="tracks-dropzone" for="tracks-file-input">
+              <input id="tracks-file-input" type="file" accept=".mp3,audio/mpeg" multiple hidden>
+              <span class="dropzone-title">Drop .mp3 Tracks here or browse</span>
+              <span class="dropzone-hint mono">Probed via ffprobe · ID3 title &amp; duration extracted</span>
+            </label>
+          </div>
+
+          <div id="tracks-local-pane" class="source-pane" hidden>
+            <div class="inline-field">
+              <label class="sr-only" for="audio-dir-input">Audio Directory (--audio-dir)</label>
+              <input id="audio-dir-input" type="text" class="input mono" value="./tracks" placeholder="./tracks">
+              <button type="button" class="btn btn-secondary" id="probe-local-btn">Probe Folder</button>
+            </div>
+            <p class="field-hint" id="local-tracks-hint">Scans local folder for .mp3 Tracks via <code>ffprobe</code>.</p>
+          </div>
+
+          <div class="panel-toolbar">
+            <label class="toggle-row">
+              <input type="checkbox" id="shuffle-toggle">
+              <span>Shuffle sequence <code class="mono">--shuffle</code></span>
+            </label>
+            <span class="mono summary-stat" id="tracks-summary">0 Tracks · 00:00</span>
+          </div>
+
+          <div class="well table-well">
+            <table class="track-table" aria-label="Selected Tracks">
+              <thead>
+                <tr>
+                  <th class="col-start">Start</th>
+                  <th class="col-title">Display Title</th>
+                  <th class="col-len">Length</th>
+                  <th class="col-actions">Order</th>
+                </tr>
+              </thead>
+              <tbody id="track-tbody">
+                <tr class="empty-row">
+                  <td colspan="4">No Tracks loaded. Upload .mp3 files or probe a local folder.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="sec-bg">
+          <div class="panel-head">
+            <div class="panel-title-wrap">
+              <span class="panel-index mono">02</span>
+              <h2 id="sec-bg">Background Visual</h2>
+            </div>
+            <div class="segmented" role="tablist" aria-label="Background Visual Source">
+              <button type="button" class="seg-btn is-active" id="bg-mode-upload" role="tab" aria-selected="true">Upload File</button>
+              <button type="button" class="seg-btn" id="bg-mode-local" role="tab" aria-selected="false">Local Path</button>
+            </div>
+          </div>
+
+          <div id="bg-upload-pane" class="source-pane">
+            <label class="dropzone dropzone-compact" id="bg-dropzone" for="bg-file-input">
+              <input id="bg-file-input" type="file" accept=".jpg,.jpeg,.png,.webp,.mp4,.mov,.gif,image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime" hidden>
+              <span class="dropzone-title" id="bg-upload-label">Drop Background Visual or browse</span>
+              <span class="dropzone-hint mono">.jpg .png .webp (Path C) · .mp4 .mov .gif (Path A / B)</span>
+            </label>
+          </div>
+
+          <div id="bg-local-pane" class="source-pane" hidden>
+            <div class="inline-field">
+              <label class="sr-only" for="bg-path-input">Background Visual Path (--bg)</label>
+              <input id="bg-path-input" type="text" class="input mono" placeholder="cover_art.png or loop_visual.mp4">
+            </div>
+            <p class="field-hint">Previewed directly on the 16:9 stage when running locally.</p>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="sec-audio">
+          <div class="panel-head">
+            <div class="panel-title-wrap">
+              <span class="panel-index mono">03</span>
+              <h2 id="sec-audio">Audio &amp; Title Overlays</h2>
+            </div>
+            <span class="mono badge-soft" id="crossfade-badge">0.0s Crossfade</span>
+          </div>
+
+          <div class="controls-grid">
+            <div class="control-block">
+              <div class="control-label-row">
+                <label for="crossfade-slider">Crossfade <code class="mono">--crossfade</code></label>
+                <span class="mono tabular-nums" id="crossfade-val">0.0 s</span>
+              </div>
+              <input id="crossfade-slider" type="range" min="0" max="8" step="0.5" value="0" class="slider">
+              <p class="field-hint error-text" id="crossfade-warning" hidden></p>
+            </div>
+
+            <div class="control-block">
+              <label class="toggle-card">
+                <input type="checkbox" id="normalize-toggle">
+                <div>
+                  <div class="toggle-title">Loudness Normalization <code class="mono">--normalize</code></div>
+                  <div class="field-hint">Target -14 LUFS (TP=-1.5, LRA=11)</div>
+                </div>
+              </label>
+            </div>
+
+            <div class="control-block">
+              <label class="toggle-card">
+                <input type="checkbox" id="overlay-toggle">
+                <div>
+                  <div class="toggle-title">Burn Title Overlays <code class="mono">--overlay-titles</code></div>
+                  <div class="field-hint">Generates .ass script with 500ms fades</div>
+                </div>
+              </label>
+            </div>
+
+            <div class="split-fields">
+              <div class="control-block">
+                <label for="font-name-input">Overlay Font <code class="mono">--font-name</code></label>
+                <input id="font-name-input" type="text" class="input" value="Arial" placeholder="Arial">
+              </div>
+              <div class="control-block">
+                <label for="title-duration-input">Title Duration (s) <code class="mono">--title-duration</code></label>
+                <input id="title-duration-input" type="number" min="0" max="3600" step="1" value="0" class="input mono tabular-nums">
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Right Column: Stage, Chapters, Outputs, Telemetry & Render -->
+      <div class="col-right">
+        <section class="panel" aria-labelledby="sec-stage">
+          <div class="panel-head">
+            <div class="panel-title-wrap">
+              <h2 id="sec-stage">16:9 Stage Preview</h2>
+            </div>
+            <div class="hud-badges">
+              <span class="hud-badge mono" id="stage-bg-badge">No visual</span>
+              <span class="hud-badge hud-badge-accent mono" id="stage-path-badge">Select BG</span>
+            </div>
+          </div>
+
+          <div class="stage-frame well" id="stage-frame">
+            <span class="tick tick-tl" aria-hidden="true"></span>
+            <span class="tick tick-tr" aria-hidden="true"></span>
+            <span class="tick tick-bl" aria-hidden="true"></span>
+            <span class="tick tick-br" aria-hidden="true"></span>
+
+            <div class="stage-empty" id="stage-empty">
+              <span class="mono">1920 × 1080 · 16:9 CANVAS</span>
+              <p>Upload or select a Background Visual to preview Mix framing</p>
+            </div>
+
+            <img id="stage-img" class="stage-media" alt="Background Visual preview" hidden>
+            <video id="stage-video" class="stage-media" autoplay loop muted playsinline hidden></video>
+
+            <div class="stage-overlay" id="stage-overlay" hidden>
+              <span id="stage-overlay-text">♪ Display Title</span>
+            </div>
+          </div>
+
+          <div class="stage-meta-bar mono">
+            <span id="stage-codec-meta">H.264 + AAC 320k · 48 kHz</span>
+            <span id="stage-fps-meta">Select Background Visual</span>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="sec-chapters">
+          <div class="panel-head">
+            <div class="panel-title-wrap">
+              <h2 id="sec-chapters"><code class="mono">timestamps.txt</code> · YouTube Chapters</h2>
+            </div>
+            <div class="head-actions">
+              <button type="button" class="btn btn-ghost btn-sm" id="copy-chapters-btn">Copy</button>
+            </div>
+          </div>
+          <pre class="well code-well mono tabular-nums" id="chapters-preview">00:00 Add .mp3 Tracks to preview chapters</pre>
+        </section>
+
+        <section class="panel" aria-labelledby="sec-outputs">
+          <div class="panel-head">
+            <div class="panel-title-wrap">
+              <h2 id="sec-outputs">Output Targets &amp; CLI</h2>
+            </div>
+            <button type="button" class="btn btn-ghost btn-sm" id="copy-cli-btn">Copy CLI</button>
+          </div>
+
+          <div class="split-fields">
+            <div class="control-block">
+              <label for="out-path-input">Video Output <code class="mono">--out</code></label>
+              <input id="out-path-input" type="text" class="input mono" value="output.mp4">
+            </div>
+            <div class="control-block">
+              <label for="timestamps-path-input">Chapters File <code class="mono">--timestamps</code></label>
+              <input id="timestamps-path-input" type="text" class="input mono" value="timestamps.txt">
+            </div>
+          </div>
+
+          <pre class="well cli-well mono" id="cli-preview">ytmix --audio-dir ./tracks --bg "" --out output.mp4</pre>
+        </section>
+
+        <section class="panel" aria-labelledby="sec-telemetry">
+          <div class="panel-head">
+            <div class="panel-title-wrap">
+              <span class="panel-index mono">04</span>
+              <h2 id="sec-telemetry">Pipeline Telemetry (5 Steps)</h2>
+            </div>
+            <span class="mono badge-soft" id="telemetry-state">Idle</span>
+          </div>
+
+          <div class="progress-track" aria-hidden="true">
+            <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
+          </div>
+
+          <ol class="step-list mono" id="step-list">
+            <li data-step="1"><span class="step-num">[1/5]</span><span class="step-msg">Track discovery &amp; ffprobe validation</span></li>
+            <li data-step="2"><span class="step-num">[2/5]</span><span class="step-msg">Audio processing &amp; merge</span></li>
+            <li data-step="3"><span class="step-num">[3/5]</span><span class="step-msg">Chapter Timestamps calculation</span></li>
+            <li data-step="4"><span class="step-num">[4/5]</span><span class="step-msg">Title Overlays (.ass) generation</span></li>
+            <li data-step="5"><span class="step-num">[5/5]</span><span class="step-msg">FFmpeg 1080p Mix render</span></li>
+          </ol>
+
+          <pre class="well log-well mono" id="telemetry-log">Ready to render.</pre>
+
+          <div class="cta-stack">
+            <button type="button" class="btn btn-gold" id="render-btn">
+              Render Mix → <span class="mono" id="render-btn-target">output.mp4</span>
+            </button>
+            <div class="download-bar" id="download-bar" hidden>
+              <a class="btn btn-mint" id="download-output-link" href="#" download>Download MP4</a>
+              <a class="btn btn-secondary" id="download-ts-link" href="#" download>Download timestamps.txt</a>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
