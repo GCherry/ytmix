@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
+	"syscall"
 
 	"github.com/GCherry/ytmix/internal/mixer"
 )
@@ -50,7 +53,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(2)
 	}
-	if err := mixer.Run(cfg, os.Stdout, exec.LookPath, mixer.ExecCommandRunner); err != nil {
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := mixer.Run(ctx, cfg, os.Stdout, exec.LookPath, mixer.ExecCommandRunner); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}

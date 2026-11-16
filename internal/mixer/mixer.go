@@ -2,6 +2,7 @@ package mixer
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,11 +10,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/GCherry/ytmix/internal/audio"
 	"github.com/GCherry/ytmix/internal/probe"
+	"github.com/GCherry/ytmix/internal/render"
 	"github.com/GCherry/ytmix/internal/subtitle"
 )
 
@@ -41,11 +44,14 @@ type Config struct {
 }
 
 // CommandRunner executes an external binary and returns stdout or an error containing stderr.
-type CommandRunner func(name string, args ...string) ([]byte, error)
+type CommandRunner func(ctx context.Context, name string, args ...string) ([]byte, error)
 
 // ExecCommandRunner invokes an external binary via os/exec and includes stderr in returned errors.
-func ExecCommandRunner(name string, args ...string) ([]byte, error) {
-	cmd := exec.Command(name, args...)
+func ExecCommandRunner(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cmd := exec.CommandContext(ctx, name, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -92,15 +98,25 @@ func ValidateConfig(cfg Config, lookPath func(string) (string, error)) error {
 }
 
 // ProbeTracks discovers .mp3 files in audioDir and probes each Track's duration and Display Title.
-func ProbeTracks(audioDir string, shuffle bool, shuffleFn func(n int, swap func(i, j int)), runner CommandRunner) ([]Track, error) {
+func ProbeTracks(ctx context.Context, audioDir string, shuffle bool, shuffleFn func(n int, swap func(i, j int)), runner CommandRunner) ([]Track, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	files, err := probe.DiscoverAudioFiles(audioDir, shuffle, shuffleFn)
 	if err != nil {
 		return nil, err
 	}
 
+	ctxRunner := func(name string, args ...string) ([]byte, error) {
+		return runner(ctx, name, args...)
+	}
+
 	tracks := make([]Track, 0, len(files))
 	for _, path := range files {
-		dur, id3Title, err := probe.ProbeFile(path, runner)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		dur, id3Title, err := probe.ProbeFile(path, ctxRunner)
 		if err != nil {
 			return nil, err
 		}
@@ -114,8 +130,15 @@ func ProbeTracks(audioDir string, shuffle bool, shuffleFn func(n int, swap func(
 	return tracks, nil
 }
 
-// Run executes the ytmix Mix pipeline.
-func Run(cfg Config, stdout io.Writer, lookPath func(string) (string, error), runner CommandRunner) error {
+// Run executes the full 5-step ytmix Mix pipeline.
+func Run(ctx context.Context, cfg Config, stdout io.Writer, lookPath func(string) (string, error), runner CommandRunner) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	start := time.Now()
 	if err := ValidateConfig(cfg, lookPath); err != nil {
 		return err
@@ -134,8 +157,12 @@ func Run(cfg Config, stdout io.Writer, lookPath func(string) (string, error), ru
 	}
 	defer os.RemoveAll(tempDir)
 
+	ctxRunner := func(name string, args ...string) ([]byte, error) {
+		return runner(ctx, name, args...)
+	}
+
 	fmt.Fprintf(stdout, "[1/5] Probing Tracks in %s...\n", cfg.AudioDir)
-	tracks, err := ProbeTracks(cfg.AudioDir, cfg.Shuffle, nil, runner)
+	tracks, err := ProbeTracks(ctx, cfg.AudioDir, cfg.Shuffle, nil, runner)
 	if err != nil {
 		return err
 	}
@@ -150,11 +177,10 @@ func Run(cfg Config, stdout io.Writer, lookPath func(string) (string, error), ru
 	}
 
 	fmt.Fprintf(stdout, "[2/5] Processing & merging %d Track(s) (normalize=%v, crossfade=%.2fs)...\n", len(tracks), cfg.Normalize, cfg.Crossfade)
-	mergedAudioPath, updatedPaths, updatedDurations, err := audio.ProcessAndMerge(paths, fileNames, durations, tempDir, cfg.Normalize, cfg.Crossfade, runner)
+	mergedAudioPath, updatedPaths, updatedDurations, err := audio.ProcessAndMerge(paths, fileNames, durations, tempDir, cfg.Normalize, cfg.Crossfade, ctxRunner)
 	if err != nil {
 		return err
 	}
-	_ = mergedAudioPath
 	for i := range tracks {
 		tracks[i].Path = updatedPaths[i]
 		tracks[i].Duration = updatedDurations[i]
@@ -171,13 +197,24 @@ func Run(cfg Config, stdout io.Writer, lookPath func(string) (string, error), ru
 		return err
 	}
 
+	var assPath string
 	if cfg.OverlayTitles {
-		fmt.Fprintf(stdout, "[4/5] Title Overlays requested (pending Phase 2)...\n")
+		assPath = filepath.Join(tempDir, "titles.ass")
+		fmt.Fprintf(stdout, "[4/5] Generating Title Overlays (.ass) at %s...\n", assPath)
+		if err := subtitle.WriteASS(assPath, titles, sched.Starts, sched.TotalDuration, cfg.TitleDuration, cfg.FontName); err != nil {
+			return err
+		}
 	} else {
 		fmt.Fprintf(stdout, "[4/5] Skipping Title Overlays (--overlay-titles=false).\n")
 	}
-	fmt.Fprintf(stdout, "[5/5] Video rendering to %s pending Phase 2 (Mix audio duration %.2fs, elapsed %s).\n",
-		cfg.Out, sched.TotalDuration, time.Since(start).Round(time.Millisecond))
 
-	return fmt.Errorf("steps 1-3 complete (Chapter Timestamps written to %s); subtitle and video rendering (steps 4-5) pending Phase 2", cfg.Timestamps)
+	fmt.Fprintf(stdout, "[5/5] Rendering Mix video to %s...\n", cfg.Out)
+	pathKind, err := render.Render(cfg.BG, mergedAudioPath, assPath, tempDir, cfg.Out, cfg.OverlayTitles, runtime.GOOS, ctxRunner)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(stdout, "Done! Rendered %s via %s in %s (audio duration %.2fs, chapters: %s).\n",
+		cfg.Out, pathKind, time.Since(start).Round(time.Millisecond), sched.TotalDuration, cfg.Timestamps)
+	return nil
 }
