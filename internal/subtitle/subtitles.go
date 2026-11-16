@@ -71,14 +71,11 @@ func BuildASS(titles []string, starts []float64, totalDuration float64, titleDur
 	b.WriteString("[Events]\n")
 	b.WriteString("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
 
-	n := len(titles)
-	if len(starts) < n {
-		n = len(starts)
-	}
+	n := min(len(titles), len(starts))
 	for i := 0; i < n; i++ {
 		start := starts[i]
 		nextBoundary := totalDuration
-		if i+1 < n {
+		if i+1 < len(starts) && i+1 < n {
 			nextBoundary = starts[i+1]
 		}
 		end := nextBoundary

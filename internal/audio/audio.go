@@ -11,9 +11,13 @@ import (
 	"github.com/GCherry/ytmix/internal/probe"
 )
 
+var concatPathEscaper = strings.NewReplacer(
+	`\`, `/`,
+	`'`, `'\''`,
+)
+
 func escapeConcatPath(path string) string {
-	slashed := filepath.ToSlash(path)
-	return strings.ReplaceAll(slashed, "'", `'\''`)
+	return concatPathEscaper.Replace(path)
 }
 
 // BuildConcatList formats an FFmpeg concat demuxer file list for paths.
@@ -62,7 +66,7 @@ func ValidateCrossfade(fileNames []string, durations []float64, crossfade float6
 	}
 	for i, dur := range durations {
 		if dur <= crossfade {
-			return fmt.Errorf("Track %q duration (%.2fs) must exceed --crossfade (%.2fs)", fileNames[i], dur, crossfade)
+			return fmt.Errorf("track %q duration (%.2fs) must exceed --crossfade (%.2fs)", fileNames[i], dur, crossfade)
 		}
 	}
 	return nil

@@ -149,7 +149,7 @@ func Run(ctx context.Context, cfg Config, stdout io.Writer, lookPath func(string
 		return fmt.Errorf("cannot access Background Visual %q: %w", cfg.BG, err)
 	}
 	if bgInfo.IsDir() {
-		return fmt.Errorf("Background Visual path %q is a directory, expected a file", cfg.BG)
+		return fmt.Errorf("background visual path %q is a directory, expected a file", cfg.BG)
 	}
 
 	tempDir, err := os.MkdirTemp("", "ytmix-*")
