@@ -29,10 +29,10 @@ ffprobe -version
 ## Build
 
 ```powershell
-go build -o ytmix.exe .
+go build -o ytmix.exe ./cmd/ytmix
 ```
 
-*(On macOS/Linux: `go build -o ytmix .`)*
+*(On macOS/Linux: `go build -o ytmix ./cmd/ytmix`)*
 
 ## Usage Examples
 
@@ -64,6 +64,6 @@ go build -o ytmix.exe .
 
 ## Documentation & Architecture
 
-- [Technical Specification](spec%20docs/ytmix_technical_specification.md) — full pipeline rules, FFmpeg filter chains, and end-to-end verification suite.
-- [Interactive Architecture & Pipeline Blueprint](spec%20docs/ytmix_architecture_pipeline_blueprint.html) — interactive HTML simulator of CLI flags and Rendering Paths.
+- [Technical Specification](docs/specs/ytmix_technical_specification.md) — full pipeline rules, FFmpeg filter chains, and end-to-end verification suite.
+- [Interactive Architecture & Pipeline Blueprint](docs/specs/ytmix_architecture_pipeline_blueprint.html) — interactive HTML simulator of CLI flags and Rendering Paths.
 - [Domain Glossary](GLOSSARY.md) & [ADR 0001](docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md).
