@@ -1,2 +1,69 @@
 # ytmix
-ytmix is a high-performance, zero-dependency Go CLI tool that wraps ffmpeg and ffprobe to compile a directory of .mp3 audio files and a background visual (either a static image or a short looping video/GIF) into a 1080p .mp4 video ready for YouTube upload.
+
+`ytmix` is a high-performance, zero-dependency Go (`1.22+`) CLI tool that wraps `ffmpeg` and `ffprobe` to compile a directory of `.mp3` audio files and a Background Visual (static image or short looping video/GIF) into a 1080p `.mp4` Mix ready for YouTube upload, alongside a YouTube-formatted Chapter Timestamps file (`timestamps.txt`).
+
+## Features
+
+- **Zero external Go dependencies:** Pure Go standard library CLI wrapping system `ffmpeg` and `ffprobe`.
+- **Smart 3-Path Video Rendering:**
+  - **Path A (Stream Copy Loop):** Pre-normalizes a short `.mp4`/`.mov`/`.gif` loop once to 1080p and muxes it across the entire Mix with `-stream_loop -1 -c:v copy` (renders a 60-minute Mix in seconds with zero frame re-encoding).
+  - **Path B (Hardware-Accelerated Overlay Loop):** Burns dynamic `.ass` Title Overlays over a looping visual using `h264_videotoolbox` (macOS), `h264_nvenc` (Windows/Linux), or `libx264` fallback.
+  - **Path C (Low-FPS Still Image):** Encodes `.png`/`.jpg`/`.jpeg`/`.webp` artwork with `-loop 1 -tune stillimage` at `2 fps` (or `10 fps` with Title Overlays) to cut frame encoding work by up to 93%.
+- **Sample-Accurate Chapter Timestamps:** Probes exact audio durations via `ffprobe`, accounts for `--crossfade` overlap and post-normalization lengths, and writes a YouTube-ready `timestamps.txt` starting at `00:00`.
+- **Optional EBU R128 Loudness Normalization:** Normalizes each Track to YouTube's `-14 LUFS` target (`loudnorm=I=-14:TP=-1.5:LRA=11`).
+- **Burned-In `.ass` Title Overlays:** Generates Advanced SubStation Alpha (`titles.ass`) subtitles with 500ms fade-in/out tags (`\fad(500,500)`) instead of fragile FFmpeg `drawtext` chains.
+
+## Prerequisites
+
+- **Go** `1.22+`
+- **FFmpeg** and **FFprobe** installed and available on your system `PATH`
+
+Verify prerequisites:
+
+```powershell
+go version
+ffmpeg -version
+ffprobe -version
+```
+
+## Build
+
+```powershell
+go build -o ytmix.exe .
+```
+
+*(On macOS/Linux: `go build -o ytmix .`)*
+
+## Usage Examples
+
+```powershell
+# Path A: Fast stream-copy video loop with 2-second audio crossfades
+./ytmix --audio-dir ./tracks --bg loop_visual.mp4 --crossfade 2 --out mix.mp4
+
+# Path B: Looping video with -14 LUFS loudness normalization and burned-in track titles (shown for 10s each)
+./ytmix --audio-dir ./tracks --bg loop_visual.mp4 --normalize --overlay-titles --title-duration 10 --out mix.mp4
+
+# Path C: Static cover art with shuffled tracks and full-track title overlays
+./ytmix --audio-dir ./tracks --bg cover_art.png --shuffle --overlay-titles --out mix.mp4
+```
+
+## CLI Flags
+
+| Flag | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--audio-dir` | `string` | `./tracks` | Directory containing input `.mp3` files. |
+| `--bg` | `string` | *(Required)* | Path to Background Visual (`.jpg`, `.jpeg`, `.png`, `.webp`, `.mp4`, `.mov`, `.gif`). |
+| `--out` | `string` | `output.mp4` | Output `.mp4` video path. |
+| `--timestamps` | `string` | `timestamps.txt` | Output file path for YouTube Chapter Timestamps. |
+| `--crossfade` | `float64` | `0` | Crossfade duration in seconds between Tracks (`0` uses fast concat demuxer; `>0` uses `acrossfade`). |
+| `--normalize` | `bool` | `false` | Normalize each Track to YouTube's `-14 LUFS` target (`loudnorm=I=-14:TP=-1.5:LRA=11`). |
+| `--overlay-titles` | `bool` | `false` | Burn the current Display Title into the bottom-left corner of the video via dynamic `.ass` subtitles. |
+| `--title-duration` | `int` | `0` | Seconds to display each Display Title (`0` = stays visible for the entire Track; `>0` = fades in/out for the first $N$ seconds). |
+| `--font-name` | `string` | `Arial` | Font family name used inside the generated `.ass` subtitle script. |
+| `--shuffle` | `bool` | `false` | Randomize Track order instead of sorting alphabetically by filename. |
+
+## Documentation & Architecture
+
+- [Technical Specification](spec%20docs/ytmix_technical_specification.md) — full pipeline rules, FFmpeg filter chains, and end-to-end verification suite.
+- [Interactive Architecture & Pipeline Blueprint](spec%20docs/ytmix_architecture_pipeline_blueprint.html) — interactive HTML simulator of CLI flags and Rendering Paths.
+- [Domain Glossary](GLOSSARY.md) & [ADR 0001](docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md).
