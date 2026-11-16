@@ -1,6 +1,6 @@
 # ytmix CLI Implementation Plan
 
-**Origin:** Nov 15, 2026 — User request to plan the architecture and implementation of [`docs/specs/ytmix_technical_specification.md`](../specs/ytmix_technical_specification.md) using a clean, zero-dependency Go CLI layout.
+**Origin:** Nov 15, 2026 — User request to plan the architecture and implementation of [`docs/specs/ytmix_technical_specification.md`](../../specs/ytmix_technical_specification.md) using a clean, zero-dependency Go CLI layout.
 
 Implement `ytmix`, a zero-dependency Go (`1.22+`) CLI that compiles a directory of `.mp3` Tracks and a Background Visual (`.jpg`/`.jpeg`/`.png`/`.webp`/`.mp4`/`.mov`/`.gif`) into a 1080p YouTube `.mp4` Mix and a `timestamps.txt` Chapter Timestamps file across three smart FFmpeg Rendering Paths.
 
@@ -12,11 +12,11 @@ status; write **Phase Summary**; record **Verification Plan** results. When all
 phases are done, fill **Final Recap** and **Deployment Plan**, then archive this
 file per the real-work skill (Section 3).
 
-**Repo:** `ytmix` (`D:\CodingWorkspace\ytmix\ytmix`) — read its [`AGENTS.md`](../../AGENTS.md) before building or testing.
+**Repo:** `ytmix` (`D:\CodingWorkspace\ytmix\ytmix`) — read its [`AGENTS.md`](../../../AGENTS.md) before building or testing.
 
 **Branch:** `feature/ytmix-cli` off `main` (or `main` directly if preferred for initial scaffold).
 
-**Domain docs:** [`GLOSSARY.md`](../../GLOSSARY.md), [`docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md)
+**Domain docs:** [`GLOSSARY.md`](../../../GLOSSARY.md), [`docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../../adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md)
 
 **Related skills:** `tdd` (verification), `code-review` (post-build review)
 
@@ -138,15 +138,15 @@ All 4 `Other` frontier questions (`G-O1` through `G-O4`) were asked and resolved
 Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 **Triggered by:** Agent (Planner) — Nov 15, 2026 09:22:00 PM EST
 
-- [x] Create [`AGENTS.md`](../../AGENTS.md) with build, test, verification, and architectural conventions.
-- [x] Create [`GLOSSARY.md`](../../GLOSSARY.md) and [`docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md).
-- [x] Update [`README.md`](../../README.md) with prerequisites, build instructions, CLI flag reference, usage examples, and links to the spec docs.
-- [x] Author this `real-work` plan (`plans/ytmix-cli-implementation.md`, later moved to `docs/plans/ytmix-cli-implementation.md`) and run the `grill-with-docs` pass.
+- [x] Create [`AGENTS.md`](../../../AGENTS.md) with build, test, verification, and architectural conventions.
+- [x] Create [`GLOSSARY.md`](../../../GLOSSARY.md) and [`docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../../adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md).
+- [x] Update [`README.md`](../../../README.md) with prerequisites, build instructions, CLI flag reference, usage examples, and links to the spec docs.
+- [x] Author this `real-work` plan (`plans/ytmix-cli-implementation.md`, later moved to `docs/plans/ytmix-cli-implementation.md`, archived to `docs/plans/archive/ytmix-cli-implementation.md`) and run the `grill-with-docs` pass.
 - [x] Resolve Open Questions #1–#4 with the user and obtain Wave 0 sign-off before starting Wave 1.
 
 #### Verification Plan
 
-- Verified [`AGENTS.md`](../../AGENTS.md), [`GLOSSARY.md`](../../GLOSSARY.md), [`docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md), [`README.md`](../../README.md), and [`docs/plans/ytmix-cli-implementation.md`](ytmix-cli-implementation.md) exist and honor canonical `GLOSSARY.md` terms without `_Avoid_` synonyms.
+- Verified [`AGENTS.md`](../../../AGENTS.md), [`GLOSSARY.md`](../../../GLOSSARY.md), [`docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../../adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md), [`README.md`](../../../README.md), and [`docs/plans/archive/ytmix-cli-implementation.md`](ytmix-cli-implementation.md) exist and honor canonical `GLOSSARY.md` terms without `_Avoid_` synonyms.
 - Confirmed user answers to Open Questions #1–#4 (`G-O1`–`G-O4`) are locked in **Decisions (confirmed)** and **Resolved**.
 
 #### Phase Summary
