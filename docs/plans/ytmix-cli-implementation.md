@@ -190,8 +190,8 @@ Completed Nov 16, 2026 11:16:37 AM EST by Subagent (Engineering) on branch `feat
 
 ### Phase 2: `.ass` Subtitle Generator, 3-Path Video Renderer & Automated E2E Verification
 
-Status: In Progress <!-- Not Started | In Progress | Complete | Abandoned -->
-**Triggered by:** Subagent (Engineering) — Nov 16, 2026 12:06:31 PM EST
+Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
+**Triggered by:** Subagent (Engineering) & Coordinator — Nov 16, 2026 12:12:35 PM EST
 
 - [x] Implement `internal/subtitle/subtitles.go` (Step 4): generate `tempDir/titles.ass` (`PlayResX: 1920`, `PlayResY: 1080`, `Alignment=1`, `MarginL=60`, `MarginV=55`, `Fontsize=42`, `--font-name`, white primary color with dark outline/shadow), computing each Track's end time as $\min(T_i + \text{TitleDuration}, T_{i+1})$ when `--title-duration > 0` or $T_{i+1}$ when `0` (where $T_N$ is total Mix duration), with `{\fad(500,500)}♪ <Display Title>` and escaped `{`, `}`, `\`.
 - [x] Implement `internal/render/render.go` (Step 5) and wire `context.Context` signal handling (`cmd/ytmix/main.go`) + Steps 4–5 into `internal/mixer/mixer.go`:
@@ -202,23 +202,31 @@ Status: In Progress <!-- Not Started | In Progress | Complete | Abandoned -->
   - Implement **Path C** (`.jpg`/`.jpeg`/`.png`/`.webp`): encode with `-loop 1 -framerate 2` (or `10` when `--overlay-titles=true`), `scale/pad/setsar=1[,subtitles='...'],format=yuv420p`, `-map 0:v:0 -map 1:a:0 -c:v libx264 -tune stillimage -preset veryfast -crf 18 -c:a copy -shortest <out>`.
 - [x] Add co-located unit tests in `internal/subtitle/subtitles_test.go`, `internal/render/render_test.go`, and `internal/mixer/mixer_test.go` for `.ass` timestamp formatting (`H:MM:SS.cc` + rollover), `--title-duration` clamping at `0` and `>0`, `--font-name`, Windows filter path escaping, Rendering Path selection, HW probe fallback, and full Steps 1–5 orchestration.
 - [x] Implement the Section 5 Automated E2E Verification Suite (`TestE2EPipeline` in `internal/mixer/e2e_test.go`) covering synthetic `test_assets/` generation, **Test 1 (Path A)**, **Test 2 (Path B)**, **Test 3 (Path C)**, `ffprobe` JSON assertions (`1920x1080`, `h264` + `aac`, durations `~7.0s`/`~8.0s`, `timestamps.txt`), and automatic cleanup.
-- [ ] Execute `TestE2EPipeline` against live `ffmpeg`/`ffprobe` binaries outside the sandbox (`go test -count=1 -v -run TestE2EPipeline ./internal/mixer`) and confirm all 3 live rendering paths pass.
+- [x] Execute `TestE2EPipeline` against live `ffmpeg`/`ffprobe` binaries outside the sandbox (`go test -count=1 -v -run TestE2EPipeline ./internal/mixer`) and confirm all 3 live rendering paths pass.
 
 #### Verification Plan
 
 - `gofmt -l D:\CodingWorkspace\ytmix\ytmix`: exited `0` with 0 unformatted files.
 - `go -C D:\CodingWorkspace\ytmix\ytmix vet ./...`: exited `0` with 0 warnings.
-- `go -C D:\CodingWorkspace\ytmix\ytmix test -count=1 -v ./...`: exited `0` across all 6 packages (`cmd/ytmix` `0.345s`, `internal/audio` `0.386s`, `internal/mixer` `0.520s`, `internal/probe` `0.361s`, `internal/render` `0.327s`, `internal/subtitle` `0.339s`). All unit tests passed; `TestE2EPipeline` was skipped in sandbox (`e2e_test.go:103: skipping E2E pipeline test: ffmpeg not on PATH (exec: "ffmpeg": executable file not found in %PATH%)`) and awaits live execution against `winget`-installed `ffmpeg`/`ffprobe` outside the sandbox.
-- `go -C D:\CodingWorkspace\ytmix\ytmix build -o ytmix.exe ./cmd/ytmix` & `ytmix.exe --help`: exited `0`, printed all 10 CLI flags and defaults; `ytmix.exe` removed afterward.
+- `go -C D:\CodingWorkspace\ytmix\ytmix test -count=1 -v ./...` (with `Gyan.FFmpeg 9.0.2` on `PATH`): exited `0` across all 6 packages (`cmd/ytmix` `0.318s`, `internal/audio` `0.331s`, `internal/mixer` `3.684s`, `internal/probe`, `internal/render` `0.293s`, `internal/subtitle` `0.299s`), including live `TestE2EPipeline` (`3.35s`):
+  - `Test_1_Path_A_looping_video_without_overlays_and_1s_crossfade` (`0.73s`): PASS (`1920x1080`, `h264` + `aac`, `~7.0s`, `timestamps.txt`).
+  - `Test_2_Path_B_looping_video_with_overlays_and_normalize` (`1.51s`): PASS (`1920x1080`, `h264` + `aac`, `~8.0s`, `timestamps.txt`).
+  - `Test_3_Path_C_static_image_with_overlays` (`0.77s`): PASS (`1920x1080`, `h264` + `aac`, `~8.0s`, `timestamps.txt`).
+- `go -C D:\CodingWorkspace\ytmix\ytmix build -o ytmix.exe ./cmd/ytmix` & `ytmix.exe --help`: exited `0`, printed all 10 CLI flags and defaults; `ytmix.exe` removed afterward, and E2E temp workspace cleaned automatically.
 
 #### Phase Summary
 
-Implemented Phase 2 code, unit tests, and E2E suite on `feature/ytmix-cli` (Nov 16, 2026 by Subagent Engineering). Added `internal/subtitle/subtitles.go` + `subtitles_test.go` (Step 4 `.ass` generation, rollover centisecond formatting, `{`/`}`/`\`/newline escaping, `--title-duration` clamping), `internal/render/render.go` + `render_test.go` (Step 5 Rendering Path selection, Windows filter path escaping, 1-frame HW encoder probe for `h264_videotoolbox`/`h264_nvenc` with `libx264` fallback, Path A/B/C FFmpeg builders & execution), wired `signal.NotifyContext` + Steps 4–5 in `cmd/ytmix/main.go` and `internal/mixer/mixer.go` (+ updated `internal/mixer/mixer_test.go`), and implemented `TestE2EPipeline` in `internal/mixer/e2e_test.go`. Static checks (`gofmt`, `go vet`), CLI build/`--help`, and all unit tests pass; `TestE2EPipeline` skipped in sandbox because `ffmpeg`/`ffprobe` are not on sandbox `PATH` and must be executed outside sandbox before marking Phase 2 `Complete`.
+Completed Nov 16, 2026 12:12:35 PM EST by Subagent (Engineering) & Coordinator on `feature/ytmix-cli`. Implemented `internal/subtitle/subtitles.go` + `subtitles_test.go` (Step 4 `.ass` generation, rollover centisecond formatting, `{`/`}`/`\`/newline escaping, `--title-duration` clamping), `internal/render/render.go` + `render_test.go` (Step 5 Rendering Path selection, Windows filter path escaping, 1-frame HW encoder probe for `h264_videotoolbox`/`h264_nvenc` with `libx264` fallback, Path A/B/C FFmpeg builders & execution), wired `signal.NotifyContext` + Steps 4–5 in `cmd/ytmix/main.go` and `internal/mixer/mixer.go` (+ `mixer_test.go`), and verified `TestE2EPipeline` in `internal/mixer/e2e_test.go` end-to-end against live `ffmpeg`/`ffprobe` `9.0.2`.
 
 ## Final Recap
 
-_(write when all phases complete)_
+- **Implemented across Phases 0–2 on `feature/ytmix-cli`:**
+  - Zero-dependency Go `1.22+` CLI in standard Go layout (`cmd/ytmix`, `internal/mixer`, `internal/probe`, `internal/audio`, `internal/subtitle`, `internal/render`).
+  - Full 5-step pipeline: `.mp3` discovery & `ffprobe` metadata/Display Title resolution, optional `-14 LUFS` `.wav` Loudness Normalization + `concat_list.txt` / sequential `acrossfade` merge, `MM:SS`/`HH:MM:SS` Chapter Timestamps (`timestamps.txt`), `.ass` Title Overlays (`titles.ass`), and 3-path 1080p H.264/AAC rendering with 1-frame runtime HW encoder probing.
+  - Full unit test coverage across all packages plus live `ffmpeg`/`ffprobe` E2E verification (`TestE2EPipeline`) across Paths A, B, and C.
 
 ## Deployment Plan
 
-_(write when all phases complete)_
+1. **Pre-merge:** Complete `Reviewer` (Standards + Spec) and `Planner` (`Acceptance Check`), then archive this plan from `docs/plans/ytmix-cli-implementation.md` to `docs/plans/archive/ytmix-cli-implementation.md` (updating `docs/plans/README.md`, `docs/plans/archive/README.md`, and internal relative links) in the final pre-merge commit on `feature/ytmix-cli`.
+2. **Release / Usage:** Build with `go build -o ytmix.exe ./cmd/ytmix` (Windows) or `go build -o ytmix ./cmd/ytmix` (macOS/Linux) with `ffmpeg` and `ffprobe` available on `PATH`.
+3. **Post-merge cleanup:** Remove the remote `feature/ytmix-cli` branch and local branch after merging to `main`.
