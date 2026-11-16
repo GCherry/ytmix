@@ -141,31 +141,34 @@ Completed Nov 15, 2026 09:25:33 PM EST by Agent (Planner). Created `AGENTS.md`, 
 
 ## Wave 1: Core Audio, Metadata & Chapter Pipeline (Steps 1–3) <!-- serial -->
 
-**Triggered by:** Pending Engineering handoff — Nov 15, 2026 09:25:33 PM EST
+**Triggered by:** Subagent (Engineering) — Nov 16, 2026 11:16:37 AM EST
 
 ### Phase 1: Go Module Scaffold, Track Probing, Audio Merging & Chapter Timestamps
 
-Status: Not Started <!-- Not Started | In Progress | Complete | Abandoned -->
-**Triggered by:** Pending Engineering handoff — Nov 15, 2026 09:25:33 PM EST
+Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
+**Triggered by:** Subagent (Engineering) — Nov 16, 2026 11:16:37 AM EST
 
-- [ ] Initialize `go.mod` (`module github.com/GCherry/ytmix`, `go 1.22`).
-- [ ] Implement `main.go` CLI flag definitions (`--audio-dir`, `--bg`, `--out`, `--timestamps`, `--crossfade`, `--normalize`, `--overlay-titles`, `--title-duration`, `--font-name`, `--shuffle`), upfront validation (required `--bg`, supported file extension check, `ffmpeg`/`ffprobe` `exec.LookPath` check), `[1/5]..[5/5]` stdout step logging with elapsed time, and `os.MkdirTemp("", "ytmix-*")` with `defer os.RemoveAll(tempDir)`.
-- [ ] Implement `probe.go` (Step 1): case-insensitive `.mp3` directory scan, alphabetical sort or `--shuffle`, `ffprobe -v error -show_entries format=duration -show_entries format_tags=title -of json <file>` execution and JSON parsing, and Display Title resolution (trimmed ID3 `title` or filename with `.mp3` and `^\d+[\s._-]+` stripped).
-- [ ] Implement `audio.go` (Step 2):
+- [x] Initialize `go.mod` (`module github.com/GCherry/ytmix`, `go 1.22`).
+- [x] Implement `main.go` CLI flag definitions (`--audio-dir`, `--bg`, `--out`, `--timestamps`, `--crossfade`, `--normalize`, `--overlay-titles`, `--title-duration`, `--font-name`, `--shuffle`), upfront validation (required `--bg`, supported file extension check, `ffmpeg`/`ffprobe` `exec.LookPath` check), `[1/5]..[5/5]` stdout step logging with elapsed time, and `os.MkdirTemp("", "ytmix-*")` with `defer os.RemoveAll(tempDir)`.
+- [x] Implement `probe.go` (Step 1): case-insensitive `.mp3` directory scan, alphabetical sort or `--shuffle`, `ffprobe -v error -show_entries format=duration -show_entries format_tags=title -of json <file>` execution and JSON parsing, and Display Title resolution (trimmed ID3 `title` or filename with `.mp3` and `^\d+[\s._-]+` stripped).
+- [x] Implement `audio.go` (Step 2):
   - When `--normalize` is enabled, transcode each Track to temporary uncompressed `.wav` (`-c:a pcm_s16le -ar 48000 -af "loudnorm=I=-14:TP=-1.5:LRA=11"`) in `tempDir` and re-probe its exact post-normalization duration.
   - Validate `--crossfade` against Track durations (`crossfade < duration` for every Track when `len(tracks) > 1`).
   - Merge audio into `tempDir/merged_audio.m4a` (`-c:a aac -b:a 320k -ar 48000`) via `concat_list.txt` (`-f concat -safe 0`) when `--crossfade == 0` (or `len(tracks) == 1`), or via sequential `acrossfade=d=<d>:c1=tri:c2=tri` `-filter_complex` chain when `--crossfade > 0`.
-- [ ] Implement `chapters.go` (Step 3): calculate cumulative start times ($T_0 = 0.0$, $T_i = T_{i-1} + D_{i-1} - \text{Crossfade}$), format as `MM:SS <Display Title>` (or `HH:MM:SS <Display Title>` when total Mix duration $\ge 3600\text{s}$), and write `--timestamps` (`timestamps.txt`).
-- [ ] Add unit tests in `ytmix_test.go` covering Display Title regex stripping, cumulative timestamp calculation with and without crossfade, `MM:SS` vs `HH:MM:SS` formatting at the `3600s` boundary, `concat_list.txt` escaping, and `acrossfade` filter graph generation.
+- [x] Implement `chapters.go` (Step 3): calculate cumulative start times ($T_0 = 0.0$, $T_i = T_{i-1} + D_{i-1} - \text{Crossfade}$), format as `MM:SS <Display Title>` (or `HH:MM:SS <Display Title>` when total Mix duration $\ge 3600\text{s}$), and write `--timestamps` (`timestamps.txt`).
+- [x] Add unit tests in `ytmix_test.go` covering Display Title regex stripping, cumulative timestamp calculation with and without crossfade, `MM:SS` vs `HH:MM:SS` formatting at the `3600s` boundary, `concat_list.txt` escaping, and `acrossfade` filter graph generation.
 
 #### Verification Plan
 
-- Run `go vet ./...` and `go test -v -run "TestTitle|TestTimestamps|TestConcat|TestAcrossfade" ./...` and verify 0 warnings and 100% pass rate.
-- Verify adjustable flags (`--audio-dir`, `--timestamps`, `--crossfade` at `0` and `>0`, `--normalize` at `false` and `true`, `--shuffle` at `false` and `true`) have unit test coverage for both ends of their ranges and invalid inputs (e.g. negative crossfade, crossfade $\ge$ track duration, empty directory).
+- `gofmt -l .`: exited `0` with 0 unformatted files.
+- `go vet ./...`: exited `0` with 0 warnings.
+- `go test -v ./...`: exited `0` (`ok github.com/GCherry/ytmix 0.229s`), all 7 top-level tests / 16 subtests passed (`TestParseFlagsAndValidation`, `TestTitleAndTrackDiscovery`, `TestConcatListEscaping`, `TestAcrossfadeFilterGraph`, `TestAudioNormalizationAndMerge`, `TestTimestampsCalculationAndFormatting`, `TestRunPipelineSteps1To3AndPhase2Guard`), using stubbed `CommandRunner` and `lookPath` seams (`ffmpeg`/`ffprobe` are not on sandbox `PATH`, so live binary execution waits for Phase 2 / user verification).
+- `go test -v -run "TestTitle|TestTimestamps|TestConcat|TestAcrossfade" ./...`: exited `0` (`ok github.com/GCherry/ytmix 0.211s`), all 4 matching test suites passed.
+- `go build -o ytmix.exe .` & `.\ytmix.exe --help`: exited `0`, printed all 10 CLI flags and defaults; temporary `ytmix.exe` removed before commit.
 
 #### Phase Summary
 
-_(write when phase completes)_
+Completed Nov 16, 2026 11:16:37 AM EST by Subagent (Engineering) on branch `feature/ytmix-cli`. Implemented the zero-dependency Go 1.22 Phase 1 scaffold (`go.mod`, `main.go`, `probe.go`, `audio.go`, `chapters.go`, `ytmix_test.go`) covering CLI flag parsing & upfront validation for all 10 flags, `ytmix-*` temporary workspace lifecycle, `[1/5]..[5/5]` progress logging with a Phase 2 guard for Steps 4–5, case-insensitive `.mp3` Track discovery (`sort` vs `--shuffle`) with `ffprobe` JSON metadata & Display Title resolution, optional `-14 LUFS` `.wav` Loudness Normalization + duration re-probing, `concat_list.txt` escaping & sequential `acrossfade` merging into `merged_audio.m4a`, and `MM:SS`/`HH:MM:SS` Chapter Timestamps output (`timestamps.txt`). Ready for `Reviewer` verification and user testing before Phase 2.
 
 ## Wave 2: Subtitle Overlays, Smart Video Rendering & E2E Verification (Steps 4–5) <!-- serial -->
 
