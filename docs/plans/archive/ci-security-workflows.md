@@ -12,11 +12,11 @@ status; write **Phase Summary**; record **Verification Plan** results. When all
 phases are done, fill **Final Recap** and **Deployment Plan**, then archive this
 file per the real-work skill (Section 3).
 
-**Repo:** `ytmix` (`D:\CodingWorkspace\ytmix\ytmix`) — read [`AGENTS.md`](../../AGENTS.md) before building or testing.
+**Repo:** `ytmix` (`D:\CodingWorkspace\ytmix\ytmix`) — read [`AGENTS.md`](../../../AGENTS.md) before building or testing.
 
-**Branch:** `feature/ci-security-workflows` off `main` (PR must include `Closes #2`).
+**Branch:** `feature/ci-security-workflows` off `main` (PR #6, `Closes #2`).
 
-**Domain docs:** [`GLOSSARY.md`](../../GLOSSARY.md), [`docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md), [`docs/specs/ytmix_technical_specification.md`](../specs/ytmix_technical_specification.md), [`docs/plans/archive/ytmix-cli-implementation.md`](archive/ytmix-cli-implementation.md).
+**Domain docs:** [`GLOSSARY.md`](../../../GLOSSARY.md), [`docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../../adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md), [`docs/specs/ytmix_technical_specification.md`](../../specs/ytmix_technical_specification.md), [`docs/plans/archive/ytmix-cli-implementation.md`](ytmix-cli-implementation.md).
 
 **Related skills:** `coordinator`, `real-work`, `code-review` (pre-merge).
 
@@ -165,31 +165,40 @@ Completed Nov 16, 2026 03:37:30 PM EST by Agent (Engineering) on `feature/ci-sec
 
 ## Wave 2: PR Verification, Issue Sync & Plan Archival <!-- serial -->
 
-**Triggered by:** Pending Wave 1 completion — Nov 16, 2026 02:45:00 PM EST
+**Triggered by:** Wave 1 completion — Nov 16, 2026 03:38:00 PM EST
 
 ### Phase 2: Code Review, Live GitHub Actions CI Verification & Closure
 
-Status: Not Started <!-- Not Started | In Progress | Complete | Abandoned -->
-**Triggered by:** Pending Wave 1 completion — Nov 16, 2026 02:45:00 PM EST
+Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
+**Triggered by:** Agent (Release & Coordinator) — Nov 16, 2026 03:51:30 PM EST
 
-- [ ] Complete `Reviewer` (`code-review` Standards + Spec) and `Planner` (`Acceptance Check`) on `feature/ci-security-workflows`.
-- [ ] Push `feature/ci-security-workflows` and open PR targeting `main` with `Closes #2`; verify all GitHub Actions checks (`ci.yml`, `security.yml`, `actionlint`, `golangci-lint`, `govulncheck`, tests) pass green on the PR.
-- [ ] Update all `- [ ]` acceptance checkboxes on Issue #2 to `- [x]` and post PR + verification summary comment.
-- [ ] Fill **Final Recap** and **Deployment Plan**, then archive `docs/plans/ci-security-workflows.md` → `docs/plans/archive/ci-security-workflows.md` (updating `docs/plans/README.md`, `docs/plans/archive/README.md`, and internal relative links) in the final pre-merge commit on `feature/ci-security-workflows`.
+- [x] Complete `Reviewer` (`code-review` Standards + Spec) and `Planner` (`Acceptance Check`) on `feature/ci-security-workflows`.
+- [x] Push `feature/ci-security-workflows` and open PR targeting `main` with `Closes #2`; verify all GitHub Actions checks (`ci.yml`, `security.yml`, `actionlint`, `golangci-lint`, `govulncheck`, tests) pass green on the PR.
+- [x] Update all `- [ ]` acceptance checkboxes on Issue #2 to `- [x]` and post PR + verification summary comment.
+- [x] Fill **Final Recap** and **Deployment Plan**, then archive `docs/plans/ci-security-workflows.md` → `docs/plans/archive/ci-security-workflows.md` (updating `docs/plans/README.md`, `docs/plans/archive/README.md`, and internal relative links) in the final pre-merge commit on `feature/ci-security-workflows`.
 
 #### Verification Plan
 
-- All PR checks on `GCherry/ytmix` report `SUCCESS` on the head commit SHA.
-- `docs/plans/README.md` returns to empty active plans and `docs/plans/archive/README.md` indexes `ci-security-workflows.md`.
+- `Planner` `Acceptance Check` (`0e2c499`): `PASS` (0 gaps).
+- `Reviewer` Round 1 (`0e2c499`): 1 blocking finding (`gosec` `G104` handling) -> fixed in `25c3c76`.
+- `/code-review` Round 2 (`25c3c76`, Claude Opus 5.5 High): `Standards`: `PASS (0 blocking)`; `Spec`: `PASS (0 blocking)`. Full Code Review Summary posted to PR #6 (`#issuecomment-6928949924`).
+- Live CI fixes (`e193ef8`) verified locally (`gofmt -l`, `go vet ./...`, `go build ./...`, `go test -count=1 -short ./...` all exited `0`) and on GitHub Actions PR #6 (`e193ef8`): all 11 checks passed (`Validate Workflows (actionlint)`, `Detect Go Module` x2, `Format, Vet & Lint`, `Build & Unit Tests (ubuntu-latest)`, `Build & Unit Tests (windows-latest)`, `FFmpeg E2E Pipeline (Paths A, B, C)`, `Go Vulnerability Scan (govulncheck)`, `CodeQL`, `CodeQL (GitHub Actions)`, `CodeQL (Go)`).
+- `docs/plans/README.md` restored to empty active plans and `docs/plans/archive/README.md` indexes `ci-security-workflows.md`.
 
 #### Phase Summary
 
-_(write when phase completes)_
+Completed Nov 16, 2026 03:51:30 PM EST by Agent (`Release` / `Coordinator`) on `feature/ci-security-workflows` (`PR #6`). Resolved Round 1 `G104` finding (`25c3c76`), passed Round 2 `/code-review` on Claude Opus 5.5 High (`0` blocking findings), resolved live CI findings (`e193ef8` — cross-platform `escapeConcatPath`, `gosec` `G602`, `staticcheck` `ST1005`), verified all 11 GitHub Actions checks green on PR #6, posted the Code Review Summary to PR #6, synced Issue #2 checkboxes, and archived this plan to `docs/plans/archive/ci-security-workflows.md`.
 
 ## Final Recap
 
-_(write when all phases complete)_
+- **Delivered on `feature/ci-security-workflows` (`PR #6`, `Closes #2`):**
+  - `.golangci.yml` (v2 schema) with `depguard` enforcing zero external Go dependencies, `errcheck`, `gosec` (documented `G104` deferral to `errcheck`, `_test.go` exemption), `govet`, `staticcheck`, `ineffassign`, `unused`, `misspell`, and `nolintlint`.
+  - `.gitattributes` enforcing LF line endings on `.go`, `.yml`, `.yaml`, and `.sh` files so Windows `core.autocrlf=true` does not break `gofmt -l`.
+  - Targeted Go hygiene & security annotations: `0600` temp-file permissions (`concat_list.txt` in `internal/audio/audio.go`, `titles.ass` in `internal/subtitle/subtitles.go`), documented `#nosec` annotations (`G204` in `internal/mixer/mixer.go:54`, `G404` in `internal/probe/ffprobe.go:52`, `G306` in `internal/subtitle/chapters.go:76`), cross-platform backslash normalization in `escapeConcatPath`, `gosec` `G602` bounds check in `BuildASS`, and `staticcheck` `ST1005` lowercase error strings.
+  - `.github/workflows/ci.yml` (`actionlint@v1.7.12`, `has_go_mod` guard, `gofmt -l .`, `go vet ./...`, `golangci-lint@v2.15.0`, `ubuntu-latest` + `windows-latest` build/unit tests + `GOOS=darwin` cross-build, `ffmpeg` E2E `TestE2EPipeline`).
+  - `.github/workflows/security.yml` (`govulncheck`, CodeQL `actions` + `go` on PR, push to `main`, and weekly schedule, least-privilege `contents: read` + job-scoped `security-events: write`) and `.github/dependabot.yml` (weekly `gomod` + `github-actions`), with all third-party actions pinned to 40-char commit SHAs.
 
 ## Deployment Plan
 
-_(write when all phases complete)_
+1. **Human Merge Gate (`High` Risk Tier):** Review and merge [PR #6](https://github.com/GCherry/ytmix/pull/6) into `main` once final archive-commit CI checks report green (`Closes #2` auto-closes Issue #2 on merge).
+2. **Post-merge:** Verify `CI` and `Security` workflows pass on `main`, and confirm `feature/ci-security-workflows` is deleted remotely and locally.
