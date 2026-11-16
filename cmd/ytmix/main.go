@@ -159,12 +159,13 @@ func runUIServer(ctx context.Context, uiCfg UIConfig, out io.Writer) error {
 		actualPort = tcpAddr.Port
 	}
 	displayHost := uiCfg.Host
-	if displayHost == "0.0.0.0" || displayHost == "::" {
+	isWildcardBind := displayHost == "0.0.0.0" || displayHost == "::"
+	if isWildcardBind {
 		displayHost = "127.0.0.1"
 	}
 	url := fmt.Sprintf("http://%s", net.JoinHostPort(displayHost, strconv.Itoa(actualPort)))
 	fmt.Fprintf(out, "Editorial Mix Studio listening on %s (bound: %s)\n", url, ln.Addr().String())
-	if !uiCfg.NoOpen {
+	if !uiCfg.NoOpen && !isWildcardBind {
 		openBrowserBestEffort(ctx, url)
 	}
 
@@ -182,10 +183,10 @@ func runUIServer(ctx context.Context, uiCfg UIConfig, out io.Writer) error {
 	case err := <-errCh:
 		return err
 	case <-ctx.Done():
+		srv.Close()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = httpSrv.Shutdown(shutdownCtx)
-		srv.Close()
 		return <-errCh
 	}
 }

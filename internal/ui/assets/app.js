@@ -14,7 +14,6 @@
     selectedTrackIdx: 0,
     bgFile: null,
     bgObjectUrl: "",
-    bgLocalPath: "",
     rendering: false,
     eventSource: null,
   };
@@ -32,12 +31,12 @@
     return parts[parts.length - 1] || path;
   }
 
-  function formatDuration(sec) {
+  function formatTime(sec, forceHours) {
     const s = Math.max(0, Math.round(sec));
     const hrs = Math.floor(s / 3600);
     const mins = Math.floor((s % 3600) / 60);
     const rem = s % 60;
-    if (hrs > 0) {
+    if (forceHours || hrs > 0) {
       return `${String(hrs).padStart(2, "0")}:${String(mins).padStart(2, "0")}:${String(rem).padStart(2, "0")}`;
     }
     return `${String(mins).padStart(2, "0")}:${String(rem).padStart(2, "0")}`;
@@ -64,20 +63,7 @@
     const last = state.tracks.length - 1;
     const totalDuration = starts[last] + state.tracks[last].duration;
     const includeHours = totalDuration >= 3600;
-    const formatTs = (sec) => {
-      const s = Math.max(0, Math.round(sec));
-      if (includeHours) {
-        const hrs = Math.floor(s / 3600);
-        const mins = Math.floor((s % 3600) / 60);
-        const rem = s % 60;
-        return `${String(hrs).padStart(2, "0")}:${String(mins).padStart(2, "0")}:${String(rem).padStart(2, "0")}`;
-      }
-      const mins = Math.floor(s / 60);
-      const rem = s % 60;
-      return `${String(mins).padStart(2, "0")}:${String(rem).padStart(2, "0")}`;
-    };
-
-    const lines = state.tracks.map((tr, i) => `${formatTs(starts[i])} ${tr.displayTitle}`);
+    const lines = state.tracks.map((tr, i) => `${formatTime(starts[i], includeHours)} ${tr.displayTitle}`);
     const validCrossfade = !(crossfade > 0 && state.tracks.length > 1 && crossfade >= minDuration);
     return { starts, totalDuration, text: lines.join("\n"), validCrossfade, minDuration };
   }
@@ -315,7 +301,7 @@
       return;
     }
 
-    $("tracks-summary").textContent = `${state.tracks.length} Track(s) · ${formatDuration(sched.totalDuration)}`;
+    $("tracks-summary").textContent = `${state.tracks.length} Track(s) · ${formatTime(sched.totalDuration, false)}`;
     state.tracks.forEach((tr, idx) => {
       const row = document.createElement("tr");
       row.className = "track-row" + (idx === state.selectedTrackIdx ? " is-selected" : "");
@@ -328,14 +314,14 @@
 
       const tdStart = document.createElement("td");
       tdStart.className = "col-start";
-      tdStart.textContent = formatDuration(sched.starts[idx] || 0);
+      tdStart.textContent = formatTime(sched.starts[idx] || 0, false);
 
       const tdTitle = document.createElement("td");
       tdTitle.textContent = tr.displayTitle;
 
       const tdLen = document.createElement("td");
       tdLen.className = "col-len";
-      tdLen.textContent = formatDuration(tr.duration);
+      tdLen.textContent = formatTime(tr.duration, false);
 
       const tdAct = document.createElement("td");
       tdAct.className = "col-actions";

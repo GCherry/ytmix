@@ -581,3 +581,72 @@ func TestLocalBackgroundPreviewGuard(t *testing.T) {
 		t.Fatalf("expected 403 for LAN client, got %d", lanRec.Code)
 	}
 }
+
+func TestCSRFSameOriginAndContentTypeGuards(t *testing.T) {
+	srv, err := NewServer(Config{Host: "127.0.0.1", Port: 8080, LookPath: okLookPath, Runner: stubPipelineRunner(t, nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	t.Run("rejects cross-origin Origin and Sec-Fetch-Site headers", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/render", strings.NewReader(`{}`))
+		req.Host = "127.0.0.1:8080"
+		req.RemoteAddr = "127.0.0.1:50000"
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", "https://evil.example")
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for cross-origin Origin, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		req2 := httptest.NewRequest(http.MethodPost, "/api/probe", strings.NewReader(`{"audioDir":"."}`))
+		req2.Host = "127.0.0.1:8080"
+		req2.RemoteAddr = "127.0.0.1:50000"
+		req2.Header.Set("Content-Type", "application/json")
+		req2.Header.Set("Sec-Fetch-Site", "cross-site")
+		rec2 := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec2, req2)
+		if rec2.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for Sec-Fetch-Site cross-site, got %d: %s", rec2.Code, rec2.Body.String())
+		}
+	})
+
+	t.Run("rejects non-JSON Content-Type such as text/plain on JSON routes", func(t *testing.T) {
+		for _, path := range []string{"/api/probe", "/api/render"} {
+			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"audioDir":"."}`))
+			req.Host = "127.0.0.1:8080"
+			req.RemoteAddr = "127.0.0.1:50000"
+			req.Header.Set("Content-Type", "text/plain")
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnsupportedMediaType {
+				t.Fatalf("POST %s with text/plain got %d, want 415", path, rec.Code)
+			}
+		}
+	})
+
+	t.Run("allows same-origin Origin and Sec-Fetch-Site", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "01_A.mp3"), []byte("a"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/probe", strings.NewReader(`{"audioDir":`+strconvQuote(dir)+`}`))
+		req.Host = "127.0.0.1:8080"
+		req.RemoteAddr = "127.0.0.1:50000"
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", "http://127.0.0.1:8080")
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 for same-origin request, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+func strconvQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}

@@ -177,14 +177,15 @@ func (j *renderJob) closeAll() {
 }
 
 type jobStore struct {
-	mu          sync.Mutex
-	maxJobs     int
-	maxSessions int
-	sessions    map[string]*sessionState
-	sessionRing []string
-	jobs        map[string]*renderJob
-	jobRing     []string
-	activeJobID string
+	mu              sync.Mutex
+	maxJobs         int
+	maxSessions     int
+	sessions        map[string]*sessionState
+	sessionRing     []string
+	jobs            map[string]*renderJob
+	jobRing         []string
+	activeJobID     string
+	activeSessionID string
 }
 
 func newJobStore(maxJobs int) *jobStore {
@@ -206,6 +207,9 @@ func (st *jobStore) addSession(sess *sessionState) {
 	st.sessionRing = append(st.sessionRing, sess.id)
 	for len(st.sessionRing) > st.maxSessions {
 		oldID := st.sessionRing[0]
+		if oldID == st.activeSessionID {
+			break
+		}
 		st.sessionRing = st.sessionRing[1:]
 		if old, ok := st.sessions[oldID]; ok {
 			delete(st.sessions, oldID)
@@ -237,7 +241,7 @@ func (st *jobStore) resolveTracks(sessionID string, trackIDs []string) ([]mixer.
 	return tracks, nil
 }
 
-func (st *jobStore) claimRenderSlot(job *renderJob) error {
+func (st *jobStore) claimRenderSlot(job *renderJob, sessionID string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if st.activeJobID != "" {
@@ -251,6 +255,7 @@ func (st *jobStore) claimRenderSlot(job *renderJob) error {
 		}
 	}
 	st.activeJobID = job.id
+	st.activeSessionID = sessionID
 	st.jobs[job.id] = job
 	st.jobRing = append(st.jobRing, job.id)
 
@@ -276,6 +281,7 @@ func (st *jobStore) releaseActive(jobID string) {
 	defer st.mu.Unlock()
 	if st.activeJobID == jobID {
 		st.activeJobID = ""
+		st.activeSessionID = ""
 	}
 }
 

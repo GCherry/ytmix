@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -228,6 +229,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePreviewBG(w http.ResponseWriter, r *http.Request) {
+	if err := requireSameOrigin(r); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
 	if !s.localPathsAllowed(r) {
 		writeError(w, http.StatusForbidden, "local Background Visual preview is disabled on non-loopback or --host 0.0.0.0 sessions")
 		return
@@ -260,9 +265,17 @@ func (s *Server) handlePreviewBG(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
-	ct := strings.ToLower(r.Header.Get("Content-Type"))
+	if err := requireSameOrigin(r); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	ct := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
 	if strings.HasPrefix(ct, "multipart/form-data") {
 		s.handleProbeMultipart(w, r)
+		return
+	}
+	if !strings.HasPrefix(ct, "application/json") {
+		writeError(w, http.StatusUnsupportedMediaType, "Content-Type must be multipart/form-data or application/json")
 		return
 	}
 	s.handleProbeLocal(w, r)
@@ -313,7 +326,7 @@ func (s *Server) handleProbeMultipart(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		safeName := sanitizeUploadFilename(rawName)
+		safeName := sanitizeBaseName(rawName, "upload.bin")
 		if !strings.EqualFold(filepath.Ext(safeName), ".mp3") {
 			_ = part.Close()
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported Track extension %q for %q (expected .mp3)", filepath.Ext(safeName), safeName))
@@ -419,7 +432,11 @@ func (s *Server) saveSession(source, tempDir string, tracks []mixer.Track) (stri
 
 func (s *Server) buildProbeResponse(sessID, source string) probeResponse {
 	s.store.mu.Lock()
-	sess := s.store.sessions[sessID]
+	defer s.store.mu.Unlock()
+	sess, ok := s.store.sessions[sessID]
+	if !ok {
+		return probeResponse{SessionID: sessID, Source: source}
+	}
 	dtos := make([]trackDTO, 0, len(sess.order))
 	for _, tid := range sess.order {
 		tr := sess.tracks[tid]
@@ -430,7 +447,6 @@ func (s *Server) buildProbeResponse(sessID, source string) probeResponse {
 			Duration:     tr.Duration,
 		})
 	}
-	s.store.mu.Unlock()
 	return probeResponse{
 		SessionID: sessID,
 		Source:    source,
@@ -439,6 +455,10 @@ func (s *Server) buildProbeResponse(sessID, source string) probeResponse {
 }
 
 func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
+	if err := requireSameOrigin(r); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
 	jobDir, err := os.MkdirTemp("", "ytmix-ui-job-*")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("create job workspace: %v", err))
@@ -485,8 +505,8 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	outName := sanitizeArtifactName(req.Out, "output.mp4")
-	tsName := sanitizeArtifactName(req.Timestamps, "timestamps.txt")
+	outName := sanitizeBaseName(req.Out, "output.mp4")
+	tsName := sanitizeBaseName(req.Timestamps, "timestamps.txt")
 	outPath := filepath.Join(jobDir, outName)
 	tsPath := filepath.Join(jobDir, tsName)
 	if localAllowed {
@@ -544,7 +564,7 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 
 	jobCtx, jobCancel := context.WithCancel(s.baseCtx)
 	job := newRenderJob(jobID, jobDir, outPath, filepath.Base(outPath), tsPath, filepath.Base(tsPath), string(pathKind), jobCancel)
-	if err := s.store.claimRenderSlot(job); err != nil {
+	if err := s.store.claimRenderSlot(job, req.SessionID); err != nil {
 		jobCancel()
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -562,8 +582,11 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) parseRenderRequest(w http.ResponseWriter, r *http.Request, jobDir string) (renderConfigRequest, string, int, error) {
 	var req renderConfigRequest
-	ct := strings.ToLower(r.Header.Get("Content-Type"))
+	ct := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
 	if !strings.HasPrefix(ct, "multipart/form-data") {
+		if !strings.HasPrefix(ct, "application/json") {
+			return req, "", http.StatusUnsupportedMediaType, errors.New("Content-Type must be multipart/form-data or application/json")
+		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
 			return req, "", http.StatusBadRequest, fmt.Errorf("invalid JSON body: %w", err)
 		}
@@ -603,7 +626,7 @@ func (s *Server) parseRenderRequest(w http.ResponseWriter, r *http.Request, jobD
 			}
 			hasConfig = true
 		case "bg":
-			safeName := sanitizeUploadFilename(part.FileName())
+			safeName := sanitizeBaseName(part.FileName(), "upload.bin")
 			if !mixer.IsSupportedBackgroundExt(filepath.Ext(safeName)) {
 				_ = part.Close()
 				return req, "", http.StatusBadRequest, fmt.Errorf("unsupported Background Visual extension %q (supported: .jpg, .jpeg, .png, .webp, .mp4, .mov, .gif)", filepath.Ext(safeName))
@@ -767,6 +790,21 @@ func (s *Server) serveJobArtifact(w http.ResponseWriter, r *http.Request, isOutp
 	http.ServeContent(w, r, fileName, info.ModTime(), f)
 }
 
+func requireSameOrigin(r *http.Request) error {
+	if sfs := strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")); sfs != "" {
+		if !strings.EqualFold(sfs, "same-origin") && !strings.EqualFold(sfs, "none") {
+			return fmt.Errorf("cross-origin request blocked (Sec-Fetch-Site=%q)", sfs)
+		}
+	}
+	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
+		parsed, err := url.Parse(origin)
+		if err != nil || parsed.Host == "" || !strings.EqualFold(parsed.Host, r.Host) {
+			return fmt.Errorf("cross-origin request blocked (Origin=%q)", origin)
+		}
+	}
+	return nil
+}
+
 func (s *Server) localPathsAllowed(r *http.Request) bool {
 	return isLoopbackHost(s.cfg.Host) && isLoopbackRemoteAddr(r.RemoteAddr)
 }
@@ -797,26 +835,10 @@ func extractEncoderName(args []string) string {
 	return "libx264"
 }
 
-func sanitizeUploadFilename(raw string) string {
-	cleaned := strings.ReplaceAll(raw, `\`, "/")
-	base := filepath.Base(cleaned)
-	base = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == '/' || r == '\\' || r == ':' || r == '"' {
-			return '_'
-		}
-		return r
-	}, base)
-	base = strings.TrimSpace(base)
-	if base == "" || base == "." || base == ".." {
-		return "upload.bin"
-	}
-	return base
-}
-
-func sanitizeArtifactName(raw, fallback string) string {
+func sanitizeBaseName(raw, fallback string) string {
 	cleaned := strings.ReplaceAll(strings.TrimSpace(raw), `\`, "/")
 	base := filepath.Base(cleaned)
-	base = sanitizeHeaderFilename(base)
+	base = strings.TrimSpace(sanitizeHeaderFilename(strings.ReplaceAll(base, ":", "_")))
 	if base == "" || base == "." || base == ".." {
 		return fallback
 	}
