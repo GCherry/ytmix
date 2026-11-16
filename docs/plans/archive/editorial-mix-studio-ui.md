@@ -12,11 +12,11 @@ status; write **Phase Summary**; record **Verification Plan** results. When all
 phases are done, fill **Final Recap** and **Deployment Plan**, then archive this
 file to `docs/plans/archive/editorial-mix-studio-ui.md` per the `real-work` skill (Section 3).
 
-**Repo:** `ytmix` (`D:\CodingWorkspace\ytmix\ytmix`) — read [`AGENTS.md`](../../AGENTS.md) before building or testing.
+**Repo:** `ytmix` (`D:\CodingWorkspace\ytmix\ytmix`) — read [`AGENTS.md`](../../../AGENTS.md) before building or testing.
 
 **Branch:** `feature/editorial-mix-studio-ui` off `main` (`Closes #5`).
 
-**Domain docs:** [`GLOSSARY.md`](../../GLOSSARY.md), [`docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md), [`docs/specs/ytmix_technical_specification.md`](../specs/ytmix_technical_specification.md).
+**Domain docs:** [`GLOSSARY.md`](../../../GLOSSARY.md), [`docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../../adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md), [`docs/adr/0002-embedded-http-ui-and-sse-telemetry.md`](../../adr/0002-embedded-http-ui-and-sse-telemetry.md), [`docs/specs/ytmix_technical_specification.md`](../../specs/ytmix_technical_specification.md).
 
 **Related skills:** `coordinator`, `real-work`, `tdd`, `code-review`, `diagnosing-bugs`.
 
@@ -228,7 +228,7 @@ Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 - [x] Run full Go verification suite: `gofmt -l cmd internal` (clean), `go vet ./...`, `go build ./...`, `GOOS=darwin go build ./...`, `go test -v -skip '^TestE2EPipeline$' ./...`, and `go test -count=1 -v -run TestE2EPipeline ./internal/mixer`
 - [x] Run live synthetic `ytmix ui` E2E verification against `ffmpeg`/`ffprobe` (`ytmix.exe ui --port 0 --no-open`: probed synthetic `01_Alpha.mp3` + `02_Beta.mp3`, rendered reversed `[Beta, Alpha]` with `crossfade=1.0`, `overlayTitles=true`, `cover.png` via `Path C`, verified SSE `[1/5]`–`[5/5]` + `complete`, asserted `1920x1080` `h264` + `aac` `6.000000s` via `ffprobe` and `00:00 Beta` / `00:03 Alpha` in `timestamps.txt`, cleaned up temp dir)
 - [x] Update `README.md` with `ytmix ui` subcommand, flags (`--host`, `--port`, `--no-open`, `--audio-dir`, `--bg`), and LAN/mobile upload usage; add `docs/adr/0002-embedded-http-ui-and-sse-telemetry.md`
-- [ ] Run independent `Reviewer` (`code-review`), `Planner` `Acceptance Check`, and `Release` (`pre-merge`, archiving this plan to `docs/plans/archive/editorial-mix-studio-ui.md` in final PR commit)
+- [x] Run independent `Reviewer` (`code-review`, Round 2 clean: 0 blocking findings), `Planner` `Acceptance Check` (`PASS`), and `Release` (`pre-merge`, archived to `docs/plans/archive/editorial-mix-studio-ui.md` in final PR commit)
 
 #### Verification Plan
 
