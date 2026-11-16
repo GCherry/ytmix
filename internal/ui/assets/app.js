@@ -386,6 +386,7 @@
     } else if (info.kind === "video") {
       empty.hidden = true;
       img.hidden = true;
+      img.removeAttribute("src");
       delete img.dataset.currentSrc;
       if (vid.getAttribute("src") !== src) {
         vid.src = src;

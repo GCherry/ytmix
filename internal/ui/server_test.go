@@ -135,7 +135,7 @@ func TestStaticAssetsAndHealth(t *testing.T) {
 		wantBody string
 	}{
 		{"/", "text/html", "Editorial Mix Studio"},
-		{"/styles.css", "text/css", "#060707"},
+		{"/styles.css", "text/css", "[hidden]"},
 		{"/app.js", "javascript", "/api/render"},
 	} {
 		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
