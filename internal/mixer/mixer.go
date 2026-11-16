@@ -1,9 +1,8 @@
-package main
+package mixer
 
 import (
 	"bytes"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"math"
@@ -12,7 +11,20 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/GCherry/ytmix/internal/audio"
+	"github.com/GCherry/ytmix/internal/probe"
+	"github.com/GCherry/ytmix/internal/subtitle"
 )
+
+// Track represents a single discovered .mp3 audio file, its probed duration in seconds,
+// and its resolved Display Title.
+type Track struct {
+	Path         string
+	FileName     string
+	Duration     float64
+	DisplayTitle string
+}
 
 // Config holds the parsed CLI flags for a ytmix Mix build.
 type Config struct {
@@ -31,7 +43,8 @@ type Config struct {
 // CommandRunner executes an external binary and returns stdout or an error containing stderr.
 type CommandRunner func(name string, args ...string) ([]byte, error)
 
-func execCommandRunner(name string, args ...string) ([]byte, error) {
+// ExecCommandRunner invokes an external binary via os/exec and includes stderr in returned errors.
+func ExecCommandRunner(name string, args ...string) ([]byte, error) {
 	cmd := exec.Command(name, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -46,33 +59,8 @@ func execCommandRunner(name string, args ...string) ([]byte, error) {
 	return stdout.Bytes(), nil
 }
 
-func newFlagSet(cfg *Config, output io.Writer) *flag.FlagSet {
-	fs := flag.NewFlagSet("ytmix", flag.ContinueOnError)
-	fs.SetOutput(output)
-
-	fs.StringVar(&cfg.AudioDir, "audio-dir", "./tracks", "Directory containing input .mp3 files.")
-	fs.StringVar(&cfg.BG, "bg", "", "Path to Background Visual (.jpg, .jpeg, .png, .webp, .mp4, .mov, .gif).")
-	fs.StringVar(&cfg.Out, "out", "output.mp4", "Output .mp4 video path.")
-	fs.StringVar(&cfg.Timestamps, "timestamps", "timestamps.txt", "Output file path for YouTube Chapter Timestamps.")
-	fs.Float64Var(&cfg.Crossfade, "crossfade", 0, "Crossfade duration in seconds between Tracks.")
-	fs.BoolVar(&cfg.Normalize, "normalize", false, "Normalize each Track to -14 LUFS.")
-	fs.BoolVar(&cfg.OverlayTitles, "overlay-titles", false, "Burn Display Titles into the bottom-left corner via .ass subtitles.")
-	fs.IntVar(&cfg.TitleDuration, "title-duration", 0, "Seconds to display each Display Title (0 = full Track).")
-	fs.StringVar(&cfg.FontName, "font-name", "Arial", "Font family name used in the .ass subtitle script.")
-	fs.BoolVar(&cfg.Shuffle, "shuffle", false, "Randomize Track order instead of sorting alphabetically.")
-	return fs
-}
-
-func parseFlags(args []string) (Config, error) {
-	var cfg Config
-	fs := newFlagSet(&cfg, io.Discard)
-	if err := fs.Parse(args); err != nil {
-		return Config{}, err
-	}
-	return cfg, nil
-}
-
-func isSupportedBackgroundExt(ext string) bool {
+// IsSupportedBackgroundExt reports whether ext is a supported Background Visual extension.
+func IsSupportedBackgroundExt(ext string) bool {
 	switch strings.ToLower(ext) {
 	case ".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".gif":
 		return true
@@ -81,11 +69,12 @@ func isSupportedBackgroundExt(ext string) bool {
 	}
 }
 
-func validateConfig(cfg Config, lookPath func(string) (string, error)) error {
+// ValidateConfig validates CLI configuration and checks ffmpeg/ffprobe availability.
+func ValidateConfig(cfg Config, lookPath func(string) (string, error)) error {
 	if strings.TrimSpace(cfg.BG) == "" {
 		return errors.New("--bg is required (supported: .jpg, .jpeg, .png, .webp, .mp4, .mov, .gif)")
 	}
-	if !isSupportedBackgroundExt(filepath.Ext(cfg.BG)) {
+	if !IsSupportedBackgroundExt(filepath.Ext(cfg.BG)) {
 		return fmt.Errorf("unsupported Background Visual extension %q (supported: .jpg, .jpeg, .png, .webp, .mp4, .mov, .gif)", filepath.Ext(cfg.BG))
 	}
 	if math.IsNaN(cfg.Crossfade) || math.IsInf(cfg.Crossfade, 0) || cfg.Crossfade < 0 {
@@ -102,26 +91,33 @@ func validateConfig(cfg Config, lookPath func(string) (string, error)) error {
 	return nil
 }
 
-func main() {
-	cfg, err := parseFlags(os.Args[1:])
+// ProbeTracks discovers .mp3 files in audioDir and probes each Track's duration and Display Title.
+func ProbeTracks(audioDir string, shuffle bool, shuffleFn func(n int, swap func(i, j int)), runner CommandRunner) ([]Track, error) {
+	files, err := probe.DiscoverAudioFiles(audioDir, shuffle, shuffleFn)
 	if err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fs := newFlagSet(&Config{}, os.Stderr)
-			fs.Usage()
-			os.Exit(0)
+		return nil, err
+	}
+
+	tracks := make([]Track, 0, len(files))
+	for _, path := range files {
+		dur, id3Title, err := probe.ProbeFile(path, runner)
+		if err != nil {
+			return nil, err
 		}
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(2)
+		tracks = append(tracks, Track{
+			Path:         path,
+			FileName:     filepath.Base(path),
+			Duration:     dur,
+			DisplayTitle: probe.ResolveDisplayTitle(id3Title, path),
+		})
 	}
-	if err := run(cfg, os.Stdout, exec.LookPath, execCommandRunner); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
+	return tracks, nil
 }
 
-func run(cfg Config, stdout io.Writer, lookPath func(string) (string, error), runner CommandRunner) error {
+// Run executes the ytmix Mix pipeline.
+func Run(cfg Config, stdout io.Writer, lookPath func(string) (string, error), runner CommandRunner) error {
 	start := time.Now()
-	if err := validateConfig(cfg, lookPath); err != nil {
+	if err := ValidateConfig(cfg, lookPath); err != nil {
 		return err
 	}
 	bgInfo, err := os.Stat(cfg.BG)
@@ -139,20 +135,38 @@ func run(cfg Config, stdout io.Writer, lookPath func(string) (string, error), ru
 	defer os.RemoveAll(tempDir)
 
 	fmt.Fprintf(stdout, "[1/5] Probing Tracks in %s...\n", cfg.AudioDir)
-	tracks, err := probeTracks(cfg.AudioDir, cfg.Shuffle, nil, runner)
+	tracks, err := ProbeTracks(cfg.AudioDir, cfg.Shuffle, nil, runner)
 	if err != nil {
 		return err
 	}
 
+	paths := make([]string, len(tracks))
+	fileNames := make([]string, len(tracks))
+	durations := make([]float64, len(tracks))
+	for i, tr := range tracks {
+		paths[i] = tr.Path
+		fileNames[i] = tr.FileName
+		durations[i] = tr.Duration
+	}
+
 	fmt.Fprintf(stdout, "[2/5] Processing & merging %d Track(s) (normalize=%v, crossfade=%.2fs)...\n", len(tracks), cfg.Normalize, cfg.Crossfade)
-	mergedAudioPath, tracks, err := processAndMergeAudio(tracks, tempDir, cfg.Normalize, cfg.Crossfade, runner)
+	mergedAudioPath, updatedPaths, updatedDurations, err := audio.ProcessAndMerge(paths, fileNames, durations, tempDir, cfg.Normalize, cfg.Crossfade, runner)
 	if err != nil {
 		return err
 	}
 	_ = mergedAudioPath
+	for i := range tracks {
+		tracks[i].Path = updatedPaths[i]
+		tracks[i].Duration = updatedDurations[i]
+	}
+
+	titles := make([]string, len(tracks))
+	for i, tr := range tracks {
+		titles[i] = tr.DisplayTitle
+	}
 
 	fmt.Fprintf(stdout, "[3/5] Writing Chapter Timestamps to %s...\n", cfg.Timestamps)
-	sched, err := writeChapters(cfg.Timestamps, tracks, cfg.Crossfade)
+	sched, err := subtitle.WriteChapters(cfg.Timestamps, titles, updatedDurations, cfg.Crossfade)
 	if err != nil {
 		return err
 	}

@@ -1,6 +1,6 @@
 # ytmix CLI Implementation Plan
 
-**Origin:** Nov 15, 2026 — User request to plan the architecture and implementation of [`spec docs/ytmix_technical_specification.md`](../spec%20docs/ytmix_technical_specification.md) using a simple, zero-over-engineering Go layout.
+**Origin:** Nov 15, 2026 — User request to plan the architecture and implementation of [`docs/specs/ytmix_technical_specification.md`](../specs/ytmix_technical_specification.md) using a clean, zero-dependency Go CLI layout.
 
 Implement `ytmix`, a zero-dependency Go (`1.22+`) CLI that compiles a directory of `.mp3` Tracks and a Background Visual (`.jpg`/`.jpeg`/`.png`/`.webp`/`.mp4`/`.mov`/`.gif`) into a 1080p YouTube `.mp4` Mix and a `timestamps.txt` Chapter Timestamps file across three smart FFmpeg Rendering Paths.
 
@@ -12,28 +12,40 @@ status; write **Phase Summary**; record **Verification Plan** results. When all
 phases are done, fill **Final Recap** and **Deployment Plan**, then archive this
 file per the real-work skill (Section 3).
 
-**Repo:** `ytmix` (`D:\CodingWorkspace\ytmix\ytmix`) — read its [`AGENTS.md`](../AGENTS.md) before building or testing.
+**Repo:** `ytmix` (`D:\CodingWorkspace\ytmix\ytmix`) — read its [`AGENTS.md`](../../AGENTS.md) before building or testing.
 
 **Branch:** `feature/ytmix-cli` off `main` (or `main` directly if preferred for initial scaffold).
 
-**Domain docs:** [`GLOSSARY.md`](../GLOSSARY.md), [`docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md)
+**Domain docs:** [`GLOSSARY.md`](../../GLOSSARY.md), [`docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md)
 
 **Related skills:** `tdd` (verification), `code-review` (post-build review)
 
-## Architecture Overview (Simple Flat `package main`)
+## Architecture Overview (Standard Go CLI Layout)
 
-To avoid unnecessary abstraction layers or over-engineering, the entire CLI lives in a single flat `package main` at the repository root (`github.com/GCherry/ytmix`), split into focused files by pipeline stage:
+The CLI follows a standard Go `cmd/` + `internal/` layout with zero external dependencies, acyclic package boundaries (`cmd/ytmix` -> `internal/mixer` -> `internal/{audio,probe,subtitle,render}`, with `internal/audio` -> `internal/probe`), and co-located unit tests:
 
 ```text
 ytmix/
-├── go.mod                  # module github.com/GCherry/ytmix (Go 1.22+, zero external deps)
-├── main.go                 # CLI flag parsing, validation, tempDir lifecycle, [1/5]..[5/5] progress & orchestration
-├── probe.go                # Step 1: .mp3 discovery, sort/shuffle, ffprobe JSON duration + ID3 title/filename parser
-├── audio.go                # Step 2: Optional loudnorm (-14 LUFS to .wav) + re-probe, concat demuxer or acrossfade merge
-├── chapters.go             # Step 3: Cumulative start-time math & timestamps.txt writer (MM:SS / HH:MM:SS)
-├── subtitles.go            # Step 4: Dynamic .ass subtitle generator (1920x1080, bottom-left, \fad(500,500))
-├── video.go                # Step 5: Runtime HW encoder detection + Path A / Path B / Path C FFmpeg execution
-└── ytmix_test.go           # Unit tests for pure logic + Section 5 synthetic FFmpeg E2E verification suite
+├── go.mod                          # module github.com/GCherry/ytmix (Go 1.22+, zero external deps)
+├── cmd/ytmix/
+│   ├── main.go                     # CLI flag parsing, top-level execution & exit codes
+│   └── main_test.go                # Flag parsing unit tests
+└── internal/
+    ├── mixer/
+    │   ├── mixer.go                # Core domain types (Track, Config, CommandRunner), validation & pipeline orchestration
+    │   └── mixer_test.go           # Config validation, ProbeTracks & pipeline orchestration unit tests
+    ├── probe/
+    │   ├── ffprobe.go              # Step 1: .mp3 discovery, sort/shuffle, ffprobe JSON duration + ID3 title/filename parser
+    │   └── ffprobe_test.go         # Discovery, Display Title & ffprobe JSON unit tests
+    ├── audio/
+    │   ├── audio.go                # Step 2: Optional loudnorm (-14 LUFS to .wav) + re-probe, concat demuxer or acrossfade merge
+    │   └── audio_test.go           # Concat escaping, acrossfade filter, normalization & merge unit tests
+    ├── subtitle/
+    │   ├── chapters.go             # Step 3: Cumulative start-time math & timestamps.txt writer (MM:SS / HH:MM:SS)
+    │   ├── chapters_test.go        # Chapter start-time & MM:SS/HH:MM:SS boundary unit tests
+    │   └── subtitles.go            # Step 4 (Phase 2): Dynamic .ass subtitle generator (1920x1080, bottom-left, \fad(500,500))
+    └── render/
+        └── render.go               # Step 5 (Phase 2): Runtime HW encoder detection + Path A / Path B / Path C FFmpeg execution
 ```
 
 ## Open Questions
@@ -61,8 +73,8 @@ ytmix/
 | Topic | Decision |
 |-------|----------|
 | Language & Dependencies | Go `1.22+` standard library only (`os/exec`, `flag`, `path/filepath`, `runtime`, `fmt`, `strings`, `math/rand/v2` or `math/rand`, `encoding/json`, `regexp`, `os`); zero external Go module dependencies. |
-| Package Layout | Single flat `package main` at repo root (`main.go`, `probe.go`, `audio.go`, `chapters.go`, `subtitles.go`, `video.go`, `ytmix_test.go`) — no unnecessary nested packages. |
-| Temp Workspace Lifecycle | Create `os.MkdirTemp("", "ytmix-*")` in `main.go` and guarantee cleanup on all exit paths via `defer os.RemoveAll(tempDir)`. |
+| Package Layout | Standard Go CLI layout: `cmd/ytmix` entrypoint + domain packages under `internal/` (`mixer`, `probe`, `audio`, `subtitle`, `render`) with co-located `*_test.go` files and no unnecessary interfaces or `pkg/`/`utils/` bloat. |
+| Temp Workspace Lifecycle | Create `os.MkdirTemp("", "ytmix-*")` in `internal/mixer/mixer.go` and guarantee cleanup on all exit paths via `defer os.RemoveAll(tempDir)`. |
 | CLI Flags & Display Title Precedence | Strictly implement the 10 flags from Spec Section 3. Use trimmed ID3 `title` when non-empty; otherwise strip `.mp3` and leading numbering (`^\d+[\s._-]+`) from the filename. |
 | Loudness Normalization Format | When `--normalize` is enabled, transcode each Track to temporary uncompressed `.wav` (`-c:a pcm_s16le -ar 48000 -af "loudnorm=I=-14:TP=-1.5:LRA=11"`) in `tempDir` and re-probe duration before merging once to AAC (`merged_audio.m4a`). |
 | Stream Mapping | Always pass `-map 0:v:0 -map 1:a:0` on final video mux/encode commands so any audio embedded in `--bg` is stripped. |
@@ -105,11 +117,11 @@ ytmix Architecture & Pipeline Design Tree
 
 | # | Class | Rec | Where applied |
 |---|-------|-----|---------------|
-| G1 | Critical | Escape Windows paths passed to FFmpeg `subtitles=` filter (`\` → `/`, `:` → `\:`, `'` → `\'`) so `C:\...` drive colons do not break `libass` option parsing on Windows. | Decisions / Phase 2 (`subtitles.go`, `video.go`) |
-| G2 | Critical | Normalize paths to forward slashes and escape single quotes (`'\''`) in `concat_list.txt` so Windows paths and apostrophes in filenames do not break FFmpeg concat demuxer. | Decisions / Phase 1 (`audio.go`) |
-| G3 | Critical | Guard `--crossfade`: reject negative values or `--crossfade >= minTrackDuration`, and bypass `acrossfade` when `len(tracks) == 1`. | Decisions / Phase 1 (`audio.go`) |
-| G4 | Critical | Probe `h264_nvenc` / `h264_videotoolbox` with a 1-frame null encode rather than relying only on `ffmpeg -encoders` text listing, preventing runtime crashes when GPU hardware/drivers are unavailable. | Decisions / Phase 2 (`video.go`) |
-| G5 | Low-risk | Include `setsar=1` in all 3 Rendering Paths (matching Spec Section 5) and sanitize `{`, `}`, and `\` in Display Titles when writing `titles.ass`. | Decisions / Phase 2 (`subtitles.go`, `video.go`) |
+| G1 | Critical | Escape Windows paths passed to FFmpeg `subtitles=` filter (`\` → `/`, `:` → `\:`, `'` → `\'`) so `C:\...` drive colons do not break `libass` option parsing on Windows. | Decisions / Phase 2 (`internal/subtitle`, `internal/render`) |
+| G2 | Critical | Normalize paths to forward slashes and escape single quotes (`'\''`) in `concat_list.txt` so Windows paths and apostrophes in filenames do not break FFmpeg concat demuxer. | Decisions / Phase 1 (`internal/audio`) |
+| G3 | Critical | Guard `--crossfade`: reject negative values or `--crossfade >= minTrackDuration`, and bypass `acrossfade` when `len(tracks) == 1`. | Decisions / Phase 1 (`internal/audio`) |
+| G4 | Critical | Probe `h264_nvenc` / `h264_videotoolbox` with a 1-frame null encode rather than relying only on `ffmpeg -encoders` text listing, preventing runtime crashes when GPU hardware/drivers are unavailable. | Decisions / Phase 2 (`internal/render`) |
+| G5 | Low-risk | Include `setsar=1` in all 3 Rendering Paths (matching Spec Section 5) and sanitize `{`, `}`, and `\` in Display Titles when writing `titles.ass`. | Decisions / Phase 2 (`internal/subtitle`, `internal/render`) |
 
 ### Remaining (Other → Open Questions)
 
@@ -124,15 +136,15 @@ All 4 `Other` frontier questions (`G-O1` through `G-O4`) were asked and resolved
 Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 **Triggered by:** Agent (Planner) — Nov 15, 2026 09:22:00 PM EST
 
-- [x] Create [`AGENTS.md`](../AGENTS.md) with build, test, verification, and architectural conventions.
-- [x] Create [`GLOSSARY.md`](../GLOSSARY.md) and [`docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md).
-- [x] Update [`README.md`](../README.md) with prerequisites, build instructions, CLI flag reference, usage examples, and links to the spec docs.
-- [x] Author this `real-work` plan (`plans/ytmix-cli-implementation.md`) and run the `grill-with-docs` pass.
+- [x] Create [`AGENTS.md`](../../AGENTS.md) with build, test, verification, and architectural conventions.
+- [x] Create [`GLOSSARY.md`](../../GLOSSARY.md) and [`docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md).
+- [x] Update [`README.md`](../../README.md) with prerequisites, build instructions, CLI flag reference, usage examples, and links to the spec docs.
+- [x] Author this `real-work` plan (`plans/ytmix-cli-implementation.md`, later moved to `docs/plans/ytmix-cli-implementation.md`) and run the `grill-with-docs` pass.
 - [x] Resolve Open Questions #1–#4 with the user and obtain Wave 0 sign-off before starting Wave 1.
 
 #### Verification Plan
 
-- Verified [`AGENTS.md`](../AGENTS.md), [`GLOSSARY.md`](../GLOSSARY.md), [`docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md), [`README.md`](../README.md), and [`plans/ytmix-cli-implementation.md`](ytmix-cli-implementation.md) exist and honor canonical `GLOSSARY.md` terms without `_Avoid_` synonyms.
+- Verified [`AGENTS.md`](../../AGENTS.md), [`GLOSSARY.md`](../../GLOSSARY.md), [`docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md), [`README.md`](../../README.md), and [`docs/plans/ytmix-cli-implementation.md`](ytmix-cli-implementation.md) exist and honor canonical `GLOSSARY.md` terms without `_Avoid_` synonyms.
 - Confirmed user answers to Open Questions #1–#4 (`G-O1`–`G-O4`) are locked in **Decisions (confirmed)** and **Resolved**.
 
 #### Phase Summary
@@ -179,15 +191,15 @@ Completed Nov 16, 2026 11:16:37 AM EST by Subagent (Engineering) on branch `feat
 Status: Not Started <!-- Not Started | In Progress | Complete | Abandoned -->
 **Triggered by:** Pending Wave 1 completion — Nov 15, 2026 09:25:33 PM EST
 
-- [ ] Implement `subtitles.go` (Step 4): generate `tempDir/titles.ass` (`PlayResX: 1920`, `PlayResY: 1080`, `Alignment=1`, `MarginL=60`, `MarginV=55`, `Fontsize=42`, `--font-name`, white primary color with dark outline/shadow), computing each Track's end time as $\min(T_i + \text{TitleDuration}, T_{i+1})$ when `--title-duration > 0` or $T_{i+1}$ when `0` (where $T_N$ is total Mix duration), with `{\fad(500,500)}♪ <Display Title>` and escaped `{`, `}`, `\`.
-- [ ] Implement `video.go` (Step 5):
+- [ ] Implement `internal/subtitle/subtitles.go` (Step 4): generate `tempDir/titles.ass` (`PlayResX: 1920`, `PlayResY: 1080`, `Alignment=1`, `MarginL=60`, `MarginV=55`, `Fontsize=42`, `--font-name`, white primary color with dark outline/shadow), computing each Track's end time as $\min(T_i + \text{TitleDuration}, T_{i+1})$ when `--title-duration > 0` or $T_{i+1}$ when `0` (where $T_N$ is total Mix duration), with `{\fad(500,500)}♪ <Display Title>` and escaped `{`, `}`, `\`.
+- [ ] Implement `internal/render/render.go` (Step 5) and wire Steps 4–5 into `internal/mixer/mixer.go`:
   - Implement runtime hardware encoder detection (`darwin` → test `h264_videotoolbox -b:v 6000k`; `windows`/`linux` → test `h264_nvenc -preset p4 -cq 20` or `-b:v 6000k`; fallback → `libx264 -preset veryfast -crf 20`).
-  - Implement `escapeFFmpegFilterPath` (`\` → `/`, `:` → `\:`, `'` → `\'`) for `subtitles='...'`.
+  - Implement `EscapeFFmpegFilterPath` (`\` → `/`, `:` → `\:`, `'` → `\'`) for `subtitles='...'`.
   - Implement **Path A** (`.mp4`/`.mov`/`.gif` + `--overlay-titles=false`): pre-normalize loop to `tempDir/norm_loop.mp4` (`1920x1080`, `setsar=1`, `fps=30`, `yuv420p`, `libx264 -preset fast -crf 18 -an`), then mux with `-stream_loop -1 -i norm_loop.mp4 -i merged_audio.m4a -map 0:v:0 -map 1:a:0 -c:v copy -c:a copy -shortest <out>`.
   - Implement **Path B** (`.mp4`/`.mov`/`.gif` + `--overlay-titles=true`): encode with `-stream_loop -1`, `scale/pad/setsar=1,subtitles='...',format=yuv420p`, `-map 0:v:0 -map 1:a:0`, detected HW/SW encoder, `-c:a copy -shortest <out>`.
   - Implement **Path C** (`.jpg`/`.jpeg`/`.png`/`.webp`): encode with `-loop 1 -framerate 2` (or `10` when `--overlay-titles=true`), `scale/pad/setsar=1[,subtitles='...'],format=yuv420p`, `-map 0:v:0 -map 1:a:0 -c:v libx264 -tune stillimage -preset veryfast -crf 18 -c:a copy -shortest <out>`.
-- [ ] Add unit tests in `ytmix_test.go` for `.ass` timestamp formatting (`H:MM:SS.cc`), `--title-duration` clamping at `0` and `>0`, `--font-name` injection, Windows filter path escaping, and Rendering Path selection.
-- [ ] Implement and execute the Section 5 Automated E2E Verification Suite (`TestE2EPipeline` in `ytmix_test.go` or verification run):
+- [ ] Add co-located unit tests in `internal/subtitle/subtitles_test.go` and `internal/render/render_test.go` for `.ass` timestamp formatting (`H:MM:SS.cc`), `--title-duration` clamping at `0` and `>0`, `--font-name` injection, Windows filter path escaping, and Rendering Path selection.
+- [ ] Implement and execute the Section 5 Automated E2E Verification Suite (`TestE2EPipeline` in `internal/mixer/e2e_test.go` or verification run):
   - Generate synthetic `test_assets/` (two 4s `.mp3` sine tracks at different volumes, one 2s `1280x720` 30fps `.mp4` loop, one `.png` image).
   - Run **Test 1 (Path A):** Video loop, no overlays, `--crossfade 1` → assert `1920x1080`, `h264` + `aac`, duration $\approx 7.0\text{s}$, valid `timestamps.txt`.
   - Run **Test 2 (Path B):** Video loop, `--overlay-titles`, `--normalize` → assert `1920x1080`, `h264` + `aac`, duration $\approx 8.0\text{s}$, valid `timestamps.txt`.
@@ -196,7 +208,7 @@ Status: Not Started <!-- Not Started | In Progress | Complete | Abandoned -->
 
 #### Verification Plan
 
-- Run `go build -o ytmix.exe .`, `go vet ./...`, and `go test -v ./...` (including `TestE2EPipeline` across Path A, Path B, and Path C).
+- Run `go build -o ytmix.exe ./cmd/ytmix`, `go vet ./...`, and `go test -v ./...` (including `TestE2EPipeline` across Path A, Path B, and Path C).
 - Verify all 3 E2E test outputs pass `ffprobe` stream, resolution (`1920x1080`), codec (`h264`/`aac`), duration (`7.0s` / `8.0s`), and `timestamps.txt` assertions, and verify `test_assets/` and `ytmix.exe` test artifacts are cleaned up afterward.
 
 #### Phase Summary

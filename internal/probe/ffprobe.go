@@ -1,4 +1,4 @@
-package main
+package probe
 
 import (
 	"encoding/json"
@@ -12,15 +12,6 @@ import (
 	"strings"
 )
 
-// Track represents a single discovered .mp3 audio file, its probed duration in seconds,
-// and its resolved Display Title.
-type Track struct {
-	Path         string
-	FileName     string
-	Duration     float64
-	DisplayTitle string
-}
-
 type ffprobeOutput struct {
 	Format struct {
 		Duration string            `json:"duration"`
@@ -30,7 +21,9 @@ type ffprobeOutput struct {
 
 var leadingNumberPattern = regexp.MustCompile(`^\d+[\s._-]+`)
 
-func discoverAudioFiles(audioDir string, shuffle bool, shuffleFn func(n int, swap func(i, j int))) ([]string, error) {
+// DiscoverAudioFiles scans audioDir for .mp3 files (case-insensitively), sorts them
+// alphabetically by filename, and optionally shuffles them.
+func DiscoverAudioFiles(audioDir string, shuffle bool, shuffleFn func(n int, swap func(i, j int))) ([]string, error) {
 	entries, err := os.ReadDir(audioDir)
 	if err != nil {
 		return nil, fmt.Errorf("read audio directory %q: %w", audioDir, err)
@@ -66,7 +59,8 @@ func discoverAudioFiles(audioDir string, shuffle bool, shuffleFn func(n int, swa
 	return files, nil
 }
 
-func resolveDisplayTitle(id3Title, filename string) string {
+// ResolveDisplayTitle returns the trimmed ID3 title if non-empty, otherwise cleans the filename.
+func ResolveDisplayTitle(id3Title, filename string) string {
 	if trimmed := strings.TrimSpace(id3Title); trimmed != "" {
 		return trimmed
 	}
@@ -82,7 +76,8 @@ func resolveDisplayTitle(id3Title, filename string) string {
 	return cleaned
 }
 
-func probeFile(path string, runner CommandRunner) (duration float64, id3Title string, err error) {
+// ProbeFile runs ffprobe on path and extracts its duration in seconds and ID3 title tag.
+func ProbeFile(path string, runner func(name string, args ...string) ([]byte, error)) (duration float64, id3Title string, err error) {
 	out, err := runner(
 		"ffprobe",
 		"-v", "error",
@@ -113,26 +108,4 @@ func probeFile(path string, runner CommandRunner) (duration float64, id3Title st
 	}
 
 	return dur, id3Title, nil
-}
-
-func probeTracks(audioDir string, shuffle bool, shuffleFn func(n int, swap func(i, j int)), runner CommandRunner) ([]Track, error) {
-	files, err := discoverAudioFiles(audioDir, shuffle, shuffleFn)
-	if err != nil {
-		return nil, err
-	}
-
-	tracks := make([]Track, 0, len(files))
-	for _, path := range files {
-		dur, id3Title, err := probeFile(path, runner)
-		if err != nil {
-			return nil, err
-		}
-		tracks = append(tracks, Track{
-			Path:         path,
-			FileName:     filepath.Base(path),
-			Duration:     dur,
-			DisplayTitle: resolveDisplayTitle(id3Title, path),
-		})
-	}
-	return tracks, nil
 }
