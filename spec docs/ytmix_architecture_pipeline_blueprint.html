@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ytmix — Architecture & Pipeline Blueprint</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: #0b0f17;
+      color: #e2e8f0;
+    }
+    .mono {
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .glow-emerald {
+      box-shadow: 0 0 25px -5px rgba(16, 185, 129, 0.35);
+    }
+    .glow-indigo {
+      box-shadow: 0 0 25px -5px rgba(99, 102, 241, 0.35);
+    }
+    .glow-amber {
+      box-shadow: 0 0 25px -5px rgba(245, 158, 11, 0.35);
+    }
+    @keyframes pulse-slow {
+      0%, 100% { opacity: 0.35; transform: scale(1); }
+      50% { opacity: 0.7; transform: scale(1.04); }
+    }
+    .animate-loop {
+      animation: pulse-slow 3s infinite ease-in-out;
+    }
+  </style>
+</head>
+<body class="min-h-screen p-4 md:p-8">
+  <div class="max-w-6xl mx-auto space-y-8">
+
+    <!-- Header -->
+    <header class="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-6">
+      <div>
+        <div class="flex items-center gap-3">
+          <span class="px-2.5 py-1 text-xs font-semibold tracking-wider uppercase bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded-full mono">Go 1.22+ CLI Spec</span>
+          <span class="px-2.5 py-1 text-xs font-semibold tracking-wider uppercase bg-indigo-500/10 text-indigo-400 border border-indigo-500/30 rounded-full mono">FFmpeg + FFprobe</span>
+        </div>
+        <h1 class="text-2xl md:text-3xl font-bold text-white mt-2 tracking-tight">ytmix — Automated YouTube Mix Builder</h1>
+        <p class="text-slate-400 text-sm mt-1">Interactive architecture blueprint & FFmpeg execution path simulator</p>
+      </div>
+      <div class="bg-slate-900/90 border border-slate-800 rounded-xl px-4 py-3 flex items-center gap-4">
+        <div>
+          <div class="text-xs text-slate-400">Active Execution Path</div>
+          <div id="activePathBadge" class="text-sm font-semibold text-emerald-400 mono">Path A: Stream Copy Loop</div>
+        </div>
+        <div class="h-8 w-px bg-slate-800"></div>
+        <div>
+          <div class="text-xs text-slate-400">Est. 60-Min Render Time</div>
+          <div id="renderTimeEst" class="text-sm font-bold text-white mono">~4 - 8 sec</div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Interactive Controls + Live Simulation Grid -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+      <!-- Left Column: CLI Flag Simulator -->
+      <div class="lg:col-span-5 bg-slate-900/70 border border-slate-800 rounded-2xl p-6 space-y-5">
+        <div class="flex items-center justify-between">
+          <h2 class="text-base font-semibold text-white flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+            1. Configure CLI Flags
+          </h2>
+          <span class="text-xs text-slate-400 mono">Interactive</span>
+        </div>
+
+        <!-- Visual Input Mode -->
+        <div class="space-y-2">
+          <label class="text-xs font-medium text-slate-300 uppercase tracking-wider">Background Visual (--bg)</label>
+          <div class="grid grid-cols-2 gap-2.5">
+            <button id="btnBgVideo" onclick="setBgMode('video')" class="px-3.5 py-2.5 rounded-xl border text-left transition-all bg-indigo-500/15 border-indigo-500 text-white">
+              <div class="text-xs font-semibold mono">loop_visual.mp4</div>
+              <div class="text-[11px] text-slate-400 mt-0.5">Short Video / GIF Loop</div>
+            </button>
+            <button id="btnBgImage" onclick="setBgMode('image')" class="px-3.5 py-2.5 rounded-xl border text-left transition-all bg-slate-800/60 border-slate-700/70 text-slate-300 hover:border-slate-600">
+              <div class="text-xs font-semibold mono">cover_art.png</div>
+              <div class="text-[11px] text-slate-400 mt-0.5">Static Cover Image</div>
+            </button>
+          </div>
+        </div>
+
+        <!-- Toggle Switches -->
+        <div class="space-y-3 pt-2 border-t border-slate-800/80">
+          <label class="flex items-center justify-between p-3 rounded-xl bg-slate-800/40 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+            <div>
+              <div class="text-sm font-medium text-white mono">--overlay-titles</div>
+              <div class="text-xs text-slate-400">Burn track names via .ass subtitle filter</div>
+            </div>
+            <input id="chkOverlay" type="checkbox" onchange="updateState()" class="w-5 h-5 accent-indigo-500 rounded cursor-pointer">
+          </label>
+
+          <label class="flex items-center justify-between p-3 rounded-xl bg-slate-800/40 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+            <div>
+              <div class="text-sm font-medium text-white mono">--normalize</div>
+              <div class="text-xs text-slate-400">EBU R128 loudness (-14 LUFS target)</div>
+            </div>
+            <input id="chkNormalize" type="checkbox" checked onchange="updateState()" class="w-5 h-5 accent-indigo-500 rounded cursor-pointer">
+          </label>
+
+          <label class="flex items-center justify-between p-3 rounded-xl bg-slate-800/40 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+            <div>
+              <div class="text-sm font-medium text-white mono">--shuffle</div>
+              <div class="text-xs text-slate-400">Randomize MP3 track sequence</div>
+            </div>
+            <input id="chkShuffle" type="checkbox" onchange="updateState()" class="w-5 h-5 accent-indigo-500 rounded cursor-pointer">
+          </label>
+        </div>
+
+        <!-- Sliders -->
+        <div class="space-y-4 pt-2 border-t border-slate-800/80">
+          <div>
+            <div class="flex justify-between text-xs mb-1.5">
+              <span class="text-slate-300 font-medium mono">--crossfade</span>
+              <span id="lblCrossfade" class="text-indigo-400 font-semibold mono">0s (Instant Concat)</span>
+            </div>
+            <input id="rngCrossfade" type="range" min="0" max="6" step="1" value="0" oninput="updateState()" class="w-full accent-indigo-500 cursor-pointer">
+          </div>
+
+          <div id="titleDurationContainer" class="opacity-40 pointer-events-none transition-opacity">
+            <div class="flex justify-between text-xs mb-1.5">
+              <span class="text-slate-300 font-medium mono">--title-duration</span>
+              <span id="lblTitleDur" class="text-indigo-400 font-semibold mono">0s (Full Track)</span>
+            </div>
+            <input id="rngTitleDur" type="range" min="0" max="15" step="5" value="0" oninput="updateState()" class="w-full accent-indigo-500 cursor-pointer">
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: Visual Video Preview + Generated Timestamps -->
+      <div class="lg:col-span-7 flex flex-col gap-6">
+
+        <!-- Simulated 16:9 YouTube Player & Output Preview -->
+        <div class="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 space-y-4">
+          <div class="flex items-center justify-between">
+            <h2 class="text-base font-semibold text-white flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-indigo-400"></span>
+              2. Simulated 1080p Output & Chapter Preview
+            </h2>
+            <span id="encoderBadge" class="text-xs px-2.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 mono">-c:v copy (No Re-encode)</span>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-12 gap-4 items-stretch">
+            <!-- 16:9 Canvas Mock -->
+            <div class="md:col-span-7 relative aspect-video rounded-xl overflow-hidden border border-slate-700/80 bg-gradient-to-br from-indigo-950 via-slate-900 to-emerald-950 flex items-center justify-center">
+              <!-- Animated Background Indicator -->
+              <div id="previewLoopEffect" class="absolute inset-0 bg-[radial-gradient(circle_at_50%_40%,rgba(99,102,241,0.28),transparent_65%)] animate-loop"></div>
+
+              <div class="relative z-10 text-center px-4">
+                <div id="previewVisualBadge" class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-black/50 text-indigo-300 border border-indigo-500/30 backdrop-blur-sm mono">
+                  <span>↻</span> Looping MP4 (-stream_loop -1)
+                </div>
+                <div class="text-[11px] text-slate-400 mt-1.5 mono">1920x1080 • yuv420p • 320k AAC</div>
+              </div>
+
+              <!-- Burned-in .ASS Track Overlay Preview -->
+              <div id="previewAssOverlay" class="hidden absolute bottom-4 left-5 z-20 bg-black/65 backdrop-blur-sm border-l-2 border-emerald-400 px-3 py-1.5 rounded-r-md shadow-lg transition-all">
+                <div class="text-[10px] uppercase tracking-wider text-emerald-400 font-semibold mono">.ASS Subtitle Layer</div>
+                <div id="previewTrackTitle" class="text-xs font-semibold text-white">♪ Midnight Espresso</div>
+              </div>
+
+              <!-- Bottom Progress Bar -->
+              <div class="absolute bottom-0 inset-x-0 h-1 bg-slate-800 flex">
+                <div class="w-1/4 bg-red-500 h-full border-r border-black"></div>
+                <div class="w-1/4 bg-red-500/40 h-full border-r border-black"></div>
+                <div class="w-1/4 bg-slate-700 h-full border-r border-black"></div>
+                <div class="w-1/4 bg-slate-700 h-full"></div>
+              </div>
+            </div>
+
+            <!-- Live Calculated timestamps.txt -->
+            <div class="md:col-span-5 bg-slate-950 border border-slate-800/90 rounded-xl p-3.5 flex flex-col justify-between">
+              <div>
+                <div class="flex items-center justify-between border-b border-slate-800 pb-2 mb-2.5">
+                  <span class="text-xs font-semibold text-slate-300 mono">timestamps.txt</span>
+                  <span id="overlapNote" class="text-[11px] text-slate-500 mono">Exact FFprobe Math</span>
+                </div>
+                <pre id="timestampsPreview" class="text-xs text-emerald-400 mono leading-relaxed overflow-x-auto"></pre>
+              </div>
+              <div class="pt-2 border-t border-slate-900 flex items-center justify-between text-[11px] text-slate-400 mono">
+                <span>Total Mix Length:</span>
+                <span id="totalDurationLabel" class="text-white font-semibold">10:42</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Generated CLI & FFmpeg Command Preview -->
+        <div class="bg-slate-900/70 border border-slate-800 rounded-2xl p-5 space-y-3">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Generated CLI Invocation & Underlying FFmpeg Pipeline</span>
+            <button onclick="copyCommand()" id="btnCopy" class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition mono">Copy CLI Command</button>
+          </div>
+          <div class="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-2.5 overflow-x-auto">
+            <div class="text-[11px] text-slate-500 mono"># 1. User CLI Command</div>
+            <pre id="cliCommandBox" class="text-xs text-indigo-300 mono whitespace-pre-wrap"></pre>
+            <div class="border-t border-slate-800/80 pt-2 text-[11px] text-slate-500 mono"># 2. Internal FFmpeg Video Render Step</div>
+            <pre id="ffmpegCommandBox" class="text-xs text-emerald-300/90 mono whitespace-pre-wrap"></pre>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- 3 Execution Paths Architecture Diagram -->
+    <section class="space-y-4">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <h2 class="text-lg font-bold text-white">3. Smart Video Rendering Architecture (Why It Renders Fast)</h2>
+        <span class="text-xs text-slate-400">The active path highlights based on your flag selection above</span>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+        <!-- Path A Card -->
+        <div id="cardPathA" class="rounded-2xl border p-5 transition-all bg-slate-900/90 border-emerald-500 glow-emerald">
+          <div class="flex items-center justify-between mb-3">
+            <span class="px-2.5 py-0.5 text-xs font-bold uppercase rounded bg-emerald-500/20 text-emerald-300 mono">Path A</span>
+            <span class="text-xs text-emerald-400 font-semibold mono">~5 Sec / Hour</span>
+          </div>
+          <h3 class="text-base font-bold text-white">Video Loop + No Overlays</h3>
+          <p class="text-xs text-slate-400 mt-1.5 leading-relaxed">
+            Pre-transcodes the short 5–10s `.mp4` loop once to `1920x1080 yuv420p`, then muxes it with `-stream_loop -1` and `-c:v copy`. Zero frame re-encoding across the entire mix.
+          </p>
+          <div class="mt-4 pt-3 border-t border-slate-800/80 text-[11px] mono text-slate-300 space-y-1">
+            <div>• Input: <span class="text-emerald-400">.mp4 / .mov / .gif</span></div>
+            <div>• Overlays: <span class="text-slate-400">Disabled</span></div>
+            <div>• Video Codec: <span class="text-emerald-400">-c:v copy</span></div>
+          </div>
+        </div>
+
+        <!-- Path B Card -->
+        <div id="cardPathB" class="rounded-2xl border p-5 transition-all bg-slate-900/40 border-slate-800 opacity-60">
+          <div class="flex items-center justify-between mb-3">
+            <span class="px-2.5 py-0.5 text-xs font-bold uppercase rounded bg-indigo-500/20 text-indigo-300 mono">Path B</span>
+            <span class="text-xs text-indigo-400 font-semibold mono">HW Accelerated</span>
+          </div>
+          <h3 class="text-base font-bold text-white">Video Loop + Burned Titles</h3>
+          <p class="text-xs text-slate-400 mt-1.5 leading-relaxed">
+            Generates a dynamic `.ass` subtitle script with fade tags (`\fad(500,500)`) and burns it over the looping video using `h264_videotoolbox` (macOS) or `h264_nvenc` (Windows).
+          </p>
+          <div class="mt-4 pt-3 border-t border-slate-800/80 text-[11px] mono text-slate-300 space-y-1">
+            <div>• Input: <span class="text-indigo-400">.mp4 / .mov / .gif</span></div>
+            <div>• Overlays: <span class="text-indigo-400">Enabled (.ASS Filter)</span></div>
+            <div>• Video Codec: <span class="text-indigo-400">videotoolbox / nvenc</span></div>
+          </div>
+        </div>
+
+        <!-- Path C Card -->
+        <div id="cardPathC" class="rounded-2xl border p-5 transition-all bg-slate-900/40 border-slate-800 opacity-60">
+          <div class="flex items-center justify-between mb-3">
+            <span class="px-2.5 py-0.5 text-xs font-bold uppercase rounded bg-amber-500/20 text-amber-300 mono">Path C</span>
+            <span class="text-xs text-amber-400 font-semibold mono">Low-FPS Still Tune</span>
+          </div>
+          <h3 class="text-base font-bold text-white">Static Artwork Mode</h3>
+          <p class="text-xs text-slate-400 mt-1.5 leading-relaxed">
+            Uses `-loop 1 -tune stillimage` at `2 fps` (or `10 fps` when burning `.ass` track overlays) so `libx264` processes 93% fewer frames than a standard 30fps timeline.
+          </p>
+          <div class="mt-4 pt-3 border-t border-slate-800/80 text-[11px] mono text-slate-300 space-y-1">
+            <div>• Input: <span class="text-amber-400">.png / .jpg / .webp</span></div>
+            <div>• Framerate: <span class="text-amber-400">2 fps (or 10 fps w/ text)</span></div>
+            <div>• Video Codec: <span class="text-amber-400">libx264 -tune stillimage</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <script>
+    let bgMode = 'video';
+
+    const sampleTracks = [
+      { name: 'Midnight Espresso', duration: 154 },
+      { name: 'Rain on Elmwood', duration: 168 },
+      { name: 'Vinyl Dust & Rhodes', duration: 142 },
+      { name: 'Late Night Commit', duration: 178 }
+    ];
+
+    function setBgMode(mode) {
+      bgMode = mode;
+      const btnVideo = document.getElementById('btnBgVideo');
+      const btnImage = document.getElementById('btnBgImage');
+
+      if (mode === 'video') {
+        btnVideo.className = 'px-3.5 py-2.5 rounded-xl border text-left transition-all bg-indigo-500/15 border-indigo-500 text-white';
+        btnImage.className = 'px-3.5 py-2.5 rounded-xl border text-left transition-all bg-slate-800/60 border-slate-700/70 text-slate-300 hover:border-slate-600';
+      } else {
+        btnImage.className = 'px-3.5 py-2.5 rounded-xl border text-left transition-all bg-amber-500/15 border-amber-500 text-white';
+        btnVideo.className = 'px-3.5 py-2.5 rounded-xl border text-left transition-all bg-slate-800/60 border-slate-700/70 text-slate-300 hover:border-slate-600';
+      }
+      updateState();
+    }
+
+    function formatTime(sec) {
+      const s = Math.max(0, Math.round(sec));
+      const m = Math.floor(s / 60);
+      const rem = s % 60;
+      return String(m).padStart(2, '0') + ':' + String(rem).padStart(2, '0');
+    }
+
+    function updateState() {
+      const overlay = document.getElementById('chkOverlay').checked;
+      const normalize = document.getElementById('chkNormalize').checked;
+      const shuffle = document.getElementById('chkShuffle').checked;
+      const crossfade = parseInt(document.getElementById('rngCrossfade').value, 10);
+      const titleDur = parseInt(document.getElementById('rngTitleDur').value, 10);
+
+      // Update slider labels & enable/disable title duration
+      document.getElementById('lblCrossfade').textContent = crossfade === 0 ? '0s (Instant Concat)' : crossfade + 's (acrossfade)';
+      document.getElementById('lblTitleDur').textContent = titleDur === 0 ? '0s (Full Track)' : 'First ' + titleDur + 's + Fade';
+      const titleDurContainer = document.getElementById('titleDurationContainer');
+      titleDurContainer.className = overlay ? 'opacity-100 transition-opacity' : 'opacity-40 pointer-events-none transition-opacity';
+
+      // Track list & timestamp calculation
+      let tracks = [...sampleTracks];
+      if (shuffle) {
+        tracks = [sampleTracks[2], sampleTracks[0], sampleTracks[3], sampleTracks[1]];
+      }
+
+      let currentStart = 0;
+      const lines = [];
+      tracks.forEach((t, idx) => {
+        lines.push(`${formatTime(currentStart)} ${t.name}`);
+        currentStart += t.duration - (idx < tracks.length - 1 ? crossfade : 0);
+      });
+
+      document.getElementById('timestampsPreview').textContent = lines.join('\n');
+      document.getElementById('totalDurationLabel').textContent = formatTime(currentStart);
+      document.getElementById('overlapNote').textContent = crossfade > 0 ? `-${crossfade}s/track overlap` : 'Exact FFprobe Math';
+
+      // Update visual preview box
+      const assOverlay = document.getElementById('previewAssOverlay');
+      const loopEffect = document.getElementById('previewLoopEffect');
+      const visualBadge = document.getElementById('previewVisualBadge');
+      document.getElementById('previewTrackTitle').textContent = '♪ ' + tracks[0].name;
+
+      if (overlay) {
+        assOverlay.classList.remove('hidden');
+      } else {
+        assOverlay.classList.add('hidden');
+      }
+
+      if (bgMode === 'video') {
+        loopEffect.classList.add('animate-loop');
+        visualBadge.innerHTML = '<span>↻</span> Looping MP4 (-stream_loop -1)';
+      } else {
+        loopEffect.classList.remove('animate-loop');
+        visualBadge.innerHTML = '<span>🖼</span> Static Image (-loop 1 -tune stillimage)';
+      }
+
+      // Highlight active architecture path card
+      const cardA = document.getElementById('cardPathA');
+      const cardB = document.getElementById('cardPathB');
+      const cardC = document.getElementById('cardPathC');
+      const baseCard = 'rounded-2xl border p-5 transition-all bg-slate-900/40 border-slate-800 opacity-55';
+
+      cardA.className = baseCard;
+      cardB.className = baseCard;
+      cardC.className = baseCard;
+
+      const activeBadge = document.getElementById('activePathBadge');
+      const renderEst = document.getElementById('renderTimeEst');
+      const encoderBadge = document.getElementById('encoderBadge');
+      let ffmpegCmd = '';
+
+      if (bgMode === 'video' && !overlay) {
+        cardA.className = 'rounded-2xl border p-5 transition-all bg-slate-900/95 border-emerald-500 glow-emerald';
+        activeBadge.textContent = 'Path A: Stream Copy Loop';
+        activeBadge.className = 'text-sm font-semibold text-emerald-400 mono';
+        renderEst.textContent = '~4 - 8 sec';
+        encoderBadge.textContent = '-c:v copy (Zero Re-encode)';
+        encoderBadge.className = 'text-xs px-2.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 mono';
+        ffmpegCmd = `ffmpeg -y -stream_loop -1 -i temp/norm_loop.mp4 -i temp/merged_audio.m4a \\\n  -map 0:v:0 -map 1:a:0 -c:v copy -c:a copy -shortest output.mp4`;
+      } else if (bgMode === 'video' && overlay) {
+        cardB.className = 'rounded-2xl border p-5 transition-all bg-slate-900/95 border-indigo-500 glow-indigo';
+        activeBadge.textContent = 'Path B: HW Encode + .ASS Burn';
+        activeBadge.className = 'text-sm font-semibold text-indigo-400 mono';
+        renderEst.textContent = '~2 - 4 min (GPU)';
+        encoderBadge.textContent = 'h264_videotoolbox / nvenc';
+        encoderBadge.className = 'text-xs px-2.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/30 mono';
+        ffmpegCmd = `ffmpeg -y -stream_loop -1 -i loop_visual.mp4 -i temp/merged_audio.m4a \\\n  -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,subtitles=temp/titles.ass,format=yuv420p" \\\n  -map 0:v:0 -map 1:a:0 -c:v h264_videotoolbox -b:v 6000k -c:a copy -shortest output.mp4`;
+      } else {
+        cardC.className = 'rounded-2xl border p-5 transition-all bg-slate-900/95 border-amber-500 glow-amber';
+        activeBadge.textContent = 'Path C: Low-FPS Still Image';
+        activeBadge.className = 'text-sm font-semibold text-amber-400 mono';
+        renderEst.textContent = overlay ? '~35 - 50 sec' : '~12 - 18 sec';
+        const fps = overlay ? 10 : 2;
+        encoderBadge.textContent = `libx264 (${fps} fps stillimage)`;
+        encoderBadge.className = 'text-xs px-2.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 mono';
+        const subFilter = overlay ? ',subtitles=temp/titles.ass' : '';
+        ffmpegCmd = `ffmpeg -y -loop 1 -framerate ${fps} -i cover_art.png -i temp/merged_audio.m4a \\\n  -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2${subFilter},format=yuv420p" \\\n  -map 0:v:0 -map 1:a:0 -c:v libx264 -tune stillimage -preset veryfast -crf 18 -c:a copy -shortest output.mp4`;
+      }
+
+      // Build CLI Command string
+      const bgFile = bgMode === 'video' ? 'loop_visual.mp4' : 'cover_art.png';
+      let cliFlags = [`ytmix --audio-dir ./tracks --bg ${bgFile}`];
+      if (crossfade > 0) cliFlags.push(`--crossfade ${crossfade}`);
+      if (normalize) cliFlags.push(`--normalize`);
+      if (overlay) {
+        cliFlags.push(`--overlay-titles`);
+        if (titleDur > 0) cliFlags.push(`--title-duration ${titleDur}`);
+      }
+      if (shuffle) cliFlags.push(`--shuffle`);
+      cliFlags.push(`--out output.mp4`);
+
+      document.getElementById('cliCommandBox').textContent = cliFlags.join(' ');
+      document.getElementById('ffmpegCommandBox').textContent = ffmpegCmd;
+    }
+
+    function copyCommand() {
+      const cmd = document.getElementById('cliCommandBox').textContent;
+      navigator.clipboard.writeText(cmd);
+      const btn = document.getElementById('btnCopy');
+      btn.textContent = 'Copied!';
+      setTimeout(() => { btn.textContent = 'Copy CLI Command'; }, 1500);
+    }
+
+    updateState();
+  </script>
+</body>
+</html>
