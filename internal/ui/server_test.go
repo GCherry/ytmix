@@ -439,6 +439,9 @@ func TestRenderRejectsConcurrentAndInvalidInputs(t *testing.T) {
 	probeReq.RemoteAddr = "127.0.0.1:50000"
 	probeRec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(probeRec, probeReq)
+	if probeRec.Code != http.StatusOK {
+		t.Fatalf("probe failed: %d %s", probeRec.Code, probeRec.Body.String())
+	}
 	var probed probeResponse
 	if err := json.Unmarshal(probeRec.Body.Bytes(), &probed); err != nil {
 		t.Fatal(err)

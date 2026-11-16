@@ -867,27 +867,29 @@ func (s *Server) resolveWorkspacePath(raw string, mustExist bool) (string, error
 		return "", fmt.Errorf("invalid path: %w", err)
 	}
 
-	rel, err := filepath.Rel(s.workspaceRoot, absCandidate)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return "", fmt.Errorf("path %q escapes workspace root", raw)
-	}
-	if absCandidate != s.workspaceRoot && !strings.HasPrefix(absCandidate, s.workspaceRoot+string(filepath.Separator)) {
-		return "", fmt.Errorf("path %q escapes workspace root", raw)
-	}
-
+	target := absCandidate
 	if mustExist {
 		realTarget, err := filepath.EvalSymlinks(absCandidate)
 		if err != nil {
 			return "", fmt.Errorf("cannot resolve path %q: %w", raw, err)
 		}
-		realRel, err := filepath.Rel(s.workspaceRoot, realTarget)
-		if err != nil || realRel == ".." || strings.HasPrefix(realRel, ".."+string(filepath.Separator)) || filepath.IsAbs(realRel) {
-			return "", fmt.Errorf("symlink target for %q escapes workspace root", raw)
-		}
-		return filepath.Join(s.workspaceRoot, realRel), nil
+		target = realTarget
+	} else if parentReal, err := filepath.EvalSymlinks(filepath.Dir(absCandidate)); err == nil {
+		target = filepath.Join(parentReal, filepath.Base(absCandidate))
 	}
 
-	return filepath.Join(s.workspaceRoot, rel), nil
+	sep := string(filepath.Separator)
+	rel, err := filepath.Rel(s.workspaceRoot, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+sep) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("path %q escapes workspace root", raw)
+	}
+	if target == s.workspaceRoot {
+		return s.workspaceRoot, nil
+	}
+	if !strings.HasPrefix(target, s.workspaceRoot+sep) {
+		return "", fmt.Errorf("path %q escapes workspace root", raw)
+	}
+	return target, nil
 }
 
 func canonicalBackgroundExt(ext string) (string, bool) {
