@@ -34,3 +34,22 @@ go test ./...
 - **Subtitle overlays:** Generate `.ass` subtitle files (`titles.ass`) for `--overlay-titles` instead of `drawtext` filters to avoid shell/filter escaping bugs.
 - **Stream mapping:** Explicitly pass `-map 0:v:0 -map 1:a:0` on final video mux/encode commands so stray audio streams in background videos are stripped.
 - **Cross-platform encoder selection:** Detect OS/encoders (`h264_videotoolbox` on `darwin`, `h264_nvenc` if available on `windows`/`linux`, `libx264` fallback) as specified in Section 2 of the spec.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues (`GCherry/ytmix`) via the `gh` CLI or GitHub MCP tools. See [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md).
+
+### Triage labels
+
+Canonical five roles (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`) plus `work-started` and priority labels (`priority: now`, `priority: soon`, `priority: later`). See [`docs/agents/triage-labels.md`](docs/agents/triage-labels.md).
+
+### Domain docs
+
+Single-context (`GLOSSARY.md` + `docs/adr/` at the repo root). See [`docs/agents/domain.md`](docs/agents/domain.md).
+
+### Shared skills
+
+Shared engineering and coordination skills live in `chill-hq/.agents/skills/` (never duplicated in this repo). Standalone sessions in `ytmix` read them through the local git-ignored `.agents/skills` junction (plus `.claude/skills` / `.cursor/skills`); commit files under `.agents/skills/` here only for intentional `ytmix`-specific overrides.
+
