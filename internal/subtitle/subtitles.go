@@ -71,14 +71,11 @@ func BuildASS(titles []string, starts []float64, totalDuration float64, titleDur
 	b.WriteString("[Events]\n")
 	b.WriteString("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
 
-	n := len(titles)
-	if len(starts) < n {
-		n = len(starts)
-	}
+	n := min(len(titles), len(starts))
 	for i := 0; i < n; i++ {
 		start := starts[i]
 		nextBoundary := totalDuration
-		if i+1 < n {
+		if i+1 < len(starts) && i+1 < n {
 			nextBoundary = starts[i+1]
 		}
 		end := nextBoundary
@@ -105,7 +102,7 @@ func BuildASS(titles []string, starts []float64, totalDuration float64, titleDur
 // WriteASS generates an ASS subtitle script and writes it to path.
 func WriteASS(path string, titles []string, starts []float64, totalDuration float64, titleDuration int, fontName string) error {
 	content := BuildASS(titles, starts, totalDuration, titleDuration, fontName)
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		return fmt.Errorf("write ASS subtitles to %q: %w", path, err)
 	}
 	return nil

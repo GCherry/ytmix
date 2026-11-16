@@ -1,0 +1,49 @@
+version: "2"
+
+run:
+  timeout: 5m
+  relative-path-mode: gomod
+
+linters:
+  default: none
+  enable:
+    - depguard
+    - errcheck
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nolintlint
+    - staticcheck
+    - unused
+  settings:
+    depguard:
+      rules:
+        main:
+          list-mode: strict
+          allow:
+            - $gostd
+            - github.com/GCherry/ytmix$
+            - github.com/GCherry/ytmix/
+    errcheck:
+      check-type-assertions: true
+      exclude-functions:
+        - os.RemoveAll
+        - fmt.Fprintf
+        - fmt.Fprintln
+    gosec:
+      # errcheck already enforces unhandled errors with explicit exclude-functions above;
+      # G104 does not inherit errcheck exclusions and would fail on best-effort fmt.Fprintf / defer os.RemoveAll.
+      excludes:
+        - G104
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+  exclusions:
+    presets:
+      - common-false-positives
+    rules:
+      # Test fixtures write temporary files and use deterministic math/rand/v2 seeds.
+      - path: _test\.go
+        linters:
+          - gosec

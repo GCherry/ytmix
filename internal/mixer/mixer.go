@@ -51,6 +51,7 @@ func ExecCommandRunner(ctx context.Context, name string, args ...string) ([]byte
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// #nosec G204 -- ADR-0001: intentional ffmpeg/ffprobe subprocess wrapper; callers pass hardcoded binary names and discrete arg slices.
 	cmd := exec.CommandContext(ctx, name, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -148,7 +149,7 @@ func Run(ctx context.Context, cfg Config, stdout io.Writer, lookPath func(string
 		return fmt.Errorf("cannot access Background Visual %q: %w", cfg.BG, err)
 	}
 	if bgInfo.IsDir() {
-		return fmt.Errorf("Background Visual path %q is a directory, expected a file", cfg.BG)
+		return fmt.Errorf("background visual path %q is a directory, expected a file", cfg.BG)
 	}
 
 	tempDir, err := os.MkdirTemp("", "ytmix-*")
