@@ -139,7 +139,7 @@ Completed Nov 16, 2026 03:32:30 PM EST by Agent (Planner). Audited `main` (`b67d
 Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 **Triggered by:** Agent (Engineering) — Nov 16, 2026 03:32:30 PM EST
 
-- [x] Add `.golangci.yml` tailored to `ytmix`'s Go `1.22+` zero-dependency codebase (`depguard`, `errcheck`, `gosec`, `govet`, `ineffassign`, `misspell`, `nolintlint`, `staticcheck`, `unused`) with documented exclusions/configurations for `errcheck` (`os.RemoveAll`, `fmt.Fprintf`, `fmt.Fprintln`) and `_test.go` `gosec` exclusions.
+- [x] Add `.golangci.yml` tailored to `ytmix`'s Go `1.22+` zero-dependency codebase (`depguard`, `errcheck`, `gosec`, `govet`, `ineffassign`, `misspell`, `nolintlint`, `staticcheck`, `unused`) with documented exclusions/configurations for `errcheck` (`os.RemoveAll`, `fmt.Fprintf`, `fmt.Fprintln`), `gosec` (`G104` deferred to `errcheck` with rationale), and `_test.go` `gosec` exclusions.
 - [x] Apply Wave-0-approved code hygiene fixes: `.gitattributes` (`*.go`/`*.yml`/`*.yaml`/`*.sh` `eol=lf`), `0600` temp-file permissions in `internal/audio/audio.go` (`concat_list.txt`) and `internal/subtitle/subtitles.go` (`titles.ass`), and documented `#nosec` annotations on `internal/mixer/mixer.go:54` (`G204`), `internal/probe/ffprobe.go:52` (`G404`), and `internal/subtitle/chapters.go:76` (`G306`).
 - [x] Create `.github/workflows/ci.yml` covering:
   - Triggers on `pull_request` (`main`), `push` (`main`), and `workflow_dispatch`, with `permissions: contents: read` and `concurrency` cancellation.

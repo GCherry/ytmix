@@ -23,6 +23,7 @@ linters:
           list-mode: strict
           allow:
             - $gostd
+            - github.com/GCherry/ytmix$
             - github.com/GCherry/ytmix/
     errcheck:
       check-type-assertions: true
@@ -30,6 +31,11 @@ linters:
         - os.RemoveAll
         - fmt.Fprintf
         - fmt.Fprintln
+    gosec:
+      # errcheck already enforces unhandled errors with explicit exclude-functions above;
+      # G104 does not inherit errcheck exclusions and would fail on best-effort fmt.Fprintf / defer os.RemoveAll.
+      excludes:
+        - G104
     nolintlint:
       require-explanation: true
       require-specific: true

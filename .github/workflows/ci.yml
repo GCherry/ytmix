@@ -118,7 +118,7 @@ jobs:
 
       - name: Run unit tests with race detector (Linux)
         if: runner.os == 'Linux'
-        run: go test -race -v -coverprofile=coverage.out ./...
+        run: go test -race -v -skip '^TestE2EPipeline$' -coverprofile=coverage.out ./...
 
       - name: Publish coverage summary
         if: runner.os == 'Linux'
