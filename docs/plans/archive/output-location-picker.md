@@ -12,11 +12,11 @@ status; write **Phase Summary**; record **Verification Plan** results. When all
 phases are done, fill **Final Recap** and **Deployment Plan**, then archive this
 file to `docs/plans/archive/output-location-picker.md` per the `real-work` skill (Section 3).
 
-**Repo:** `ytmix` (`/home/antigravity/GCherry/ytmix`) — read [`AGENTS.md`](../../AGENTS.md) before building or testing.
+**Repo:** `ytmix` (`/home/antigravity/GCherry/ytmix`) — read [`AGENTS.md`](../../../AGENTS.md) before building or testing.
 
 **Branch:** `feature/output-location-picker` off `main` (`Closes #9`).
 
-**Domain docs:** [`GLOSSARY.md`](../../GLOSSARY.md), [`docs/adr/0002-embedded-http-ui-and-sse-telemetry.md`](../adr/0002-embedded-http-ui-and-sse-telemetry.md), [`docs/specs/ytmix_technical_specification.md`](../specs/ytmix_technical_specification.md).
+**Domain docs:** [`GLOSSARY.md`](../../../GLOSSARY.md), [`docs/adr/0002-embedded-http-ui-and-sse-telemetry.md`](../../adr/0002-embedded-http-ui-and-sse-telemetry.md), [`docs/specs/ytmix_technical_specification.md`](../../specs/ytmix_technical_specification.md).
 
 **Related skills:** `coordinator`, `real-work`, `tdd`, `code-review`, `domain-modeling`.
 
@@ -199,7 +199,7 @@ Updated `index.html`, `styles.css`, and `app.js` with `Output Directory (--out-d
 Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 **Triggered by:** Agent — Nov 16, 2026 09:28:30 PM PST
 
-- [x] Update [`docs/adr/0002-embedded-http-ui-and-sse-telemetry.md`](../adr/0002-embedded-http-ui-and-sse-telemetry.md) Consequences to document `allowedRoots` loopback scoping and `/api/fs/list` + `/api/fs/mkdir` guardrails.
+- [x] Update [`docs/adr/0002-embedded-http-ui-and-sse-telemetry.md`](../../adr/0002-embedded-http-ui-and-sse-telemetry.md) Consequences to document `allowedRoots` loopback scoping and `/api/fs/list` + `/api/fs/mkdir` guardrails.
 - [x] Run full static & unit checks: `go vet ./...`, `go test -race ./...`, and `golangci-lint run` (if available; verify `depguard`, `gosec`, `errcheck`, `nolintlint`).
 - [x] Run synthetic `ffmpeg`/`ffprobe` E2E verification across Paths A, B, and C plus `--out-dir` with custom `--out`/`--timestamps` filenames in nested directories, assert streams/resolution/duration/`timestamps.txt` via `ffprobe`, and clean up all temporary `test_assets/` and generated outputs.
 - [x] Update [Issue #9](https://github.com/GCherry/ytmix/issues/9) acceptance checkboxes (`- [x]`), verify `Final Recap` and `Deployment Plan` are ready, and hand off to independent `Reviewer` (`code-review`) → `Planner` `Acceptance Check` → `Release`.
