@@ -414,3 +414,138 @@ func TestProbeTrackFilesAndRunWithTracks(t *testing.T) {
 		}
 	})
 }
+
+func TestResolveAndPrepareOutputTargets(t *testing.T) {
+	okLookPath := func(name string) (string, error) { return "/usr/bin/" + name, nil }
+
+	t.Run("ResolveOutputPaths joins relative Out and Timestamps under OutDir and honors absolute overrides", func(t *testing.T) {
+		absOut := filepath.Join(t.TempDir(), "custom_abs.mp4")
+		absTS := filepath.Join(t.TempDir(), "custom_abs.txt")
+
+		outDir := filepath.Join("renders", "2026")
+		gotOut, gotTS, err := ResolveOutputPaths(Config{OutDir: outDir})
+		if err != nil {
+			t.Fatalf("ResolveOutputPaths error: %v", err)
+		}
+		if gotOut != filepath.Join(outDir, "output.mp4") {
+			t.Fatalf("gotOut = %q, want %q", gotOut, filepath.Join(outDir, "output.mp4"))
+		}
+		if gotTS != filepath.Join(outDir, "timestamps.txt") {
+			t.Fatalf("gotTS = %q, want %q", gotTS, filepath.Join(outDir, "timestamps.txt"))
+		}
+
+		gotOut2, gotTS2, err := ResolveOutputPaths(Config{
+			OutDir:     outDir,
+			Out:        absOut,
+			Timestamps: "chapters/set.txt",
+		})
+		if err != nil {
+			t.Fatalf("ResolveOutputPaths override error: %v", err)
+		}
+		if gotOut2 != filepath.Clean(absOut) {
+			t.Fatalf("gotOut2 = %q, want %q", gotOut2, filepath.Clean(absOut))
+		}
+		if gotTS2 != filepath.Join(outDir, "chapters", "set.txt") {
+			t.Fatalf("gotTS2 = %q, want %q", gotTS2, filepath.Join(outDir, "chapters", "set.txt"))
+		}
+
+		gotOut3, gotTS3, err := ResolveOutputPaths(Config{
+			OutDir:     outDir,
+			Out:        "mix.mp4",
+			Timestamps: absTS,
+		})
+		if err != nil {
+			t.Fatalf("ResolveOutputPaths ts override error: %v", err)
+		}
+		if gotOut3 != filepath.Join(outDir, "mix.mp4") || gotTS3 != filepath.Clean(absTS) {
+			t.Fatalf("got (%q, %q), want (%q, %q)", gotOut3, gotTS3, filepath.Join(outDir, "mix.mp4"), filepath.Clean(absTS))
+		}
+	})
+
+	t.Run("PrepareOutputTargets creates nested parent directories and rejects directory targets", func(t *testing.T) {
+		base := t.TempDir()
+		nestedOutDir := filepath.Join(base, "exports", "lofi")
+		resolved, err := PrepareOutputTargets(Config{
+			OutDir:     nestedOutDir,
+			Out:        filepath.Join("video", "mix.mp4"),
+			Timestamps: filepath.Join("notes", "chapters.txt"),
+		})
+		if err != nil {
+			t.Fatalf("PrepareOutputTargets error: %v", err)
+		}
+		wantOut := filepath.Join(nestedOutDir, "video", "mix.mp4")
+		wantTS := filepath.Join(nestedOutDir, "notes", "chapters.txt")
+		if resolved.Out != wantOut || resolved.Timestamps != wantTS {
+			t.Fatalf("resolved = (%q, %q), want (%q, %q)", resolved.Out, resolved.Timestamps, wantOut, wantTS)
+		}
+		if info, err := os.Stat(filepath.Dir(wantOut)); err != nil || !info.IsDir() {
+			t.Fatalf("expected parent dir %q to exist, err=%v", filepath.Dir(wantOut), err)
+		}
+		if info, err := os.Stat(filepath.Dir(wantTS)); err != nil || !info.IsDir() {
+			t.Fatalf("expected parent dir %q to exist, err=%v", filepath.Dir(wantTS), err)
+		}
+
+		existingDir := filepath.Join(base, "already_dir")
+		if err := os.Mkdir(existingDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := PrepareOutputTargets(Config{Out: existingDir, Timestamps: filepath.Join(base, "ts.txt")}); err == nil {
+			t.Fatal("expected error when --out points to an existing directory")
+		}
+		if _, err := PrepareOutputTargets(Config{Out: filepath.Join(base, "out.mp4"), Timestamps: existingDir}); err == nil {
+			t.Fatal("expected error when --timestamps points to an existing directory")
+		}
+
+		regularFile := filepath.Join(base, "not_a_dir.txt")
+		if err := os.WriteFile(regularFile, []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := PrepareOutputTargets(Config{OutDir: regularFile}); err == nil {
+			t.Fatal("expected error when --out-dir points to a regular file")
+		}
+	})
+
+	t.Run("Run resolves OutDir and fails upfront before ffprobe when Out is a directory", func(t *testing.T) {
+		workDir, audioDir, bgPath := setupStubMixWorkspace(t, "cover.png")
+		outDir := filepath.Join(workDir, "nested", "release")
+		probeCalled := false
+		runner := func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "ffprobe" {
+				probeCalled = true
+				return []byte(`{"format":{"duration":"4.000000","tags":{}}}`), nil
+			}
+			return nil, nil
+		}
+
+		// Upfront directory target error must fail before ffprobe is ever invoked.
+		badCfg := Config{
+			AudioDir:   audioDir,
+			BG:         bgPath,
+			Out:        workDir,
+			Timestamps: filepath.Join(workDir, "ts.txt"),
+		}
+		if err := Run(context.Background(), badCfg, &bytes.Buffer{}, okLookPath, runner); err == nil {
+			t.Fatal("expected upfront error for directory --out")
+		}
+		if probeCalled {
+			t.Fatal("expected Run to fail upfront before probing tracks")
+		}
+
+		// Valid OutDir creates missing directories and writes Chapter Timestamps inside OutDir.
+		goodCfg := Config{
+			AudioDir:   audioDir,
+			BG:         bgPath,
+			OutDir:     outDir,
+			Out:        "final_mix.mp4",
+			Timestamps: "chapters.txt",
+		}
+		var stdout bytes.Buffer
+		if err := Run(context.Background(), goodCfg, &stdout, okLookPath, runner); err != nil {
+			t.Fatalf("Run with OutDir error: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(outDir, "chapters.txt")); err != nil {
+			t.Fatalf("expected chapters.txt inside OutDir: %v", err)
+		}
+	})
+}
+

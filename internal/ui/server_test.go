@@ -130,13 +130,13 @@ func TestStaticAssetsAndHealth(t *testing.T) {
 	defer srv.Close()
 
 	for _, tc := range []struct {
-		path     string
-		wantType string
-		wantBody string
+		path      string
+		wantType  string
+		wantSub   []string
 	}{
-		{"/", "text/html", "Editorial Mix Studio"},
-		{"/styles.css", "text/css", "[hidden]"},
-		{"/app.js", "javascript", "/api/render"},
+		{"/", "text/html", []string{"Editorial Mix Studio", "out-dir-input", "browse-out-dir-btn", "browse-audio-dir-btn", "fs-modal", "save-lan-folder-btn", "fs-modal-out-name", "fs-modal-ts-name"}},
+		{"/styles.css", "text/css", []string{"[hidden]", ".modal-backdrop", ".fs-root-chip"}},
+		{"/app.js", "javascript", []string{"/api/render", "/api/fs/list", "/api/fs/mkdir", "showDirectoryPicker"}},
 	} {
 		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
 		rec := httptest.NewRecorder()
@@ -147,8 +147,11 @@ func TestStaticAssetsAndHealth(t *testing.T) {
 		if !strings.Contains(strings.ToLower(rec.Header().Get("Content-Type")), tc.wantType) {
 			t.Fatalf("GET %s Content-Type = %q, want %q", tc.path, rec.Header().Get("Content-Type"), tc.wantType)
 		}
-		if !strings.Contains(rec.Body.String(), tc.wantBody) {
-			t.Fatalf("GET %s missing expected content %q", tc.path, tc.wantBody)
+		body := rec.Body.String()
+		for _, want := range tc.wantSub {
+			if !strings.Contains(body, want) {
+				t.Fatalf("GET %s missing expected content %q", tc.path, want)
+			}
 		}
 	}
 
@@ -679,4 +682,365 @@ func TestCSRFSameOriginAndContentTypeGuards(t *testing.T) {
 func strconvQuote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+func TestAllowedRootsAndOutputLocationAPIs(t *testing.T) {
+	t.Run("health exposes outDir/out/timestamps defaults and redacts roots on LAN", func(t *testing.T) {
+		ws := t.TempDir()
+		extraDir := t.TempDir()
+		srv, err := NewServer(Config{
+			Host:         "127.0.0.1",
+			Port:         8080,
+			WorkspaceDir: ws,
+			OutDir:       extraDir,
+			Out:          "my_mix.mp4",
+			Timestamps:   "my_chapters.txt",
+			LookPath:     okLookPath,
+			Runner:       stubPipelineRunner(t, nil),
+			GOOS:         "linux",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer srv.Close()
+
+		req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+		req.RemoteAddr = "127.0.0.1:50000"
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /api/health status = %d: %s", rec.Code, rec.Body.String())
+		}
+		var payload struct {
+			Defaults struct {
+				OutDir     string `json:"outDir"`
+				Out        string `json:"out"`
+				Timestamps string `json:"timestamps"`
+			} `json:"defaults"`
+			Roots []struct {
+				Label string `json:"label"`
+				Path  string `json:"path"`
+			} `json:"roots"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Defaults.Out != "my_mix.mp4" || payload.Defaults.Timestamps != "my_chapters.txt" || payload.Defaults.OutDir == "" {
+			t.Fatalf("unexpected health defaults: %+v", payload.Defaults)
+		}
+		if len(payload.Roots) < 2 {
+			t.Fatalf("expected at least 2 quick roots (Workspace + Output Dir), got %+v", payload.Roots)
+		}
+
+		// Non-loopback client must not receive server filesystem roots.
+		lanReq := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+		lanReq.RemoteAddr = "192.168.1.50:50000"
+		lanRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(lanRec, lanReq)
+		var lanPayload struct {
+			Roots []any `json:"roots"`
+		}
+		if err := json.Unmarshal(lanRec.Body.Bytes(), &lanPayload); err != nil {
+			t.Fatal(err)
+		}
+		if len(lanPayload.Roots) != 0 {
+			t.Fatalf("expected zero roots leaked to LAN client, got %+v", lanPayload.Roots)
+		}
+	})
+
+	t.Run("allowedRoots governs probe, preview-bg, render outDir, and blocks escapes", func(t *testing.T) {
+		ws := t.TempDir()
+		mediaDir := t.TempDir()
+		exportDir := t.TempDir()
+		outsideDir := t.TempDir()
+
+		if err := os.WriteFile(filepath.Join(mediaDir, "01 - Track.mp3"), []byte("mp3"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		bgFile := filepath.Join(mediaDir, "bg.png")
+		if err := os.WriteFile(bgFile, []byte("PNG"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		srv, err := NewServer(Config{
+			Host:         "127.0.0.1",
+			Port:         8080,
+			WorkspaceDir: ws,
+			OutDir:       exportDir,
+			AllowDirs:    []string{mediaDir},
+			LookPath:     okLookPath,
+			Runner:       stubPipelineRunner(t, map[string]string{"Track": "6.0"}),
+			GOOS:         "linux",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer srv.Close()
+
+		// Probe inside AllowDirs succeeds.
+		probeReq := httptest.NewRequest(http.MethodPost, "/api/probe", strings.NewReader(`{"audioDir":`+strconvQuote(mediaDir)+`}`))
+		probeReq.Header.Set("Content-Type", "application/json")
+		probeReq.RemoteAddr = "127.0.0.1:50000"
+		probeRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(probeRec, probeReq)
+		if probeRec.Code != http.StatusOK {
+			t.Fatalf("probe in AllowDirs failed: %d: %s", probeRec.Code, probeRec.Body.String())
+		}
+		var probed probeResponse
+		if err := json.Unmarshal(probeRec.Body.Bytes(), &probed); err != nil {
+			t.Fatal(err)
+		}
+
+		// Preview BG inside AllowDirs succeeds.
+		prevReq := httptest.NewRequest(http.MethodGet, "/api/preview-bg?path="+bgFile, nil)
+		prevReq.RemoteAddr = "127.0.0.1:50000"
+		prevRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(prevRec, prevReq)
+		if prevRec.Code != http.StatusOK {
+			t.Fatalf("preview-bg in AllowDirs failed: %d: %s", prevRec.Code, prevRec.Body.String())
+		}
+
+		// Render with nested non-existent subfolder under OutDir creates folders & writes files.
+		nestedOutDir := filepath.Join(exportDir, "2026", "chill-session")
+		renderBody, _ := json.Marshal(renderConfigRequest{
+			SessionID:  probed.SessionID,
+			TrackIDs:   []string{probed.Tracks[0].ID},
+			BGPath:     bgFile,
+			OutDir:     nestedOutDir,
+			Out:        "chill_mix.mp4",
+			Timestamps: "chill_chapters.txt",
+		})
+		renderReq := httptest.NewRequest(http.MethodPost, "/api/render", bytes.NewReader(renderBody))
+		renderReq.Header.Set("Content-Type", "application/json")
+		renderReq.RemoteAddr = "127.0.0.1:50000"
+		renderRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(renderRec, renderReq)
+		if renderRec.Code != http.StatusAccepted {
+			t.Fatalf("render with OutDir failed: %d: %s", renderRec.Code, renderRec.Body.String())
+		}
+		var started renderStartResponse
+		if err := json.Unmarshal(renderRec.Body.Bytes(), &started); err != nil {
+			t.Fatal(err)
+		}
+		// Subscribe SSE to wait for job completion.
+		sseReq := httptest.NewRequest(http.MethodGet, started.EventsURL, nil)
+		sseRec := newSSERecorder()
+		srv.Handler().ServeHTTP(sseRec, sseReq)
+		if !strings.Contains(sseRec.String(), "event: complete") {
+			t.Fatalf("expected complete SSE event, got:\n%s", sseRec.String())
+		}
+		if _, err := os.Stat(filepath.Join(nestedOutDir, "chill_mix.mp4")); err != nil {
+			t.Fatalf("expected output video inside nested OutDir: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(nestedOutDir, "chill_chapters.txt")); err != nil {
+			t.Fatalf("expected chapters inside nested OutDir: %v", err)
+		}
+
+		// Render outside allowedRoots must be rejected with 403 Forbidden.
+		escBody, _ := json.Marshal(renderConfigRequest{
+			SessionID:  probed.SessionID,
+			TrackIDs:   []string{probed.Tracks[0].ID},
+			BGPath:     bgFile,
+			OutDir:     outsideDir,
+			Out:        "pwn.mp4",
+			Timestamps: "pwn.txt",
+		})
+		escReq := httptest.NewRequest(http.MethodPost, "/api/render", bytes.NewReader(escBody))
+		escReq.Header.Set("Content-Type", "application/json")
+		escReq.RemoteAddr = "127.0.0.1:50000"
+		escRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(escRec, escReq)
+		if escRec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for outside OutDir, got %d: %s", escRec.Code, escRec.Body.String())
+		}
+
+		// Render targeting an existing directory as --out must fail upfront with 400 Bad Request.
+		dirOutBody, _ := json.Marshal(renderConfigRequest{
+			SessionID:  probed.SessionID,
+			TrackIDs:   []string{probed.Tracks[0].ID},
+			BGPath:     bgFile,
+			Out:        nestedOutDir,
+			Timestamps: filepath.Join(nestedOutDir, "ok.txt"),
+		})
+		dirOutReq := httptest.NewRequest(http.MethodPost, "/api/render", bytes.NewReader(dirOutBody))
+		dirOutReq.Header.Set("Content-Type", "application/json")
+		dirOutReq.RemoteAddr = "127.0.0.1:50000"
+		dirOutRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(dirOutRec, dirOutReq)
+		if dirOutRec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for directory --out, got %d: %s", dirOutRec.Code, dirOutRec.Body.String())
+		}
+	})
+
+	t.Run("fs list and mkdir enforce loopback, allowedRoots, and single-segment names", func(t *testing.T) {
+		ws := t.TempDir()
+		outside := t.TempDir()
+		if err := os.Mkdir(filepath.Join(ws, "alpha"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(ws, "ignore.mp3"), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		srv, err := NewServer(Config{
+			Host:         "127.0.0.1",
+			Port:         8080,
+			WorkspaceDir: ws,
+			LookPath:     okLookPath,
+			Runner:       stubPipelineRunner(t, nil),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer srv.Close()
+
+		// List workspace directories only (files excluded).
+		listReq := httptest.NewRequest(http.MethodGet, "/api/fs/list", nil)
+		listReq.RemoteAddr = "127.0.0.1:50000"
+		listRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(listRec, listReq)
+		if listRec.Code != http.StatusOK {
+			t.Fatalf("GET /api/fs/list status = %d: %s", listRec.Code, listRec.Body.String())
+		}
+		var listResp struct {
+			Current string `json:"current"`
+			Parent  string `json:"parent"`
+			Entries []struct {
+				Name string `json:"name"`
+				Path string `json:"path"`
+			} `json:"entries"`
+		}
+		if err := json.Unmarshal(listRec.Body.Bytes(), &listResp); err != nil {
+			t.Fatal(err)
+		}
+		if listResp.Parent != "" {
+			t.Fatalf("expected empty parent at allowedRoot boundary, got %q", listResp.Parent)
+		}
+		if len(listResp.Entries) != 1 || listResp.Entries[0].Name != "alpha" {
+			t.Fatalf("expected only [alpha] directory entry, got %+v", listResp.Entries)
+		}
+
+		// Outside path rejected with 403.
+		outListReq := httptest.NewRequest(http.MethodGet, "/api/fs/list?path="+outside, nil)
+		outListReq.RemoteAddr = "127.0.0.1:50000"
+		outListRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(outListRec, outListReq)
+		if outListRec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for outside fs/list, got %d", outListRec.Code)
+		}
+
+		// Non-loopback client rejected with 403.
+		lanListReq := httptest.NewRequest(http.MethodGet, "/api/fs/list", nil)
+		lanListReq.RemoteAddr = "192.168.1.99:50000"
+		lanListRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(lanListRec, lanListReq)
+		if lanListRec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for LAN fs/list, got %d", lanListRec.Code)
+		}
+
+		// Create new subfolder via POST /api/fs/mkdir.
+		mkdirReq := httptest.NewRequest(http.MethodPost, "/api/fs/mkdir", strings.NewReader(`{"parentDir":`+strconvQuote(ws)+`,"name":"exports"}`))
+		mkdirReq.Header.Set("Content-Type", "application/json")
+		mkdirReq.RemoteAddr = "127.0.0.1:50000"
+		mkdirRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(mkdirRec, mkdirReq)
+		if mkdirRec.Code != http.StatusCreated {
+			t.Fatalf("POST /api/fs/mkdir status = %d: %s", mkdirRec.Code, mkdirRec.Body.String())
+		}
+		if info, err := os.Stat(filepath.Join(ws, "exports")); err != nil || !info.IsDir() {
+			t.Fatalf("expected created directory exports, err=%v", err)
+		}
+
+		// Invalid multi-segment or traversal folder name rejected with 400.
+		for _, badName := range []string{"../escape", "a/b", ".", "..", ""} {
+			badReq := httptest.NewRequest(http.MethodPost, "/api/fs/mkdir", strings.NewReader(`{"parentDir":`+strconvQuote(ws)+`,"name":`+strconvQuote(badName)+`}`))
+			badReq.Header.Set("Content-Type", "application/json")
+			badReq.RemoteAddr = "127.0.0.1:50000"
+			badRec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(badRec, badReq)
+			if badRec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for mkdir name %q, got %d: %s", badName, badRec.Code, badRec.Body.String())
+			}
+		}
+	})
+
+	t.Run("rejects symlink escapes for existing and nested non-existent targets", func(t *testing.T) {
+		ws := t.TempDir()
+		outside := t.TempDir()
+		linkPath := filepath.Join(ws, "escape-link")
+		if err := os.Symlink(outside, linkPath); err != nil {
+			t.Skipf("symlinks unavailable in this environment: %v", err)
+		}
+
+		srv, err := NewServer(Config{
+			Host:         "127.0.0.1",
+			Port:         8080,
+			WorkspaceDir: ws,
+			LookPath:     okLookPath,
+			Runner:       stubPipelineRunner(t, nil),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer srv.Close()
+
+		// Listing via symlink pointing outside allowedRoots must be rejected.
+		listReq := httptest.NewRequest(http.MethodGet, "/api/fs/list?path="+linkPath, nil)
+		listReq.RemoteAddr = "127.0.0.1:50000"
+		listRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(listRec, listReq)
+		if listRec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for symlink fs/list escape, got %d: %s", listRec.Code, listRec.Body.String())
+		}
+
+		// Non-existent nested path whose existing ancestor is a symlink escaping workspace must be rejected.
+		if _, err := srv.resolveAllowedPath(filepath.Join(linkPath, "nested", "out.mp4"), false); err == nil {
+			t.Fatalf("expected resolveAllowedPath to reject non-existent target through escaping symlink")
+		}
+	})
+
+	t.Run("IncludeHomeRoot enables ~ expansion and Home root chip", func(t *testing.T) {
+		ws := t.TempDir()
+		fakeHome := t.TempDir()
+		t.Setenv("HOME", fakeHome)
+		t.Setenv("USERPROFILE", fakeHome)
+
+		homeTracks := filepath.Join(fakeHome, "music")
+		if err := os.Mkdir(homeTracks, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(homeTracks, "01 - Home.mp3"), []byte("mp3"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		srv, err := NewServer(Config{
+			Host:            "127.0.0.1",
+			Port:            8080,
+			WorkspaceDir:    ws,
+			IncludeHomeRoot: true,
+			LookPath:        okLookPath,
+			Runner:          stubPipelineRunner(t, nil),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer srv.Close()
+
+		probeReq := httptest.NewRequest(http.MethodPost, "/api/probe", strings.NewReader(`{"audioDir":"~/music"}`))
+		probeReq.Header.Set("Content-Type", "application/json")
+		probeReq.RemoteAddr = "127.0.0.1:50000"
+		probeRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(probeRec, probeReq)
+		if probeRec.Code != http.StatusOK {
+			t.Fatalf("expected 200 for ~/music probe when IncludeHomeRoot=true, got %d: %s", probeRec.Code, probeRec.Body.String())
+		}
+
+		listReq := httptest.NewRequest(http.MethodGet, "/api/fs/list?path=~", nil)
+		listReq.RemoteAddr = "127.0.0.1:50000"
+		listRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(listRec, listReq)
+		if listRec.Code != http.StatusOK || !strings.Contains(listRec.Body.String(), `"music"`) {
+			t.Fatalf("expected 200 and music directory for fs/list?path=~, got %d: %s", listRec.Code, listRec.Body.String())
+		}
+	})
 }

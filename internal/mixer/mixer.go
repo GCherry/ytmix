@@ -33,6 +33,7 @@ type Track struct {
 type Config struct {
 	AudioDir      string
 	BG            string
+	OutDir        string
 	Out           string
 	Timestamps    string
 	Crossfade     float64
@@ -194,7 +195,106 @@ func probeNamedFiles(ctx context.Context, files []NamedTrackFile, runner Command
 	return tracks, nil
 }
 
-func prepareRun(ctx context.Context, cfg Config, stdout io.Writer, lookPath func(string) (string, error)) (context.Context, io.Writer, time.Time, error) {
+// ResolveOutputPaths resolves effective --out and --timestamps file paths using --out-dir when set.
+// Relative --out and --timestamps paths resolve inside --out-dir, while absolute paths override it.
+func ResolveOutputPaths(cfg Config) (string, string, error) {
+	if strings.ContainsRune(cfg.OutDir, '\x00') || strings.ContainsRune(cfg.Out, '\x00') || strings.ContainsRune(cfg.Timestamps, '\x00') {
+		return "", "", errors.New("output path must not contain null bytes")
+	}
+
+	outDir := strings.TrimSpace(cfg.OutDir)
+	rawOut := strings.TrimSpace(cfg.Out)
+	if rawOut == "" {
+		rawOut = "output.mp4"
+	}
+	if hasTrailingPathSeparator(rawOut) {
+		return "", "", fmt.Errorf("--out path %q must reference a file, not a directory", rawOut)
+	}
+
+	rawTS := strings.TrimSpace(cfg.Timestamps)
+	if rawTS == "" {
+		rawTS = "timestamps.txt"
+	}
+	if hasTrailingPathSeparator(rawTS) {
+		return "", "", fmt.Errorf("--timestamps path %q must reference a file, not a directory", rawTS)
+	}
+
+	outPath := rawOut
+	tsPath := rawTS
+	if outDir != "" {
+		if !filepath.IsAbs(outPath) {
+			outPath = filepath.Join(outDir, outPath)
+		}
+		if !filepath.IsAbs(tsPath) {
+			tsPath = filepath.Join(outDir, tsPath)
+		}
+	}
+
+	outPath = filepath.Clean(outPath)
+	tsPath = filepath.Clean(tsPath)
+	if outPath == "." || outPath == ".." {
+		return "", "", fmt.Errorf("--out path %q must reference a file, not a directory", rawOut)
+	}
+	if tsPath == "." || tsPath == ".." {
+		return "", "", fmt.Errorf("--timestamps path %q must reference a file, not a directory", rawTS)
+	}
+	return outPath, tsPath, nil
+}
+
+func hasTrailingPathSeparator(p string) bool {
+	return strings.HasSuffix(p, "/") || strings.HasSuffix(p, `\`)
+}
+
+// PrepareOutputTargets resolves --out and --timestamps, validates they do not target existing
+// directories, creates missing parent directories, and verifies writability upfront.
+func PrepareOutputTargets(cfg Config) (Config, error) {
+	if outDir := strings.TrimSpace(cfg.OutDir); outDir != "" {
+		if info, err := os.Stat(outDir); err == nil && !info.IsDir() {
+			return cfg, fmt.Errorf("--out-dir path %q exists and is not a directory", outDir)
+		}
+	}
+
+	outPath, tsPath, err := ResolveOutputPaths(cfg)
+	if err != nil {
+		return cfg, err
+	}
+	if err := ensureOutputTarget("--out", outPath); err != nil {
+		return cfg, err
+	}
+	if err := ensureOutputTarget("--timestamps", tsPath); err != nil {
+		return cfg, err
+	}
+
+	cfg.Out = outPath
+	cfg.Timestamps = tsPath
+	return cfg, nil
+}
+
+func ensureOutputTarget(flagName, targetPath string) error {
+	if info, err := os.Stat(targetPath); err == nil && info.IsDir() {
+		return fmt.Errorf("%s path %q is a directory, expected a file", flagName, targetPath)
+	}
+
+	parent := filepath.Dir(targetPath)
+	if pInfo, err := os.Stat(parent); err == nil && !pInfo.IsDir() {
+		return fmt.Errorf("parent path %q for %s exists and is not a directory", parent, flagName)
+	}
+	// #nosec G301 -- user-facing output directory uses standard 0755 permissions.
+	if err := os.MkdirAll(parent, 0755); err != nil {
+		return fmt.Errorf("create parent directory %q for %s: %w", parent, flagName, err)
+	}
+
+	probeFile, err := os.CreateTemp(parent, ".ytmix-write-check-*")
+	if err != nil {
+		return fmt.Errorf("output directory %q for %s is not writable: %w", parent, flagName, err)
+	}
+	probeName := probeFile.Name()
+	_ = probeFile.Close()
+	_ = os.Remove(probeName)
+	return nil
+}
+
+func prepareRun(ctx context.Context, cfg Config, stdout io.Writer, lookPath func(string) (string, error)) (context.Context, Config, io.Writer, time.Time, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -202,26 +302,30 @@ func prepareRun(ctx context.Context, cfg Config, stdout io.Writer, lookPath func
 		stdout = io.Discard
 	}
 	if err := ctx.Err(); err != nil {
-		return ctx, stdout, time.Time{}, err
+		return ctx, cfg, stdout, time.Time{}, err
 	}
 
 	start := time.Now()
 	if err := ValidateConfig(cfg, lookPath); err != nil {
-		return ctx, stdout, start, err
+		return ctx, cfg, stdout, start, err
 	}
 	bgInfo, err := os.Stat(cfg.BG)
 	if err != nil {
-		return ctx, stdout, start, fmt.Errorf("cannot access Background Visual %q: %w", cfg.BG, err)
+		return ctx, cfg, stdout, start, fmt.Errorf("cannot access Background Visual %q: %w", cfg.BG, err)
 	}
 	if bgInfo.IsDir() {
-		return ctx, stdout, start, fmt.Errorf("background visual path %q is a directory, expected a file", cfg.BG)
+		return ctx, cfg, stdout, start, fmt.Errorf("background visual path %q is a directory, expected a file", cfg.BG)
 	}
-	return ctx, stdout, start, nil
+	preparedCfg, err := PrepareOutputTargets(cfg)
+	if err != nil {
+		return ctx, cfg, stdout, start, err
+	}
+	return ctx, preparedCfg, stdout, start, nil
 }
 
 // Run executes the full 5-step ytmix Mix pipeline from cfg.AudioDir.
 func Run(ctx context.Context, cfg Config, stdout io.Writer, lookPath func(string) (string, error), runner CommandRunner) error {
-	ctx, stdout, start, err := prepareRun(ctx, cfg, stdout, lookPath)
+	ctx, cfg, stdout, start, err := prepareRun(ctx, cfg, stdout, lookPath)
 	if err != nil {
 		return err
 	}
@@ -236,7 +340,7 @@ func Run(ctx context.Context, cfg Config, stdout io.Writer, lookPath func(string
 
 // RunWithTracks executes the 5-step ytmix Mix pipeline using an explicit, caller-ordered Track slice.
 func RunWithTracks(ctx context.Context, cfg Config, tracks []Track, stdout io.Writer, lookPath func(string) (string, error), runner CommandRunner) error {
-	ctx, stdout, start, err := prepareRun(ctx, cfg, stdout, lookPath)
+	ctx, cfg, stdout, start, err := prepareRun(ctx, cfg, stdout, lookPath)
 	if err != nil {
 		return err
 	}

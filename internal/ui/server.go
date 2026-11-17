@@ -15,7 +15,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/GCherry/ytmix/internal/mixer"
@@ -29,27 +31,59 @@ const defaultMaxUploadBytes int64 = 512 << 20 // 512 MiB
 
 // Config configures the Editorial Mix Studio HTTP server.
 type Config struct {
-	Host           string
-	Port           int
-	WorkspaceDir   string
-	AudioDir       string
-	BG             string
-	LookPath       func(string) (string, error)
-	Runner         mixer.CommandRunner
-	GOOS           string
-	MaxUploadBytes int64
-	MaxJobs        int
+	Host            string
+	Port            int
+	WorkspaceDir    string
+	AudioDir        string
+	BG              string
+	OutDir          string
+	Out             string
+	Timestamps      string
+	AllowDirs       []string
+	IncludeHomeRoot bool
+	LookPath        func(string) (string, error)
+	Runner          mixer.CommandRunner
+	GOOS            string
+	MaxUploadBytes  int64
+	MaxJobs         int
 }
 
 // Server serves the embedded Editorial Mix Studio web UI and REST/SSE endpoints.
 type Server struct {
 	cfg           Config
 	workspaceRoot string
+	homeDir       string
+	allowedRoots  []string
+	quickRoots    []fsRootDTO
+	defaultOutDir string
 	baseCtx       context.Context
 	cancel        context.CancelFunc
+	wg            sync.WaitGroup
 	store         *jobStore
 	mux           *http.ServeMux
 	assetsFS      fs.FS
+}
+
+type fsRootDTO struct {
+	Label string `json:"label"`
+	Path  string `json:"path"`
+}
+
+type fsEntryDTO struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
+type fsListResponse struct {
+	Current string       `json:"current"`
+	Parent  string       `json:"parent"`
+	Roots   []fsRootDTO  `json:"roots"`
+	Entries []fsEntryDTO `json:"entries"`
+}
+
+type fsMkdirRequest struct {
+	ParentDir string `json:"parentDir"`
+	Name      string `json:"name"`
 }
 
 type healthResponse struct {
@@ -61,11 +95,15 @@ type healthResponse struct {
 	BindHost          string         `json:"bindHost"`
 	LocalPathsAllowed bool           `json:"localPathsAllowed"`
 	Defaults          healthDefaults `json:"defaults"`
+	Roots             []fsRootDTO    `json:"roots,omitempty"`
 }
 
 type healthDefaults struct {
-	AudioDir string `json:"audioDir"`
-	BG       string `json:"bg"`
+	AudioDir   string `json:"audioDir"`
+	BG         string `json:"bg"`
+	OutDir     string `json:"outDir"`
+	Out        string `json:"out"`
+	Timestamps string `json:"timestamps"`
 }
 
 type trackDTO struct {
@@ -91,6 +129,7 @@ type renderConfigRequest struct {
 	TrackIDs      []string `json:"trackIds"`
 	AudioDir      string   `json:"audioDir"`
 	BGPath        string   `json:"bgPath"`
+	OutDir        string   `json:"outDir"`
 	Out           string   `json:"out"`
 	Timestamps    string   `json:"timestamps"`
 	Crossfade     float64  `json:"crossfade"`
@@ -112,6 +151,12 @@ func NewServer(cfg Config) (*Server, error) {
 	if strings.TrimSpace(cfg.Host) == "" {
 		cfg.Host = "127.0.0.1"
 	}
+	if strings.TrimSpace(cfg.Out) == "" {
+		cfg.Out = "output.mp4"
+	}
+	if strings.TrimSpace(cfg.Timestamps) == "" {
+		cfg.Timestamps = "timestamps.txt"
+	}
 	if cfg.LookPath == nil {
 		return nil, errors.New("lookPath function is required")
 	}
@@ -132,13 +177,20 @@ func NewServer(cfg Config) (*Server, error) {
 		}
 		wsRoot = wd
 	}
-	absRoot, err := filepath.Abs(wsRoot)
+	absRoot, err := canonicalizeCandidatePath(wsRoot)
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace root: %w", err)
 	}
-	if evalRoot, err := filepath.EvalSymlinks(absRoot); err == nil {
-		absRoot = evalRoot
+
+	var homeDir string
+	if cfg.IncludeHomeRoot {
+		if rawHome, err := os.UserHomeDir(); err == nil && strings.TrimSpace(rawHome) != "" {
+			if canonicalHome, err := canonicalizeCandidatePath(rawHome); err == nil {
+				homeDir = canonicalHome
+			}
+		}
 	}
+
 	sub, err := fs.Sub(embeddedAssets, "assets")
 	if err != nil {
 		return nil, fmt.Errorf("load embedded assets: %w", err)
@@ -148,12 +200,39 @@ func NewServer(cfg Config) (*Server, error) {
 	s := &Server{
 		cfg:           cfg,
 		workspaceRoot: absRoot,
+		homeDir:       homeDir,
 		baseCtx:       baseCtx,
 		cancel:        cancel,
 		store:         newJobStore(cfg.MaxJobs),
 		mux:           http.NewServeMux(),
 		assetsFS:      sub,
 	}
+
+	s.addAllowedRoot("Workspace", absRoot)
+	if homeDir != "" {
+		s.addAllowedRoot("Home", homeDir)
+	}
+	if trimmedOutDir := strings.TrimSpace(cfg.OutDir); trimmedOutDir != "" {
+		resolvedOutDir, err := s.canonicalizeFromConfig(trimmedOutDir)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("resolve --out-dir: %w", err)
+		}
+		s.defaultOutDir = resolvedOutDir
+		s.addAllowedRoot("Output Dir", resolvedOutDir)
+	}
+	for _, extra := range cfg.AllowDirs {
+		if strings.TrimSpace(extra) == "" {
+			continue
+		}
+		resolvedExtra, err := s.canonicalizeFromConfig(extra)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("resolve --allow-dir %q: %w", extra, err)
+		}
+		s.addAllowedRoot(filepath.Base(resolvedExtra), resolvedExtra)
+	}
+
 	s.registerRoutes()
 	return s, nil
 }
@@ -175,6 +254,7 @@ func (s *Server) HTTPServer(addr string) *http.Server {
 // Close cancels active render jobs and deletes all temporary session and job workspaces.
 func (s *Server) Close() {
 	s.cancel()
+	s.wg.Wait()
 	s.store.closeAll()
 }
 
@@ -188,6 +268,8 @@ func (s *Server) registerRoutes() {
 	})
 	s.mux.HandleFunc("GET /api/health", s.handleHealth)
 	s.mux.HandleFunc("GET /api/preview-bg", s.handlePreviewBG)
+	s.mux.HandleFunc("GET /api/fs/list", s.handleFSList)
+	s.mux.HandleFunc("POST /api/fs/mkdir", s.handleFSMkdir)
 	s.mux.HandleFunc("POST /api/probe", s.handleProbe)
 	s.mux.HandleFunc("POST /api/render", s.handleRender)
 	s.mux.HandleFunc("GET /api/render/{id}/events", s.handleRenderEvents)
@@ -231,6 +313,14 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		status = "degraded"
 	}
 
+	localAllowed := s.localPathsAllowed(r)
+	var roots []fsRootDTO
+	var outDirDefault string
+	if localAllowed {
+		roots = append([]fsRootDTO(nil), s.quickRoots...)
+		outDirDefault = s.defaultOutDir
+	}
+
 	writeJSON(w, http.StatusOK, healthResponse{
 		Status:            status,
 		FFmpeg:            hasFFmpeg,
@@ -238,11 +328,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		Encoder:           encoder,
 		GOOS:              s.cfg.GOOS,
 		BindHost:          s.cfg.Host,
-		LocalPathsAllowed: s.localPathsAllowed(r),
+		LocalPathsAllowed: localAllowed,
 		Defaults: healthDefaults{
-			AudioDir: s.cfg.AudioDir,
-			BG:       s.cfg.BG,
+			AudioDir:   s.cfg.AudioDir,
+			BG:         s.cfg.BG,
+			OutDir:     outDirDefault,
+			Out:        s.cfg.Out,
+			Timestamps: s.cfg.Timestamps,
 		},
+		Roots: roots,
 	})
 }
 
@@ -264,12 +358,12 @@ func (s *Server) handlePreviewBG(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported Background Visual extension %q", filepath.Ext(rawPath)))
 		return
 	}
-	bgPath, err := s.resolveWorkspacePath(rawPath, true)
+	bgPath, err := s.resolveAllowedPath(rawPath, true)
 	if err != nil {
 		writeError(w, http.StatusForbidden, err.Error())
 		return
 	}
-	// #nosec G304 G703 -- bgPath is confined to s.workspaceRoot via resolveWorkspacePath and restricted to supported Background Visual extensions.
+	// #nosec G304 G703 -- bgPath is confined to s.allowedRoots via resolveAllowedPath and restricted to supported Background Visual extensions.
 	f, err := os.Open(bgPath)
 	if err != nil {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("cannot open Background Visual: %v", err))
@@ -412,7 +506,7 @@ func (s *Server) handleProbeLocal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "audioDir is required")
 		return
 	}
-	safeDir, err := s.resolveWorkspacePath(req.AudioDir, true)
+	safeDir, err := s.resolveAllowedPath(req.AudioDir, true)
 	if err != nil {
 		writeError(w, http.StatusForbidden, err.Error())
 		return
@@ -518,7 +612,7 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported Background Visual extension %q", filepath.Ext(rawBG)))
 			return
 		}
-		safeBG, err := s.resolveWorkspacePath(rawBG, true)
+		safeBG, err := s.resolveAllowedPath(rawBG, true)
 		if err != nil {
 			writeError(w, http.StatusForbidden, err.Error())
 			return
@@ -528,7 +622,7 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 
 	var safeAudioDir string
 	if localAllowed && strings.TrimSpace(req.AudioDir) != "" {
-		safeAudioDir, err = s.resolveWorkspacePath(req.AudioDir, true)
+		safeAudioDir, err = s.resolveAllowedPath(req.AudioDir, true)
 		if err != nil {
 			writeError(w, http.StatusForbidden, err.Error())
 			return
@@ -553,27 +647,54 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	outName := sanitizeBaseName(req.Out, "output.mp4")
-	tsName := sanitizeBaseName(req.Timestamps, "timestamps.txt")
+	outName := sanitizeBaseName(req.Out, s.cfg.Out)
+	tsName := sanitizeBaseName(req.Timestamps, s.cfg.Timestamps)
 	outPath := filepath.Join(jobDir, "mix.mp4")
 	tsPath := filepath.Join(jobDir, "timestamps.txt")
 	if localAllowed {
-		if trimmedOut := strings.TrimSpace(req.Out); trimmedOut != "" {
-			safeOut, err := s.resolveWorkspacePath(trimmedOut, false)
+		var safeOutDir string
+		if trimmedOutDir := strings.TrimSpace(req.OutDir); trimmedOutDir != "" {
+			resolvedDir, err := s.resolveAllowedPath(trimmedOutDir, false)
 			if err != nil {
 				writeError(w, http.StatusForbidden, err.Error())
 				return
 			}
-			outPath = safeOut
+			safeOutDir = resolvedDir
 		}
-		if trimmedTS := strings.TrimSpace(req.Timestamps); trimmedTS != "" {
-			safeTS, err := s.resolveWorkspacePath(trimmedTS, false)
-			if err != nil {
-				writeError(w, http.StatusForbidden, err.Error())
-				return
-			}
-			tsPath = safeTS
+
+		rawOut := strings.TrimSpace(req.Out)
+		if rawOut == "" {
+			rawOut = s.cfg.Out
 		}
+		joinedOut, err := s.joinWithOutDir(safeOutDir, rawOut)
+		if err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		safeOut, err := s.resolveAllowedPath(joinedOut, false)
+		if err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		outPath = safeOut
+
+		rawTS := strings.TrimSpace(req.Timestamps)
+		if rawTS == "" {
+			rawTS = s.cfg.Timestamps
+		}
+		joinedTS, err := s.joinWithOutDir(safeOutDir, rawTS)
+		if err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		safeTS, err := s.resolveAllowedPath(joinedTS, false)
+		if err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		tsPath = safeTS
+		outName = sanitizeBaseName(outPath, s.cfg.Out)
+		tsName = sanitizeBaseName(tsPath, s.cfg.Timestamps)
 	}
 
 	fontName := strings.TrimSpace(req.FontName)
@@ -598,7 +719,17 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	// #nosec G703 -- mixCfg.BG is either a server-created temp file or confined within s.workspaceRoot.
+	if localAllowed {
+		preparedCfg, err := mixer.PrepareOutputTargets(mixCfg)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		mixCfg = preparedCfg
+		outPath = preparedCfg.Out
+		tsPath = preparedCfg.Timestamps
+	}
+	// #nosec G703 -- mixCfg.BG is either a server-created temp file or confined within s.allowedRoots.
 	bgInfo, err := os.Stat(mixCfg.BG)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("cannot access Background Visual %q: %v", mixCfg.BG, err))
@@ -630,7 +761,11 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 	}
 	keepJobDir = true
 
-	go s.runRenderJob(jobCtx, job, mixCfg, tracks)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.runRenderJob(jobCtx, job, mixCfg, tracks)
+	}()
 
 	writeJSON(w, http.StatusAccepted, renderStartResponse{
 		JobID:         jobID,
@@ -850,44 +985,309 @@ func (s *Server) serveJobArtifact(w http.ResponseWriter, r *http.Request, isOutp
 	http.ServeContent(w, r, fileName, info.ModTime(), f)
 }
 
-func (s *Server) resolveWorkspacePath(raw string, mustExist bool) (string, error) {
+func (s *Server) handleFSList(w http.ResponseWriter, r *http.Request) {
+	if err := requireSameOrigin(r); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	if !s.localPathsAllowed(r) {
+		writeError(w, http.StatusForbidden, "local filesystem browsing is disabled on non-loopback or --host 0.0.0.0 sessions")
+		return
+	}
+
+	rawPath := strings.TrimSpace(r.URL.Query().Get("path"))
+	if rawPath == "" {
+		rawPath = s.defaultBrowseDir()
+	}
+	dirPath, err := s.resolveAllowedPath(rawPath, true)
+	if err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	// #nosec G304 G703 -- dirPath is confined to s.allowedRoots via resolveAllowedPath.
+	info, err := os.Stat(dirPath)
+	if err != nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("cannot access directory %q: %v", rawPath, err))
+		return
+	}
+	if !info.IsDir() {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("path %q is not a directory", rawPath))
+		return
+	}
+
+	// #nosec G304 G703 -- dirPath is confined to s.allowedRoots via resolveAllowedPath.
+	dirEntries, err := os.ReadDir(dirPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("read directory %q: %v", rawPath, err))
+		return
+	}
+
+	entries := make([]fsEntryDTO, 0, len(dirEntries))
+	for _, entry := range dirEntries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if name == "." || name == ".." {
+			continue
+		}
+		entries = append(entries, fsEntryDTO{
+			Name: name,
+			Path: filepath.Join(dirPath, name),
+		})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
+	})
+
+	parent := filepath.Dir(dirPath)
+	if parent == dirPath || !s.isWithinAnyAllowedRoot(parent) {
+		parent = ""
+	}
+
+	writeJSON(w, http.StatusOK, fsListResponse{
+		Current: dirPath,
+		Parent:  parent,
+		Roots:   append([]fsRootDTO(nil), s.quickRoots...),
+		Entries: entries,
+	})
+}
+
+func (s *Server) handleFSMkdir(w http.ResponseWriter, r *http.Request) {
+	if err := requireSameOrigin(r); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	if !s.localPathsAllowed(r) {
+		writeError(w, http.StatusForbidden, "local filesystem creation is disabled on non-loopback or --host 0.0.0.0 sessions")
+		return
+	}
+	ct := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
+	if !strings.HasPrefix(ct, "application/json") {
+		writeError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
+		return
+	}
+
+	var req fsMkdirRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON body: %v", err))
+		return
+	}
+	folderName := strings.TrimSpace(req.Name)
+	if !isValidSingleFolderName(folderName) {
+		writeError(w, http.StatusBadRequest, "folder name must be a single non-empty directory name without path separators")
+		return
+	}
+	rawParent := strings.TrimSpace(req.ParentDir)
+	if rawParent == "" {
+		rawParent = s.defaultBrowseDir()
+	}
+	parentDir, err := s.resolveAllowedPath(rawParent, true)
+	if err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	// #nosec G304 G703 -- parentDir is confined to s.allowedRoots via resolveAllowedPath.
+	parentInfo, err := os.Stat(parentDir)
+	if err != nil || !parentInfo.IsDir() {
+		writeError(w, http.StatusBadRequest, "parentDir must be an existing directory")
+		return
+	}
+
+	targetDir, err := s.resolveAllowedPath(filepath.Join(parentDir, folderName), false)
+	if err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	// #nosec G703 -- targetDir is a validated single segment inside a confined allowedRoot.
+	if _, err := os.Stat(targetDir); err == nil {
+		writeError(w, http.StatusConflict, fmt.Sprintf("folder %q already exists", folderName))
+		return
+	}
+	// #nosec G301 G703 -- user-facing output directory uses standard 0755 permissions inside a confined allowedRoot.
+	if err := os.Mkdir(targetDir, 0755); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("create folder %q: %v", folderName, err))
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, fsEntryDTO{
+		Name: folderName,
+		Path: targetDir,
+	})
+}
+
+func isValidSingleFolderName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	if strings.ContainsAny(name, `/\:`) || strings.ContainsRune(name, '\x00') {
+		return false
+	}
+	for _, r := range name {
+		if r < 0x20 {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Server) defaultBrowseDir() string {
+	if s.defaultOutDir != "" {
+		if info, err := os.Stat(s.defaultOutDir); err == nil && info.IsDir() {
+			return s.defaultOutDir
+		}
+	}
+	return s.workspaceRoot
+}
+
+func (s *Server) addAllowedRoot(label, canonicalPath string) {
+	if canonicalPath == "" {
+		return
+	}
+	for _, existing := range s.allowedRoots {
+		if existing == canonicalPath {
+			return
+		}
+	}
+	if strings.TrimSpace(label) == "" {
+		label = canonicalPath
+	}
+	s.allowedRoots = append(s.allowedRoots, canonicalPath)
+	s.quickRoots = append(s.quickRoots, fsRootDTO{
+		Label: label,
+		Path:  canonicalPath,
+	})
+}
+
+func (s *Server) canonicalizeFromConfig(raw string) (string, error) {
+	expanded, err := s.expandHomePrefix(strings.TrimSpace(raw))
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(expanded) {
+		expanded = filepath.Join(s.workspaceRoot, expanded)
+	}
+	return canonicalizeCandidatePath(expanded)
+}
+
+func canonicalizeCandidatePath(raw string) (string, error) {
+	absPath, err := filepath.Abs(filepath.Clean(raw))
+	if err != nil {
+		return "", err
+	}
+	return resolveWithExistingAncestor(absPath)
+}
+
+func resolveWithExistingAncestor(absPath string) (string, error) {
+	if realPath, err := filepath.EvalSymlinks(absPath); err == nil {
+		return realPath, nil
+	}
+	var tail []string
+	cur := absPath
+	for {
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return absPath, nil
+		}
+		tail = append([]string{filepath.Base(cur)}, tail...)
+		if realParent, err := filepath.EvalSymlinks(parent); err == nil {
+			parts := append([]string{realParent}, tail...)
+			return filepath.Join(parts...), nil
+		}
+		cur = parent
+	}
+}
+
+func (s *Server) expandHomePrefix(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "~" {
+		if s.homeDir == "" {
+			return "", errors.New("home directory access is not enabled")
+		}
+		return s.homeDir, nil
+	}
+	if strings.HasPrefix(trimmed, "~/") || strings.HasPrefix(trimmed, `~\`) {
+		if s.homeDir == "" {
+			return "", errors.New("home directory access is not enabled")
+		}
+		return filepath.Join(s.homeDir, trimmed[2:]), nil
+	}
+	return trimmed, nil
+}
+
+func (s *Server) joinWithOutDir(safeOutDir, rawTarget string) (string, error) {
+	expanded, err := s.expandHomePrefix(rawTarget)
+	if err != nil {
+		return "", err
+	}
+	if safeOutDir != "" && !filepath.IsAbs(expanded) {
+		return filepath.Join(safeOutDir, expanded), nil
+	}
+	return expanded, nil
+}
+
+func (s *Server) isWithinAnyAllowedRoot(target string) bool {
+	for _, root := range s.allowedRoots {
+		if isPathWithinRoot(root, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func isPathWithinRoot(root, target string) bool {
+	sep := string(filepath.Separator)
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+sep) || filepath.IsAbs(rel) {
+		return false
+	}
+	if target == root {
+		return true
+	}
+	if strings.HasSuffix(root, sep) {
+		return strings.HasPrefix(target, root)
+	}
+	return strings.HasPrefix(target, root+sep)
+}
+
+func (s *Server) resolveAllowedPath(raw string, mustExist bool) (string, error) {
 	cleanedInput := strings.TrimSpace(raw)
 	if cleanedInput == "" || strings.ContainsRune(cleanedInput, '\x00') {
 		return "", errors.New("path must not be empty")
 	}
+	expanded, err := s.expandHomePrefix(cleanedInput)
+	if err != nil {
+		return "", err
+	}
 
 	var candidate string
-	if filepath.IsAbs(cleanedInput) {
-		candidate = filepath.Clean(cleanedInput)
+	if filepath.IsAbs(expanded) {
+		candidate = filepath.Clean(expanded)
 	} else {
-		candidate = filepath.Join(s.workspaceRoot, cleanedInput)
+		candidate = filepath.Join(s.workspaceRoot, expanded)
 	}
 	absCandidate, err := filepath.Abs(candidate)
 	if err != nil {
 		return "", fmt.Errorf("invalid path: %w", err)
 	}
 
-	target := absCandidate
+	var target string
 	if mustExist {
 		realTarget, err := filepath.EvalSymlinks(absCandidate)
 		if err != nil {
 			return "", fmt.Errorf("cannot resolve path %q: %w", raw, err)
 		}
 		target = realTarget
-	} else if parentReal, err := filepath.EvalSymlinks(filepath.Dir(absCandidate)); err == nil {
-		target = filepath.Join(parentReal, filepath.Base(absCandidate))
+	} else {
+		resolved, err := resolveWithExistingAncestor(absCandidate)
+		if err != nil {
+			return "", fmt.Errorf("cannot resolve path %q: %w", raw, err)
+		}
+		target = resolved
 	}
 
-	sep := string(filepath.Separator)
-	rel, err := filepath.Rel(s.workspaceRoot, target)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+sep) || filepath.IsAbs(rel) {
-		return "", fmt.Errorf("path %q escapes workspace root", raw)
-	}
-	if target == s.workspaceRoot {
-		return s.workspaceRoot, nil
-	}
-	if !strings.HasPrefix(target, s.workspaceRoot+sep) {
-		return "", fmt.Errorf("path %q escapes workspace root", raw)
+	if !s.isWithinAnyAllowedRoot(target) {
+		return "", fmt.Errorf("path %q escapes allowed roots", raw)
 	}
 	return target, nil
 }
