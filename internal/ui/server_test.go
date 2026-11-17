@@ -130,9 +130,9 @@ func TestStaticAssetsAndHealth(t *testing.T) {
 	defer srv.Close()
 
 	for _, tc := range []struct {
-		path      string
-		wantType  string
-		wantSub   []string
+		path     string
+		wantType string
+		wantSub  []string
 	}{
 		{"/", "text/html", []string{"Editorial Mix Studio", "out-dir-input", "browse-out-dir-btn", "browse-audio-dir-btn", "fs-modal", "save-lan-folder-btn", "fs-modal-out-name", "fs-modal-ts-name"}},
 		{"/styles.css", "text/css", []string{"[hidden]", ".modal-backdrop", ".fs-root-chip"}},
@@ -732,19 +732,20 @@ func TestAllowedRootsAndOutputLocationAPIs(t *testing.T) {
 			t.Fatalf("expected at least 2 quick roots (Workspace + Output Dir), got %+v", payload.Roots)
 		}
 
-		// Non-loopback client must not receive server filesystem roots.
+		// Non-loopback client must not receive server filesystem roots or local paths.
 		lanReq := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 		lanReq.RemoteAddr = "192.168.1.50:50000"
 		lanRec := httptest.NewRecorder()
 		srv.Handler().ServeHTTP(lanRec, lanReq)
 		var lanPayload struct {
-			Roots []any `json:"roots"`
+			Defaults healthDefaults `json:"defaults"`
+			Roots    []any          `json:"roots"`
 		}
 		if err := json.Unmarshal(lanRec.Body.Bytes(), &lanPayload); err != nil {
 			t.Fatal(err)
 		}
-		if len(lanPayload.Roots) != 0 {
-			t.Fatalf("expected zero roots leaked to LAN client, got %+v", lanPayload.Roots)
+		if len(lanPayload.Roots) != 0 || lanPayload.Defaults.OutDir != "" || lanPayload.Defaults.AudioDir != "" || lanPayload.Defaults.BG != "" {
+			t.Fatalf("expected server paths and roots redacted for LAN client, got %+v", lanPayload)
 		}
 	})
 
@@ -854,21 +855,24 @@ func TestAllowedRootsAndOutputLocationAPIs(t *testing.T) {
 			t.Fatalf("expected 403 for outside OutDir, got %d: %s", escRec.Code, escRec.Body.String())
 		}
 
-		// Render targeting an existing directory as --out must fail upfront with 400 Bad Request.
-		dirOutBody, _ := json.Marshal(renderConfigRequest{
-			SessionID:  probed.SessionID,
-			TrackIDs:   []string{probed.Tracks[0].ID},
-			BGPath:     bgFile,
-			Out:        nestedOutDir,
-			Timestamps: filepath.Join(nestedOutDir, "ok.txt"),
-		})
-		dirOutReq := httptest.NewRequest(http.MethodPost, "/api/render", bytes.NewReader(dirOutBody))
-		dirOutReq.Header.Set("Content-Type", "application/json")
-		dirOutReq.RemoteAddr = "127.0.0.1:50000"
-		dirOutRec := httptest.NewRecorder()
-		srv.Handler().ServeHTTP(dirOutRec, dirOutReq)
-		if dirOutRec.Code != http.StatusBadRequest {
-			t.Fatalf("expected 400 for directory --out, got %d: %s", dirOutRec.Code, dirOutRec.Body.String())
+		// Render targeting an existing directory or trailing slash as --out must fail upfront with 400 Bad Request.
+		for _, badOut := range []string{nestedOutDir, "trailing/"} {
+			dirOutBody, _ := json.Marshal(renderConfigRequest{
+				SessionID:  probed.SessionID,
+				TrackIDs:   []string{probed.Tracks[0].ID},
+				BGPath:     bgFile,
+				OutDir:     exportDir,
+				Out:        badOut,
+				Timestamps: "ok.txt",
+			})
+			dirOutReq := httptest.NewRequest(http.MethodPost, "/api/render", bytes.NewReader(dirOutBody))
+			dirOutReq.Header.Set("Content-Type", "application/json")
+			dirOutReq.RemoteAddr = "127.0.0.1:50000"
+			dirOutRec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(dirOutRec, dirOutReq)
+			if dirOutRec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for directory/trailing-slash --out %q, got %d: %s", badOut, dirOutRec.Code, dirOutRec.Body.String())
+			}
 		}
 	})
 
@@ -996,6 +1000,14 @@ func TestAllowedRootsAndOutputLocationAPIs(t *testing.T) {
 		// Non-existent nested path whose existing ancestor is a symlink escaping workspace must be rejected.
 		if _, err := srv.resolveAllowedPath(filepath.Join(linkPath, "nested", "out.mp4"), false); err == nil {
 			t.Fatalf("expected resolveAllowedPath to reject non-existent target through escaping symlink")
+		}
+
+		// Dangling symlink pointing outside allowedRoots must also be rejected.
+		danglingPath := filepath.Join(ws, "dangling-link")
+		if err := os.Symlink(filepath.Join(outside, "missing-dir"), danglingPath); err == nil {
+			if _, err := srv.resolveAllowedPath(filepath.Join(danglingPath, "out.mp4"), false); err == nil {
+				t.Fatalf("expected resolveAllowedPath to reject dangling symlink escape")
+			}
 		}
 	})
 

@@ -315,9 +315,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	localAllowed := s.localPathsAllowed(r)
 	var roots []fsRootDTO
-	var outDirDefault string
+	var audioDirDefault, bgDefault, outDirDefault string
 	if localAllowed {
 		roots = append([]fsRootDTO(nil), s.quickRoots...)
+		audioDirDefault = s.cfg.AudioDir
+		bgDefault = s.cfg.BG
 		outDirDefault = s.defaultOutDir
 	}
 
@@ -330,8 +332,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		BindHost:          s.cfg.Host,
 		LocalPathsAllowed: localAllowed,
 		Defaults: healthDefaults{
-			AudioDir:   s.cfg.AudioDir,
-			BG:         s.cfg.BG,
+			AudioDir:   audioDirDefault,
+			BG:         bgDefault,
 			OutDir:     outDirDefault,
 			Out:        s.cfg.Out,
 			Timestamps: s.cfg.Timestamps,
@@ -662,36 +664,17 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 			safeOutDir = resolvedDir
 		}
 
-		rawOut := strings.TrimSpace(req.Out)
-		if rawOut == "" {
-			rawOut = s.cfg.Out
-		}
-		joinedOut, err := s.joinWithOutDir(safeOutDir, rawOut)
+		safeOut, status, err := s.resolveRenderOutputTarget(safeOutDir, req.Out, s.cfg.Out)
 		if err != nil {
-			writeError(w, http.StatusForbidden, err.Error())
+			writeError(w, status, err.Error())
 			return
 		}
-		safeOut, err := s.resolveAllowedPath(joinedOut, false)
+		safeTS, status, err := s.resolveRenderOutputTarget(safeOutDir, req.Timestamps, s.cfg.Timestamps)
 		if err != nil {
-			writeError(w, http.StatusForbidden, err.Error())
+			writeError(w, status, err.Error())
 			return
 		}
 		outPath = safeOut
-
-		rawTS := strings.TrimSpace(req.Timestamps)
-		if rawTS == "" {
-			rawTS = s.cfg.Timestamps
-		}
-		joinedTS, err := s.joinWithOutDir(safeOutDir, rawTS)
-		if err != nil {
-			writeError(w, http.StatusForbidden, err.Error())
-			return
-		}
-		safeTS, err := s.resolveAllowedPath(joinedTS, false)
-		if err != nil {
-			writeError(w, http.StatusForbidden, err.Error())
-			return
-		}
 		tsPath = safeTS
 		outName = sanitizeBaseName(outPath, s.cfg.Out)
 		tsName = sanitizeBaseName(tsPath, s.cfg.Timestamps)
@@ -1182,6 +1165,9 @@ func resolveWithExistingAncestor(absPath string) (string, error) {
 	if realPath, err := filepath.EvalSymlinks(absPath); err == nil {
 		return realPath, nil
 	}
+	if info, err := os.Lstat(absPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("dangling symlink %q is not permitted", absPath)
+	}
 	var tail []string
 	cur := absPath
 	for {
@@ -1194,8 +1180,30 @@ func resolveWithExistingAncestor(absPath string) (string, error) {
 			parts := append([]string{realParent}, tail...)
 			return filepath.Join(parts...), nil
 		}
+		if info, err := os.Lstat(parent); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("dangling symlink ancestor %q is not permitted", parent)
+		}
 		cur = parent
 	}
+}
+
+func (s *Server) resolveRenderOutputTarget(safeOutDir, raw, fallback string) (string, int, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		trimmed = fallback
+	}
+	if strings.HasSuffix(trimmed, "/") || strings.HasSuffix(trimmed, `\`) {
+		return "", http.StatusBadRequest, fmt.Errorf("output path %q must be a file path, not a directory", trimmed)
+	}
+	joined, err := s.joinWithOutDir(safeOutDir, trimmed)
+	if err != nil {
+		return "", http.StatusForbidden, err
+	}
+	resolved, err := s.resolveAllowedPath(joined, false)
+	if err != nil {
+		return "", http.StatusForbidden, err
+	}
+	return resolved, http.StatusOK, nil
 }
 
 func (s *Server) expandHomePrefix(raw string) (string, error) {

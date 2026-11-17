@@ -548,4 +548,3 @@ func TestResolveAndPrepareOutputTargets(t *testing.T) {
 		}
 	})
 }
-

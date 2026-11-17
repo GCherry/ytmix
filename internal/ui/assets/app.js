@@ -43,7 +43,7 @@
 
   function normalizeFilename(raw, defaultExt, fallback) {
     const trimmed = String(raw || "").trim();
-    if (!trimmed) return fallback;
+    if (!trimmed || trimmed.endsWith("/") || trimmed.endsWith("\\")) return fallback;
     const base = baseName(trimmed);
     if (!base || base === "." || base === "..") return fallback;
     const dotIdx = base.lastIndexOf(".");
