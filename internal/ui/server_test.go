@@ -1005,6 +1005,9 @@ func TestAllowedRootsAndOutputLocationAPIs(t *testing.T) {
 		// Dangling symlink pointing outside allowedRoots must also be rejected.
 		danglingPath := filepath.Join(ws, "dangling-link")
 		if err := os.Symlink(filepath.Join(outside, "missing-dir"), danglingPath); err == nil {
+			if _, err := srv.resolveAllowedPath(danglingPath, false); err == nil {
+				t.Fatalf("expected resolveAllowedPath to reject direct dangling symlink")
+			}
 			if _, err := srv.resolveAllowedPath(filepath.Join(danglingPath, "out.mp4"), false); err == nil {
 				t.Fatalf("expected resolveAllowedPath to reject dangling symlink escape")
 			}

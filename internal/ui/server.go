@@ -1165,9 +1165,6 @@ func resolveWithExistingAncestor(absPath string) (string, error) {
 	if realPath, err := filepath.EvalSymlinks(absPath); err == nil {
 		return realPath, nil
 	}
-	if info, err := os.Lstat(absPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("dangling symlink %q is not permitted", absPath)
-	}
 	var tail []string
 	cur := absPath
 	for {
@@ -1179,9 +1176,6 @@ func resolveWithExistingAncestor(absPath string) (string, error) {
 		if realParent, err := filepath.EvalSymlinks(parent); err == nil {
 			parts := append([]string{realParent}, tail...)
 			return filepath.Join(parts...), nil
-		}
-		if info, err := os.Lstat(parent); err == nil && info.Mode()&os.ModeSymlink != 0 {
-			return "", fmt.Errorf("dangling symlink ancestor %q is not permitted", parent)
 		}
 		cur = parent
 	}
@@ -1294,10 +1288,45 @@ func (s *Server) resolveAllowedPath(raw string, mustExist bool) (string, error) 
 		target = resolved
 	}
 
-	if !s.isWithinAnyAllowedRoot(target) {
-		return "", fmt.Errorf("path %q escapes allowed roots", raw)
+	// Keep containment barriers inline here so static analysis (CodeQL/gosec) can verify
+	// prefix and relative-path confinement directly before any post-resolution syscalls.
+	sep := string(filepath.Separator)
+	for _, root := range s.allowedRoots {
+		if target == root {
+			return root, nil
+		}
+		basePrefix := strings.TrimSuffix(root, sep)
+		if !strings.HasPrefix(target, basePrefix+sep) {
+			continue
+		}
+		rel, err := filepath.Rel(root, target)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+sep) || filepath.IsAbs(rel) {
+			continue
+		}
+		if !mustExist {
+			cur := root
+			for _, seg := range strings.Split(rel, sep) {
+				if seg == "" || seg == "." {
+					continue
+				}
+				if seg == ".." {
+					return "", fmt.Errorf("path %q escapes allowed roots", raw)
+				}
+				cur = filepath.Join(cur, seg)
+				if !strings.HasPrefix(cur, basePrefix+sep) {
+					return "", fmt.Errorf("path %q escapes allowed roots", raw)
+				}
+				// #nosec G703 -- cur is confined to allowedRoot via strings.HasPrefix and rel traversal checks above.
+				if info, err := os.Lstat(cur); err == nil && info.Mode()&os.ModeSymlink != 0 {
+					if _, evalErr := filepath.EvalSymlinks(cur); evalErr != nil {
+						return "", fmt.Errorf("dangling symlink %q is not permitted", raw)
+					}
+				}
+			}
+		}
+		return target, nil
 	}
-	return target, nil
+	return "", fmt.Errorf("path %q escapes allowed roots", raw)
 }
 
 func canonicalBackgroundExt(ext string) (string, bool) {
