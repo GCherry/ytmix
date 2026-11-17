@@ -76,4 +76,15 @@ func TestTimestampsCalculationAndFormatting(t *testing.T) {
 			t.Fatalf("written timestamps =\n%s\nwant:\n%s", string(data), want)
 		}
 	})
+
+	t.Run("creates missing nested parent directories before writing chapters", func(t *testing.T) {
+		dir := t.TempDir()
+		outPath := filepath.Join(dir, "nested", "chapters", "timestamps.txt")
+		if _, err := WriteChapters(outPath, []string{"One"}, []float64{5.0}, 0); err != nil {
+			t.Fatalf("WriteChapters nested dir error: %v", err)
+		}
+		if _, err := os.Stat(outPath); err != nil {
+			t.Fatalf("expected nested timestamps file: %v", err)
+		}
+	})
 }

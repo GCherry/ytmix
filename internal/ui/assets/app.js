@@ -16,6 +16,16 @@
     bgObjectUrl: "",
     rendering: false,
     eventSource: null,
+    lastCompleteJob: null,
+    fsModal: {
+      open: false,
+      mode: "outDir", // "outDir" | "audioDir"
+      current: "",
+      parent: "",
+      roots: [],
+      entries: [],
+      returnFocusEl: null,
+    },
   };
 
   const $ = (id) => document.getElementById(id);
@@ -29,6 +39,27 @@
     if (!path) return "";
     const parts = path.replace(/\\/g, "/").split("/");
     return parts[parts.length - 1] || path;
+  }
+
+  function normalizeFilename(raw, defaultExt, fallback) {
+    const trimmed = String(raw || "").trim();
+    if (!trimmed || trimmed.endsWith("/") || trimmed.endsWith("\\")) return fallback;
+    const base = baseName(trimmed);
+    if (!base || base === "." || base === "..") return fallback;
+    const dotIdx = base.lastIndexOf(".");
+    if (dotIdx === -1) {
+      return `${trimmed}${defaultExt}`;
+    }
+    return trimmed;
+  }
+
+  function canSaveToLanFolder() {
+    return Boolean(
+      state.health &&
+      !state.health.localPathsAllowed &&
+      typeof window.showDirectoryPicker === "function" &&
+      window.isSecureContext
+    );
   }
 
   function formatTime(sec, forceHours) {
@@ -141,6 +172,15 @@
           $("bg-path-input").value = data.defaults.bg;
           setBgMode("local");
         }
+        if (data.defaults.outDir && data.localPathsAllowed) {
+          $("out-dir-input").value = data.defaults.outDir;
+        }
+        if (data.defaults.out) {
+          $("out-path-input").value = data.defaults.out;
+        }
+        if (data.defaults.timestamps) {
+          $("timestamps-path-input").value = data.defaults.timestamps;
+        }
       }
 
       if (!data.localPathsAllowed) {
@@ -148,8 +188,21 @@
         $("bg-mode-local").disabled = true;
         $("tracks-mode-local").title = "Disabled on LAN / --host 0.0.0.0 sessions";
         $("bg-mode-local").title = "Disabled on LAN / --host 0.0.0.0 sessions";
+        $("out-dir-row").hidden = true;
+        $("out-dir-input").disabled = true;
+        $("browse-out-dir-btn").disabled = true;
+        $("browse-audio-dir-btn").hidden = true;
+        $("browse-audio-dir-btn").disabled = true;
+        $("lan-output-note").hidden = false;
         setTracksMode("upload");
         setBgMode("upload");
+      } else {
+        $("out-dir-row").hidden = false;
+        $("out-dir-input").disabled = false;
+        $("browse-out-dir-btn").disabled = false;
+        $("browse-audio-dir-btn").hidden = false;
+        $("browse-audio-dir-btn").disabled = false;
+        $("lan-output-note").hidden = true;
       }
       renderAll();
     } catch (err) {
@@ -424,10 +477,14 @@
   function renderCLI() {
     const audioDir = state.tracksMode === "local" ? ($("audio-dir-input").value.trim() || "./tracks") : "./tracks";
     const bg = activeBgName() || "<background-visual>";
-    const out = $("out-path-input").value.trim() || "output.mp4";
-    const ts = $("timestamps-path-input").value.trim() || "timestamps.txt";
+    const localAllowed = Boolean(!state.health || state.health.localPathsAllowed);
+    const outDir = localAllowed ? $("out-dir-input").value.trim() : "";
+    const out = normalizeFilename($("out-path-input").value, ".mp4", "output.mp4");
+    const ts = normalizeFilename($("timestamps-path-input").value, ".txt", "timestamps.txt");
     const crossfade = Number($("crossfade-slider").value) || 0;
-    const parts = ["ytmix", "--audio-dir", quoteArg(audioDir), "--bg", quoteArg(bg), "--out", quoteArg(out)];
+    const parts = ["ytmix", "--audio-dir", quoteArg(audioDir), "--bg", quoteArg(bg)];
+    if (outDir) parts.push("--out-dir", quoteArg(outDir));
+    parts.push("--out", quoteArg(out));
     if (ts !== "timestamps.txt") parts.push("--timestamps", quoteArg(ts));
     if (crossfade > 0) parts.push("--crossfade", String(crossfade));
     if ($("normalize-toggle").checked) parts.push("--normalize");
@@ -442,6 +499,11 @@
 
     $("cli-preview").textContent = parts.join(" ");
     $("render-btn-target").textContent = baseName(out);
+
+    if (state.lastCompleteJob) {
+      $("download-output-link").download = baseName(out) || state.lastCompleteJob.outputName || "output.mp4";
+      $("download-ts-link").download = baseName(ts) || state.lastCompleteJob.timestampsName || "timestamps.txt";
+    }
   }
 
   function quoteArg(val) {
@@ -473,9 +535,13 @@
   }
 
   function resetTelemetry() {
+    state.lastCompleteJob = null;
     $("progress-fill").style.width = "0%";
     $("telemetry-state").textContent = "Running";
     $("download-bar").hidden = true;
+    $("save-lan-folder-btn").hidden = true;
+    $("save-lan-folder-btn").textContent = "Save to Folder…";
+    $("save-lan-folder-btn").disabled = false;
     document.querySelectorAll("#step-list li").forEach((li) => {
       li.classList.remove("is-active", "is-done", "is-error");
     });
@@ -507,6 +573,14 @@
       state.eventSource = null;
     }
 
+    const outVal = normalizeFilename($("out-path-input").value, ".mp4", "output.mp4");
+    const tsVal = normalizeFilename($("timestamps-path-input").value, ".txt", "timestamps.txt");
+    $("out-path-input").value = outVal;
+    $("timestamps-path-input").value = tsVal;
+
+    const localAllowed = Boolean(state.health && state.health.localPathsAllowed);
+    const outDirVal = localAllowed ? $("out-dir-input").value.trim() : "";
+
     state.rendering = true;
     resetTelemetry();
     $("telemetry-log").textContent = "Submitting Mix configuration…";
@@ -516,8 +590,9 @@
       sessionId: state.sessionId,
       trackIds: state.tracks.map((t) => t.id),
       bgPath: state.bgMode === "local" ? $("bg-path-input").value.trim() : "",
-      out: $("out-path-input").value.trim() || "output.mp4",
-      timestamps: $("timestamps-path-input").value.trim() || "timestamps.txt",
+      outDir: outDirVal,
+      out: outVal,
+      timestamps: tsVal,
       crossfade: Number($("crossfade-slider").value) || 0,
       normalize: $("normalize-toggle").checked,
       overlayTitles: $("overlay-toggle").checked,
@@ -577,6 +652,7 @@
       es.close();
       state.eventSource = null;
       state.rendering = false;
+      state.lastCompleteJob = payload;
       markStep(6, true);
       $("progress-fill").style.width = "100%";
       $("telemetry-state").textContent = `Complete (${payload.renderingPath})`;
@@ -589,6 +665,12 @@
       const tsLink = $("download-ts-link");
       tsLink.href = payload.timestampsUrl;
       tsLink.download = payload.timestampsName || "timestamps.txt";
+
+      const saveBtn = $("save-lan-folder-btn");
+      saveBtn.hidden = !canSaveToLanFolder();
+      saveBtn.textContent = "Save to Folder…";
+      saveBtn.disabled = false;
+
       $("download-bar").hidden = false;
       renderAll();
     });
@@ -610,6 +692,245 @@
       $("telemetry-state").textContent = "Failed";
       renderAll();
     });
+  }
+
+  async function saveToLanFolder() {
+    if (!state.lastCompleteJob || !canSaveToLanFolder()) return;
+    let dirHandle;
+    try {
+      dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+    } catch (err) {
+      if (err && err.name === "AbortError") return;
+      appendLog(`Save error: ${err ? err.message : "directory picker failed"}`);
+      return;
+    }
+
+    const saveBtn = $("save-lan-folder-btn");
+    saveBtn.disabled = true;
+    saveBtn.textContent = "Saving…";
+
+    const outName = baseName(normalizeFilename($("out-path-input").value, ".mp4", state.lastCompleteJob.outputName || "output.mp4"));
+    const tsName = baseName(normalizeFilename($("timestamps-path-input").value, ".txt", state.lastCompleteJob.timestampsName || "timestamps.txt"));
+
+    try {
+      await writeResponseToFileHandle(dirHandle, outName, state.lastCompleteJob.outputUrl);
+      await writeResponseToFileHandle(dirHandle, tsName, state.lastCompleteJob.timestampsUrl);
+      saveBtn.textContent = `Saved to ${dirHandle.name || "Folder"}`;
+      appendLog(`Saved ${outName} and ${tsName} to folder "${dirHandle.name || "selected"}".`);
+    } catch (err) {
+      saveBtn.textContent = "Save to Folder…";
+      appendLog(`Save error: ${err.message}`);
+    } finally {
+      saveBtn.disabled = false;
+    }
+  }
+
+  async function writeResponseToFileHandle(dirHandle, fileName, url) {
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`download ${fileName} failed (${res.status})`);
+    }
+    const fh = await dirHandle.getFileHandle(fileName, { create: true });
+    const writable = await fh.createWritable();
+    if (res.body && typeof res.body.pipeTo === "function") {
+      await res.body.pipeTo(writable);
+      return;
+    }
+    const blob = await res.blob();
+    await writable.write(blob);
+    await writable.close();
+  }
+
+  async function openFSModal(mode, triggerEl) {
+    if (!state.health || !state.health.localPathsAllowed) return;
+    state.fsModal.mode = mode;
+    state.fsModal.returnFocusEl = triggerEl || document.activeElement;
+    state.fsModal.open = true;
+
+    const isOut = mode === "outDir";
+    $("fs-modal-title").textContent = isOut ? "Choose Output Location" : "Choose Audio Folder";
+    $("fs-modal-subtitle").textContent = isOut
+      ? "Pick or create a destination folder and set output filenames."
+      : "Pick a folder containing .mp3 Tracks to scan.";
+    $("fs-confirm-btn").textContent = isOut ? "Select This Folder" : "Use Audio Folder";
+    $("fs-filenames-section").hidden = !isOut;
+    if (isOut) {
+      $("fs-modal-out-name").value = $("out-path-input").value.trim() || "output.mp4";
+      $("fs-modal-ts-name").value = $("timestamps-path-input").value.trim() || "timestamps.txt";
+    }
+    $("fs-new-folder-input").value = "";
+    setModalError("");
+
+    $("fs-modal").hidden = false;
+    const initialPath = isOut ? $("out-dir-input").value.trim() : $("audio-dir-input").value.trim();
+    const ok = await loadFSList(initialPath, true);
+    if (!ok && initialPath) {
+      await loadFSList("", false);
+    }
+    $("fs-confirm-btn").focus();
+  }
+
+  function closeFSModal() {
+    if (!state.fsModal.open) return;
+    state.fsModal.open = false;
+    $("fs-modal").hidden = true;
+    setModalError("");
+    if (state.fsModal.returnFocusEl && typeof state.fsModal.returnFocusEl.focus === "function") {
+      state.fsModal.returnFocusEl.focus();
+    }
+    state.fsModal.returnFocusEl = null;
+  }
+
+  function setModalError(msg) {
+    const el = $("fs-modal-error");
+    if (!msg) {
+      el.textContent = "";
+      el.hidden = true;
+      return;
+    }
+    el.textContent = msg;
+    el.hidden = false;
+  }
+
+  async function loadFSList(dirPath, silentOnMiss) {
+    setModalError("");
+    const query = dirPath ? `?path=${encodeURIComponent(dirPath)}` : "";
+    try {
+      const res = await fetch(`/api/fs/list${query}`);
+      const data = await res.json();
+      if (!res.ok) {
+        if (silentOnMiss && (res.status === 404 || res.status === 403)) {
+          return false;
+        }
+        throw new Error(data.error || "Cannot list directory");
+      }
+      state.fsModal.current = data.current || "";
+      state.fsModal.parent = data.parent || "";
+      state.fsModal.roots = Array.isArray(data.roots) ? data.roots : [];
+      state.fsModal.entries = Array.isArray(data.entries) ? data.entries : [];
+      renderFSModal();
+      return true;
+    } catch (err) {
+      setModalError(err.message);
+      return false;
+    }
+  }
+
+  function renderFSModal() {
+    const rootsBar = $("fs-roots-bar");
+    rootsBar.innerHTML = "";
+    let bestMatchPath = "";
+    for (const root of state.fsModal.roots) {
+      if (root.path && state.fsModal.current.startsWith(root.path) && root.path.length > bestMatchPath.length) {
+        bestMatchPath = root.path;
+      }
+    }
+    for (const root of state.fsModal.roots) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "fs-root-chip" + (root.path === bestMatchPath ? " is-active" : "");
+      chip.textContent = root.label;
+      chip.title = root.path;
+      chip.addEventListener("click", () => loadFSList(root.path, false));
+      rootsBar.appendChild(chip);
+    }
+
+    $("fs-current-path").textContent = state.fsModal.current || "/";
+    $("fs-up-btn").disabled = !state.fsModal.parent;
+
+    const listEl = $("fs-entries-list");
+    listEl.innerHTML = "";
+    if (state.fsModal.entries.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "fs-empty";
+      empty.textContent = "No subfolders here — click New Folder or confirm this folder.";
+      listEl.appendChild(empty);
+      return;
+    }
+
+    for (const entry of state.fsModal.entries) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "fs-entry-btn";
+      btn.setAttribute("role", "option");
+
+      const nameSpan = document.createElement("span");
+      nameSpan.textContent = entry.name;
+
+      const metaSpan = document.createElement("span");
+      metaSpan.className = "fs-entry-meta";
+      metaSpan.textContent = "Open";
+
+      btn.append(nameSpan, metaSpan);
+      btn.addEventListener("click", () => loadFSList(entry.path, false));
+      listEl.appendChild(btn);
+    }
+  }
+
+  async function createNewFolder() {
+    const name = $("fs-new-folder-input").value.trim();
+    if (!name) {
+      setModalError("Enter a folder name first.");
+      $("fs-new-folder-input").focus();
+      return;
+    }
+    setModalError("");
+    try {
+      const res = await fetch("/api/fs/mkdir", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ parentDir: state.fsModal.current, name }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Cannot create folder");
+      }
+      $("fs-new-folder-input").value = "";
+      await loadFSList(data.path || state.fsModal.current, false);
+    } catch (err) {
+      setModalError(err.message);
+    }
+  }
+
+  function confirmFSModal() {
+    if (!state.fsModal.current) {
+      closeFSModal();
+      return;
+    }
+    if (state.fsModal.mode === "outDir") {
+      $("out-dir-input").value = state.fsModal.current;
+      $("out-path-input").value = normalizeFilename($("fs-modal-out-name").value, ".mp4", "output.mp4");
+      $("timestamps-path-input").value = normalizeFilename($("fs-modal-ts-name").value, ".txt", "timestamps.txt");
+      renderAll();
+    } else {
+      $("audio-dir-input").value = state.fsModal.current;
+      renderCLI();
+    }
+    closeFSModal();
+  }
+
+  function handleModalKeydown(e) {
+    if (!state.fsModal.open) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeFSModal();
+      return;
+    }
+    if (e.key !== "Tab") return;
+    const dialog = $("fs-modal").querySelector(".modal-dialog");
+    const focusables = Array.from(
+      dialog.querySelectorAll('button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])')
+    ).filter((el) => !el.closest("[hidden]"));
+    if (focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
   }
 
   function bindDropzone(el, onFiles) {
@@ -648,11 +969,14 @@
 
     $("tracks-file-input").addEventListener("change", (e) => probeUploadedFiles(e.target.files));
     bindDropzone($("tracks-dropzone"), probeUploadedFiles);
+    $("browse-audio-dir-btn").addEventListener("click", (e) => openFSModal("audioDir", e.currentTarget));
     $("probe-local-btn").addEventListener("click", probeLocalFolder);
 
     $("bg-file-input").addEventListener("change", (e) => handleBgFile(e.target.files[0]));
     bindDropzone($("bg-dropzone"), (files) => handleBgFile(files[0]));
     $("bg-path-input").addEventListener("input", () => renderAll());
+
+    $("browse-out-dir-btn").addEventListener("click", (e) => openFSModal("outDir", e.currentTarget));
 
     $("shuffle-toggle").addEventListener("change", () => {
       if ($("shuffle-toggle").checked && state.tracks.length > 1) {
@@ -661,7 +985,7 @@
       renderAll();
     });
 
-    ["crossfade-slider", "normalize-toggle", "overlay-toggle", "font-name-input", "title-duration-input", "out-path-input", "timestamps-path-input"].forEach((id) => {
+    ["crossfade-slider", "normalize-toggle", "overlay-toggle", "font-name-input", "title-duration-input", "audio-dir-input", "out-dir-input", "out-path-input", "timestamps-path-input"].forEach((id) => {
       $(id).addEventListener("input", renderAll);
       $(id).addEventListener("change", renderAll);
     });
@@ -669,6 +993,25 @@
     $("copy-chapters-btn").addEventListener("click", () => copyText($("chapters-preview").textContent, $("copy-chapters-btn")));
     $("copy-cli-btn").addEventListener("click", () => copyText($("cli-preview").textContent, $("copy-cli-btn")));
     $("render-btn").addEventListener("click", startRender);
+    $("save-lan-folder-btn").addEventListener("click", saveToLanFolder);
+
+    $("fs-modal-close").addEventListener("click", closeFSModal);
+    $("fs-cancel-btn").addEventListener("click", closeFSModal);
+    $("fs-up-btn").addEventListener("click", () => {
+      if (state.fsModal.parent) loadFSList(state.fsModal.parent, false);
+    });
+    $("fs-create-folder-btn").addEventListener("click", createNewFolder);
+    $("fs-new-folder-input").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        createNewFolder();
+      }
+    });
+    $("fs-confirm-btn").addEventListener("click", confirmFSModal);
+    $("fs-modal").addEventListener("click", (e) => {
+      if (e.target === $("fs-modal")) closeFSModal();
+    });
+    document.addEventListener("keydown", handleModalKeydown);
   }
 
   initTheme();

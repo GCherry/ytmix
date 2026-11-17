@@ -2,6 +2,7 @@ package render
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -162,6 +163,10 @@ func Render(bgPath, mergedAudioPath, assPath, tempDir, outPath string, overlayTi
 	}
 	if overlayTitles && strings.TrimSpace(assPath) == "" {
 		return "", fmt.Errorf("titles.ass path is required when --overlay-titles is enabled")
+	}
+	// #nosec G301 -- user-facing output directory uses standard 0755 permissions.
+	if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
+		return "", fmt.Errorf("create output directory for %q: %w", outPath, err)
 	}
 
 	switch pathKind {

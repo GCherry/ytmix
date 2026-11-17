@@ -1,12 +1,16 @@
 package main
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestParseFlags(t *testing.T) {
-	t.Run("parses defaults and all 10 flags", func(t *testing.T) {
+	t.Run("parses defaults and all 11 flags", func(t *testing.T) {
 		cfg, err := ParseFlags([]string{
 			"--audio-dir", "my_tracks",
 			"--bg", "loop.MP4",
+			"--out-dir", "exports/2026",
 			"--out", "mix.mp4",
 			"--timestamps", "chapters.txt",
 			"--crossfade", "2.5",
@@ -19,7 +23,7 @@ func TestParseFlags(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if cfg.AudioDir != "my_tracks" || cfg.BG != "loop.MP4" || cfg.Out != "mix.mp4" ||
+		if cfg.AudioDir != "my_tracks" || cfg.BG != "loop.MP4" || cfg.OutDir != "exports/2026" || cfg.Out != "mix.mp4" ||
 			cfg.Timestamps != "chapters.txt" || cfg.Crossfade != 2.5 || !cfg.Normalize ||
 			!cfg.OverlayTitles || cfg.TitleDuration != 10 || cfg.FontName != "Inter" || !cfg.Shuffle {
 			t.Fatalf("unexpected parsed config: %+v", cfg)
@@ -29,7 +33,7 @@ func TestParseFlags(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error for defaults: %v", err)
 		}
-		if defCfg.AudioDir != "./tracks" || defCfg.Out != "output.mp4" ||
+		if defCfg.AudioDir != "./tracks" || defCfg.OutDir != "" || defCfg.Out != "output.mp4" ||
 			defCfg.Timestamps != "timestamps.txt" || defCfg.Crossfade != 0 ||
 			defCfg.Normalize || defCfg.OverlayTitles || defCfg.TitleDuration != 0 ||
 			defCfg.FontName != "Arial" || defCfg.Shuffle {
@@ -51,7 +55,9 @@ func TestParseUIFlags(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected default ui flags error: %v", err)
 		}
-		if defCfg.Host != "127.0.0.1" || defCfg.Port != 8080 || defCfg.NoOpen || defCfg.AudioDir != "./tracks" || defCfg.BG != "" {
+		if defCfg.Host != "127.0.0.1" || defCfg.Port != 8080 || defCfg.NoOpen || defCfg.AudioDir != "./tracks" ||
+			defCfg.BG != "" || defCfg.OutDir != "" || defCfg.Out != "output.mp4" ||
+			defCfg.Timestamps != "timestamps.txt" || len(defCfg.AllowDirs) != 0 {
 			t.Fatalf("unexpected default ui config: %+v", defCfg)
 		}
 
@@ -61,12 +67,20 @@ func TestParseUIFlags(t *testing.T) {
 			"--no-open",
 			"--audio-dir", "./custom_tracks",
 			"--bg", "loop.mp4",
+			"--out-dir", "./renders",
+			"--out", "custom.mp4",
+			"--timestamps", "custom_chapters.txt",
+			"--allow-dir", "/mnt/media",
+			"--allow-dir", "/mnt/exports",
 		})
 		if err != nil {
 			t.Fatalf("unexpected custom ui flags error: %v", err)
 		}
 		if customCfg.Host != "0.0.0.0" || customCfg.Port != 9091 || !customCfg.NoOpen ||
-			customCfg.AudioDir != "./custom_tracks" || customCfg.BG != "loop.mp4" {
+			customCfg.AudioDir != "./custom_tracks" || customCfg.BG != "loop.mp4" ||
+			customCfg.OutDir != "./renders" || customCfg.Out != "custom.mp4" ||
+			customCfg.Timestamps != "custom_chapters.txt" ||
+			!reflect.DeepEqual(customCfg.AllowDirs, []string{"/mnt/media", "/mnt/exports"}) {
 			t.Fatalf("unexpected custom ui config: %+v", customCfg)
 		}
 	})

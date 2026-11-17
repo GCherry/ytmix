@@ -54,9 +54,10 @@
           </div>
 
           <div id="tracks-local-pane" class="source-pane" hidden>
-            <div class="inline-field">
+            <div class="inline-field inline-field-wrap">
               <label class="sr-only" for="audio-dir-input">Audio Directory (--audio-dir)</label>
               <input id="audio-dir-input" type="text" class="input mono" value="./tracks" placeholder="./tracks">
+              <button type="button" class="btn btn-secondary" id="browse-audio-dir-btn">Browse…</button>
               <button type="button" class="btn btn-secondary" id="probe-local-btn">Probe Folder</button>
             </div>
             <p class="field-hint" id="local-tracks-hint">Scans local folder for .mp3 Tracks via <code>ffprobe</code>.</p>
@@ -229,14 +230,25 @@
             <button type="button" class="btn btn-ghost btn-sm" id="copy-cli-btn">Copy CLI</button>
           </div>
 
-          <div class="split-fields">
+          <div class="control-block" id="out-dir-row">
+            <label for="out-dir-input">Output Directory <code class="mono">--out-dir</code></label>
+            <div class="inline-field">
+              <input id="out-dir-input" type="text" class="input mono" value="" placeholder="Workspace / current working directory">
+              <button type="button" class="btn btn-secondary" id="browse-out-dir-btn">Browse…</button>
+            </div>
+            <p class="field-hint">Missing subfolders are created automatically. Relative filenames save inside this folder.</p>
+          </div>
+
+          <p class="field-hint" id="lan-output-note" hidden>LAN session: rendered Mix &amp; Chapter Timestamps remain isolated on the server; use <strong>Save to Folder…</strong> or the download buttons after rendering.</p>
+
+          <div class="split-fields output-names-grid">
             <div class="control-block">
-              <label for="out-path-input">Video Output <code class="mono">--out</code></label>
-              <input id="out-path-input" type="text" class="input mono" value="output.mp4">
+              <label for="out-path-input">Video Filename <code class="mono">--out</code></label>
+              <input id="out-path-input" type="text" class="input mono" value="output.mp4" placeholder="output.mp4">
             </div>
             <div class="control-block">
-              <label for="timestamps-path-input">Chapters File <code class="mono">--timestamps</code></label>
-              <input id="timestamps-path-input" type="text" class="input mono" value="timestamps.txt">
+              <label for="timestamps-path-input">Chapters Filename <code class="mono">--timestamps</code></label>
+              <input id="timestamps-path-input" type="text" class="input mono" value="timestamps.txt" placeholder="timestamps.txt">
             </div>
           </div>
 
@@ -271,6 +283,7 @@
               Render Mix → <span class="mono" id="render-btn-target">output.mp4</span>
             </button>
             <div class="download-bar" id="download-bar" hidden>
+              <button type="button" class="btn btn-gold" id="save-lan-folder-btn" hidden>Save to Folder…</button>
               <a class="btn btn-mint" id="download-output-link" href="#" download>Download MP4</a>
               <a class="btn btn-secondary" id="download-ts-link" href="#" download>Download timestamps.txt</a>
             </div>
@@ -278,6 +291,51 @@
         </section>
       </div>
     </main>
+  </div>
+
+  <div class="modal-backdrop" id="fs-modal" hidden role="dialog" aria-modal="true" aria-labelledby="fs-modal-title">
+    <div class="modal-dialog" role="document">
+      <div class="modal-head">
+        <div>
+          <h2 class="modal-title" id="fs-modal-title">Choose Output Location</h2>
+          <p class="field-hint" id="fs-modal-subtitle">Browse allowed local directories or create a new folder.</p>
+        </div>
+        <button type="button" class="icon-btn" id="fs-modal-close" aria-label="Close folder browser">×</button>
+      </div>
+
+      <div class="fs-roots" id="fs-roots-bar" aria-label="Quick-jump root folders"></div>
+
+      <div class="fs-nav-bar">
+        <button type="button" class="btn btn-secondary btn-sm" id="fs-up-btn">Up (..)</button>
+        <div class="well fs-current-path mono" id="fs-current-path" aria-live="polite"></div>
+      </div>
+
+      <div class="well fs-entries-well" id="fs-entries-list" role="listbox" aria-label="Subfolders"></div>
+
+      <div class="fs-mkdir-bar">
+        <label class="sr-only" for="fs-new-folder-input">New subfolder name</label>
+        <input id="fs-new-folder-input" type="text" class="input mono" placeholder="New folder name">
+        <button type="button" class="btn btn-secondary" id="fs-create-folder-btn">New Folder</button>
+      </div>
+
+      <div class="split-fields fs-filenames-section" id="fs-filenames-section">
+        <div class="control-block">
+          <label for="fs-modal-out-name">Video Filename <code class="mono">--out</code></label>
+          <input id="fs-modal-out-name" type="text" class="input mono" placeholder="output.mp4">
+        </div>
+        <div class="control-block">
+          <label for="fs-modal-ts-name">Chapters Filename <code class="mono">--timestamps</code></label>
+          <input id="fs-modal-ts-name" type="text" class="input mono" placeholder="timestamps.txt">
+        </div>
+      </div>
+
+      <p class="field-hint error-text" id="fs-modal-error" hidden role="alert"></p>
+
+      <div class="modal-foot">
+        <button type="button" class="btn btn-ghost" id="fs-cancel-btn">Cancel</button>
+        <button type="button" class="btn btn-mint" id="fs-confirm-btn">Select This Folder</button>
+      </div>
+    </div>
   </div>
 
   <script src="/app.js"></script>

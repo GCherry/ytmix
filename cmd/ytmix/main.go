@@ -21,13 +21,31 @@ import (
 	"github.com/GCherry/ytmix/internal/ui"
 )
 
+type stringSliceFlag []string
+
+func (s *stringSliceFlag) String() string {
+	return strings.Join(*s, ",")
+}
+
+func (s *stringSliceFlag) Set(val string) error {
+	trimmed := strings.TrimSpace(val)
+	if trimmed != "" {
+		*s = append(*s, trimmed)
+	}
+	return nil
+}
+
 // UIConfig holds the CLI configuration for the `ytmix ui` local web server subcommand.
 type UIConfig struct {
-	Host     string
-	Port     int
-	NoOpen   bool
-	AudioDir string
-	BG       string
+	Host       string
+	Port       int
+	NoOpen     bool
+	AudioDir   string
+	BG         string
+	OutDir     string
+	Out        string
+	Timestamps string
+	AllowDirs  []string
 }
 
 // IsUISubcommand reports whether args invoke the `ui` subcommand.
@@ -45,6 +63,10 @@ func NewUIFlagSet(cfg *UIConfig, output io.Writer) *flag.FlagSet {
 	fs.BoolVar(&cfg.NoOpen, "no-open", false, "Do not automatically open the browser on startup.")
 	fs.StringVar(&cfg.AudioDir, "audio-dir", "./tracks", "Default local folder path prefilled in the UI.")
 	fs.StringVar(&cfg.BG, "bg", "", "Default local Background Visual path prefilled in the UI.")
+	fs.StringVar(&cfg.OutDir, "out-dir", "", "Default output directory prefilled in the UI and allowed for local reads/writes.")
+	fs.StringVar(&cfg.Out, "out", "output.mp4", "Default output .mp4 filename prefilled in the UI.")
+	fs.StringVar(&cfg.Timestamps, "timestamps", "timestamps.txt", "Default Chapter Timestamps filename prefilled in the UI.")
+	fs.Var((*stringSliceFlag)(&cfg.AllowDirs), "allow-dir", "Additional local directory allowed for loopback UI browsing and output (repeatable).")
 	return fs
 }
 
@@ -72,8 +94,9 @@ func NewFlagSet(cfg *mixer.Config, output io.Writer) *flag.FlagSet {
 
 	fs.StringVar(&cfg.AudioDir, "audio-dir", "./tracks", "Directory containing input .mp3 files.")
 	fs.StringVar(&cfg.BG, "bg", "", "Path to Background Visual (.jpg, .jpeg, .png, .webp, .mp4, .mov, .gif).")
-	fs.StringVar(&cfg.Out, "out", "output.mp4", "Output .mp4 video path.")
-	fs.StringVar(&cfg.Timestamps, "timestamps", "timestamps.txt", "Output file path for YouTube Chapter Timestamps.")
+	fs.StringVar(&cfg.OutDir, "out-dir", "", "Directory where relative --out and --timestamps paths are written.")
+	fs.StringVar(&cfg.Out, "out", "output.mp4", "Output .mp4 video path (relative paths resolve inside --out-dir when set).")
+	fs.StringVar(&cfg.Timestamps, "timestamps", "timestamps.txt", "Output file path for YouTube Chapter Timestamps (relative paths resolve inside --out-dir when set).")
 	fs.Float64Var(&cfg.Crossfade, "crossfade", 0, "Crossfade duration in seconds between Tracks.")
 	fs.BoolVar(&cfg.Normalize, "normalize", false, "Normalize each Track to -14 LUFS.")
 	fs.BoolVar(&cfg.OverlayTitles, "overlay-titles", false, "Burn Display Titles into the bottom-left corner via .ass subtitles.")
@@ -134,13 +157,18 @@ func main() {
 
 func runUIServer(ctx context.Context, uiCfg UIConfig, out io.Writer) error {
 	srv, err := ui.NewServer(ui.Config{
-		Host:     uiCfg.Host,
-		Port:     uiCfg.Port,
-		AudioDir: uiCfg.AudioDir,
-		BG:       uiCfg.BG,
-		LookPath: exec.LookPath,
-		Runner:   mixer.ExecCommandRunner,
-		GOOS:     runtime.GOOS,
+		Host:            uiCfg.Host,
+		Port:            uiCfg.Port,
+		AudioDir:        uiCfg.AudioDir,
+		BG:              uiCfg.BG,
+		OutDir:          uiCfg.OutDir,
+		Out:             uiCfg.Out,
+		Timestamps:      uiCfg.Timestamps,
+		AllowDirs:       uiCfg.AllowDirs,
+		IncludeHomeRoot: true,
+		LookPath:        exec.LookPath,
+		Runner:          mixer.ExecCommandRunner,
+		GOOS:            runtime.GOOS,
 	})
 	if err != nil {
 		return err

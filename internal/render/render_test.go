@@ -2,6 +2,7 @@ package render
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -276,6 +277,18 @@ func TestRenderExecution(t *testing.T) {
 		runner := func(name string, args ...string) ([]byte, error) { return nil, nil }
 		if _, err := Render("bg.png", "merged.m4a", "", t.TempDir(), "out.mp4", true, "windows", runner); err == nil {
 			t.Fatal("expected error when assPath is empty with overlayTitles=true")
+		}
+	})
+
+	t.Run("creates missing parent directory for outPath", func(t *testing.T) {
+		tempDir := t.TempDir()
+		nestedOut := filepath.Join(tempDir, "exports", "2026", "mix.mp4")
+		runner := func(name string, args ...string) ([]byte, error) { return nil, nil }
+		if _, err := Render("cover.png", filepath.Join(tempDir, "merged.m4a"), "", tempDir, nestedOut, false, "linux", runner); err != nil {
+			t.Fatalf("Render nested outPath error: %v", err)
+		}
+		if _, err := os.Stat(filepath.Dir(nestedOut)); err != nil {
+			t.Fatalf("expected Render to create parent directory %q: %v", filepath.Dir(nestedOut), err)
 		}
 	})
 }
