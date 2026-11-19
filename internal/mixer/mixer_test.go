@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/GCherry/ytmix/internal/render"
 )
 
 func TestValidateConfig(t *testing.T) {
@@ -65,6 +67,72 @@ func TestValidateConfig(t *testing.T) {
 		}
 		if err := ValidateConfig(Config{BG: "a.png"}, missingFFprobe); err == nil || !strings.Contains(err.Error(), "ffprobe") {
 			t.Fatalf("expected ffprobe error, got: %v", err)
+		}
+	})
+
+	t.Run("ValidateBackgroundFile checks existence and rejects directories", func(t *testing.T) {
+		tmp := t.TempDir()
+		if err := ValidateBackgroundFile(filepath.Join(tmp, "missing.png")); err == nil {
+			t.Fatal("expected error for missing file")
+		}
+		if err := ValidateBackgroundFile(tmp); err == nil || !strings.Contains(err.Error(), "directory") {
+			t.Fatalf("expected directory error, got: %v", err)
+		}
+		bg := filepath.Join(tmp, "cover.png")
+		if err := os.WriteFile(bg, []byte("png"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := ValidateBackgroundFile(bg); err != nil {
+			t.Fatalf("ValidateBackgroundFile valid file error: %v", err)
+		}
+	})
+
+	t.Run("PreflightConfig selects path and respects prepareOutputs flag", func(t *testing.T) {
+		tmp := t.TempDir()
+		bg := filepath.Join(tmp, "loop.mp4")
+		if err := os.WriteFile(bg, []byte("mp4"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		outSub := filepath.Join(tmp, "nested")
+		cfg := Config{
+			BG:         bg,
+			OutDir:     outSub,
+			Out:        "mix.mp4",
+			Timestamps: "chapters.txt",
+		}
+		resCfg, pathKind, err := PreflightConfig(cfg, okLookPath, false)
+		if err != nil {
+			t.Fatalf("PreflightConfig(prepareOutputs=false) error: %v", err)
+		}
+		if pathKind != render.PathA {
+			t.Fatalf("pathKind = %q, want %q", pathKind, render.PathA)
+		}
+		if resCfg.Out != "mix.mp4" {
+			t.Fatalf("expected unresolved Out when prepareOutputs=false, got %q", resCfg.Out)
+		}
+		if _, err := os.Stat(outSub); !os.IsNotExist(err) {
+			t.Fatalf("expected outSub not created when prepareOutputs=false, err=%v", err)
+		}
+
+		resCfg, pathKind, err = PreflightConfig(Config{
+			BG:            bg,
+			OutDir:        outSub,
+			Out:           "mix.mp4",
+			Timestamps:    "chapters.txt",
+			OverlayTitles: true,
+		}, okLookPath, true)
+		if err != nil {
+			t.Fatalf("PreflightConfig(prepareOutputs=true) error: %v", err)
+		}
+		if pathKind != render.PathB {
+			t.Fatalf("pathKind = %q, want %q", pathKind, render.PathB)
+		}
+		if resCfg.Out != filepath.Join(outSub, "mix.mp4") {
+			t.Fatalf("expected resolved Out inside outSub, got %q", resCfg.Out)
+		}
+		if info, err := os.Stat(outSub); err != nil || !info.IsDir() {
+			t.Fatalf("expected outSub directory created when prepareOutputs=true, err=%v", err)
 		}
 	})
 }

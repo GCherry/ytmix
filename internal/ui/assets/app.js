@@ -2,8 +2,8 @@
   "use strict";
 
   const THEME_KEY = "ytmix_theme";
-  const VIDEO_EXTS = new Set([".mp4", ".mov", ".gif"]);
-  const IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+  let VIDEO_EXTS = new Set([".mp4", ".mov", ".gif"]);
+  let IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
 
   const state = {
     health: null,
@@ -151,6 +151,19 @@
       const res = await fetch("/api/health");
       const data = await res.json();
       state.health = data;
+
+      if (data.supportedBackgroundExts) {
+        if (Array.isArray(data.supportedBackgroundExts.video) && data.supportedBackgroundExts.video.length > 0) {
+          VIDEO_EXTS = new Set(data.supportedBackgroundExts.video.map((e) => String(e).toLowerCase()));
+        }
+        if (Array.isArray(data.supportedBackgroundExts.image) && data.supportedBackgroundExts.image.length > 0) {
+          IMAGE_EXTS = new Set(data.supportedBackgroundExts.image.map((e) => String(e).toLowerCase()));
+        }
+        const bgInput = $("bg-file-input");
+        if (bgInput) {
+          bgInput.accept = [...IMAGE_EXTS, ...VIDEO_EXTS].join(",");
+        }
+      }
 
       const ok = data.ffmpeg && data.ffprobe;
       $("health-dot").className = "health-dot " + (ok ? "is-ok" : "is-bad");

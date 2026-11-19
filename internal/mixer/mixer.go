@@ -186,23 +186,13 @@ func ExecStreamRunner(ctx context.Context, onStdoutLine func(string), name strin
 	return nil
 }
 
-// IsSupportedBackgroundExt reports whether ext is a supported Background Visual extension.
-func IsSupportedBackgroundExt(ext string) bool {
-	switch strings.ToLower(ext) {
-	case ".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".gif":
-		return true
-	default:
-		return false
-	}
-}
-
 // ValidateConfig validates CLI configuration and checks ffmpeg/ffprobe availability.
 func ValidateConfig(cfg Config, lookPath func(string) (string, error)) error {
 	if strings.TrimSpace(cfg.BG) == "" {
 		return errors.New("--bg is required (supported: .jpg, .jpeg, .png, .webp, .mp4, .mov, .gif)")
 	}
-	if !IsSupportedBackgroundExt(filepath.Ext(cfg.BG)) {
-		return fmt.Errorf("unsupported Background Visual extension %q (supported: .jpg, .jpeg, .png, .webp, .mp4, .mov, .gif)", filepath.Ext(cfg.BG))
+	if _, _, err := render.ClassifyBackground(cfg.BG); err != nil {
+		return err
 	}
 	if math.IsNaN(cfg.Crossfade) || math.IsInf(cfg.Crossfade, 0) || cfg.Crossfade < 0 {
 		return fmt.Errorf("--crossfade must be >= 0 (got %v)", cfg.Crossfade)
@@ -216,6 +206,42 @@ func ValidateConfig(cfg Config, lookPath func(string) (string, error)) error {
 		}
 	}
 	return nil
+}
+
+// ValidateBackgroundFile verifies bgPath exists and references a regular file rather than a directory.
+func ValidateBackgroundFile(bgPath string) error {
+	// #nosec G703 -- callers validate and confine bgPath (CLI flag or ui allowedRoots/server temp file) before preflight.
+	bgInfo, err := os.Stat(bgPath)
+	if err != nil {
+		return fmt.Errorf("cannot access Background Visual %q: %w", bgPath, err)
+	}
+	if bgInfo.IsDir() {
+		return fmt.Errorf("background visual path %q is a directory, expected a file", bgPath)
+	}
+	return nil
+}
+
+// PreflightConfig validates cfg, checks Background Visual file accessibility, selects the Rendering Path,
+// and optionally prepares output directories and writability checks.
+func PreflightConfig(cfg Config, lookPath func(string) (string, error), prepareOutputs bool) (Config, render.Path, error) {
+	if err := ValidateConfig(cfg, lookPath); err != nil {
+		return cfg, "", err
+	}
+	if err := ValidateBackgroundFile(cfg.BG); err != nil {
+		return cfg, "", err
+	}
+	pathKind, err := render.SelectPath(cfg.BG, cfg.OverlayTitles)
+	if err != nil {
+		return cfg, "", err
+	}
+	if prepareOutputs {
+		preparedCfg, err := PrepareOutputTargets(cfg)
+		if err != nil {
+			return cfg, "", err
+		}
+		cfg = preparedCfg
+	}
+	return cfg, pathKind, nil
 }
 
 // ProbeTracks discovers .mp3 files in audioDir and probes each Track's duration and Display Title.
@@ -418,17 +444,7 @@ func prepareRun(ctx context.Context, cfg Config, lookPath func(string) (string, 
 	}
 
 	start := time.Now()
-	if err := ValidateConfig(cfg, lookPath); err != nil {
-		return ctx, cfg, start, err
-	}
-	bgInfo, err := os.Stat(cfg.BG)
-	if err != nil {
-		return ctx, cfg, start, fmt.Errorf("cannot access Background Visual %q: %w", cfg.BG, err)
-	}
-	if bgInfo.IsDir() {
-		return ctx, cfg, start, fmt.Errorf("background visual path %q is a directory, expected a file", cfg.BG)
-	}
-	preparedCfg, err := PrepareOutputTargets(cfg)
+	preparedCfg, _, err := PreflightConfig(cfg, lookPath, true)
 	if err != nil {
 		return ctx, cfg, start, err
 	}

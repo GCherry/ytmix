@@ -50,6 +50,77 @@ func TestSelectPath(t *testing.T) {
 	}
 }
 
+func TestBackgroundVisualClassification(t *testing.T) {
+	t.Run("SupportedBackgroundExts returns expected canonical lists and fresh slices", func(t *testing.T) {
+		got := SupportedBackgroundExts()
+		wantImage := []string{".jpg", ".jpeg", ".png", ".webp"}
+		wantVideo := []string{".mp4", ".mov", ".gif"}
+		if !reflect.DeepEqual(got.Image, wantImage) || !reflect.DeepEqual(got.Video, wantVideo) {
+			t.Fatalf("SupportedBackgroundExts() = %+v", got)
+		}
+		got.Image[0] = ".mutated"
+		got.Video[0] = ".mutated"
+		fresh := SupportedBackgroundExts()
+		if fresh.Image[0] != ".jpg" || fresh.Video[0] != ".mp4" {
+			t.Fatalf("SupportedBackgroundExts() returned shared slice: %+v", fresh)
+		}
+	})
+
+	t.Run("CanonicalBackgroundExt normalizes case and whitespace", func(t *testing.T) {
+		for _, tc := range []struct {
+			in     string
+			want   string
+			wantOK bool
+		}{
+			{".jpg", ".jpg", true},
+			{" .JPEG ", ".jpeg", true},
+			{".PNG", ".png", true},
+			{".WeBp", ".webp", true},
+			{".MP4", ".mp4", true},
+			{".mov", ".mov", true},
+			{".GIF", ".gif", true},
+			{".bmp", "", false},
+			{"", "", false},
+		} {
+			got, ok := CanonicalBackgroundExt(tc.in)
+			if got != tc.want || ok != tc.wantOK {
+				t.Errorf("CanonicalBackgroundExt(%q) = (%q, %v), want (%q, %v)", tc.in, got, ok, tc.want, tc.wantOK)
+			}
+		}
+	})
+
+	t.Run("ClassifyBackground returns kind and canonical extension", func(t *testing.T) {
+		for _, tc := range []struct {
+			path     string
+			wantKind Path
+			wantBG   BackgroundKind
+			wantExt  string
+			wantErr  bool
+		}{
+			{"cover.PNG", PathC, BackgroundKindImage, ".png", false},
+			{"cover.jpeg", PathC, BackgroundKindImage, ".jpeg", false},
+			{"loop.MOV", PathA, BackgroundKindVideo, ".mov", false},
+			{"anim.gif", PathA, BackgroundKindVideo, ".gif", false},
+			{"notes.txt", "", "", "", true},
+		} {
+			kind, ext, err := ClassifyBackground(tc.path)
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("ClassifyBackground(%q) expected error", tc.path)
+				}
+				continue
+			}
+			if err != nil {
+				t.Errorf("ClassifyBackground(%q) unexpected error: %v", tc.path, err)
+				continue
+			}
+			if kind != tc.wantBG || ext != tc.wantExt {
+				t.Errorf("ClassifyBackground(%q) = (%q, %q), want (%q, %q)", tc.path, kind, ext, tc.wantBG, tc.wantExt)
+			}
+		}
+	})
+}
+
 func TestEscapeFFmpegFilterPath(t *testing.T) {
 	cases := []struct {
 		name string
@@ -130,6 +201,38 @@ func TestDetectEncoderArgs(t *testing.T) {
 			if got := DetectEncoderArgs(context.Background(), goos, failRunner); !reflect.DeepEqual(got, wantFallback) {
 				t.Fatalf("%s: got %v, want %v", goos, got, wantFallback)
 			}
+		}
+	})
+
+	t.Run("DetectEncoder returns structured name and args across platforms and edge cases", func(t *testing.T) {
+		okRunner := func(_ context.Context, _ string, _ ...string) ([]byte, error) { return nil, nil }
+		failRunner := func(_ context.Context, _ string, _ ...string) ([]byte, error) { return nil, errors.New("unavailable") }
+
+		darwinInfo := DetectEncoder(context.Background(), "darwin", okRunner)
+		if darwinInfo.Name != "h264_videotoolbox" || !reflect.DeepEqual(darwinInfo.Args, []string{"-c:v", "h264_videotoolbox", "-b:v", "6000k"}) {
+			t.Fatalf("darwin EncoderInfo = %+v", darwinInfo)
+		}
+
+		winInfo := DetectEncoder(context.Background(), "windows", okRunner)
+		if winInfo.Name != "h264_nvenc" || !reflect.DeepEqual(winInfo.Args, []string{"-c:v", "h264_nvenc", "-preset", "p4", "-cq", "20"}) {
+			t.Fatalf("windows EncoderInfo = %+v", winInfo)
+		}
+
+		nilRunnerInfo := DetectEncoder(context.Background(), "windows", nil)
+		if nilRunnerInfo.Name != "libx264" {
+			t.Fatalf("nil runner EncoderInfo = %+v, want libx264", nilRunnerInfo)
+		}
+
+		cancelledCtx, cancel := context.WithCancel(context.Background())
+		cancel()
+		cancelledInfo := DetectEncoder(cancelledCtx, "linux", okRunner)
+		if cancelledInfo.Name != "libx264" {
+			t.Fatalf("cancelled ctx EncoderInfo = %+v, want libx264", cancelledInfo)
+		}
+
+		fallbackInfo := DetectEncoder(context.Background(), "linux", failRunner)
+		if fallbackInfo.Name != "libx264" || !reflect.DeepEqual(fallbackInfo.Args, []string{"-c:v", "libx264", "-preset", "veryfast", "-crf", "20"}) {
+			t.Fatalf("fallback EncoderInfo = %+v", fallbackInfo)
 		}
 	})
 }

@@ -63,6 +63,8 @@ type Server struct {
 	store         *jobStore
 	mux           *http.ServeMux
 	assetsFS      fs.FS
+	encoderOnce   sync.Once
+	cachedEncoder render.EncoderInfo
 }
 
 type fsRootDTO struct {
@@ -88,15 +90,16 @@ type fsMkdirRequest struct {
 }
 
 type healthResponse struct {
-	Status            string         `json:"status"`
-	FFmpeg            bool           `json:"ffmpeg"`
-	FFprobe           bool           `json:"ffprobe"`
-	Encoder           string         `json:"encoder"`
-	GOOS              string         `json:"goos"`
-	BindHost          string         `json:"bindHost"`
-	LocalPathsAllowed bool           `json:"localPathsAllowed"`
-	Defaults          healthDefaults `json:"defaults"`
-	Roots             []fsRootDTO    `json:"roots,omitempty"`
+	Status                  string                `json:"status"`
+	FFmpeg                  bool                  `json:"ffmpeg"`
+	FFprobe                 bool                  `json:"ffprobe"`
+	Encoder                 string                `json:"encoder"`
+	GOOS                    string                `json:"goos"`
+	BindHost                string                `json:"bindHost"`
+	LocalPathsAllowed       bool                  `json:"localPathsAllowed"`
+	SupportedBackgroundExts render.BackgroundExts `json:"supportedBackgroundExts"`
+	Defaults                healthDefaults        `json:"defaults"`
+	Roots                   []fsRootDTO           `json:"roots,omitempty"`
 }
 
 type healthDefaults struct {
@@ -297,6 +300,17 @@ func (s *Server) serveEmbeddedAsset(w http.ResponseWriter, name, contentType str
 	_, _ = w.Write(data)
 }
 
+func (s *Server) detectEncoder(ctx context.Context) render.EncoderInfo {
+	s.encoderOnce.Do(func() {
+		probeCtx := s.baseCtx
+		if probeCtx == nil {
+			probeCtx = ctx
+		}
+		s.cachedEncoder = render.DetectEncoder(probeCtx, s.cfg.GOOS, s.cfg.Runner)
+	})
+	return s.cachedEncoder
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, errFFmpeg := s.cfg.LookPath("ffmpeg")
 	_, errFFprobe := s.cfg.LookPath("ffprobe")
@@ -306,8 +320,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	status := "ok"
 	encoder := "unavailable"
 	if hasFFmpeg {
-		args := render.DetectEncoderArgs(r.Context(), s.cfg.GOOS, s.cfg.Runner)
-		encoder = extractEncoderName(args)
+		encoder = s.detectEncoder(r.Context()).Name
 	} else {
 		status = "degraded"
 	}
@@ -326,13 +339,14 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, healthResponse{
-		Status:            status,
-		FFmpeg:            hasFFmpeg,
-		FFprobe:           hasFFprobe,
-		Encoder:           encoder,
-		GOOS:              s.cfg.GOOS,
-		BindHost:          s.cfg.Host,
-		LocalPathsAllowed: localAllowed,
+		Status:                  status,
+		FFmpeg:                  hasFFmpeg,
+		FFprobe:                 hasFFprobe,
+		Encoder:                 encoder,
+		GOOS:                    s.cfg.GOOS,
+		BindHost:                s.cfg.Host,
+		LocalPathsAllowed:       localAllowed,
+		SupportedBackgroundExts: render.SupportedBackgroundExts(),
 		Defaults: healthDefaults{
 			AudioDir:   audioDirDefault,
 			BG:         bgDefault,
@@ -358,7 +372,7 @@ func (s *Server) handlePreviewBG(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "path query parameter is required")
 		return
 	}
-	if !mixer.IsSupportedBackgroundExt(filepath.Ext(rawPath)) {
+	if _, ok := render.CanonicalBackgroundExt(filepath.Ext(rawPath)); !ok {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported Background Visual extension %q", filepath.Ext(rawPath)))
 		return
 	}
@@ -612,7 +626,7 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "--bg is required (supported: .jpg, .jpeg, .png, .webp, .mp4, .mov, .gif)")
 			return
 		}
-		if !mixer.IsSupportedBackgroundExt(filepath.Ext(rawBG)) {
+		if _, ok := render.CanonicalBackgroundExt(filepath.Ext(rawBG)); !ok {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported Background Visual extension %q", filepath.Ext(rawBG)))
 			return
 		}
@@ -700,36 +714,14 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 		Shuffle:       req.Shuffle,
 	}
 
-	if err := mixer.ValidateConfig(mixCfg, s.cfg.LookPath); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if localAllowed {
-		preparedCfg, err := mixer.PrepareOutputTargets(mixCfg)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		mixCfg = preparedCfg
-		outPath = preparedCfg.Out
-		tsPath = preparedCfg.Timestamps
-	}
-	// #nosec G703 -- mixCfg.BG is either a server-created temp file or confined within s.allowedRoots.
-	bgInfo, err := os.Stat(mixCfg.BG)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("cannot access Background Visual %q: %v", mixCfg.BG, err))
-		return
-	}
-	if bgInfo.IsDir() {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("background visual path %q is a directory, expected a file", mixCfg.BG))
-		return
-	}
-
-	pathKind, err := render.SelectPath(mixCfg.BG, mixCfg.OverlayTitles)
+	preparedCfg, pathKind, err := mixer.PreflightConfig(mixCfg, s.cfg.LookPath, localAllowed)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	mixCfg = preparedCfg
+	outPath = preparedCfg.Out
+	tsPath = preparedCfg.Timestamps
 
 	jobID, err := newOpaqueID("job")
 	if err != nil {
@@ -806,7 +798,7 @@ func (s *Server) parseRenderRequest(w http.ResponseWriter, r *http.Request, jobD
 			hasConfig = true
 		case "bg":
 			safeName := sanitizeBaseName(part.FileName(), "upload.bin")
-			literalExt, ok := canonicalBackgroundExt(filepath.Ext(safeName))
+			literalExt, ok := render.CanonicalBackgroundExt(filepath.Ext(safeName))
 			if !ok {
 				_ = part.Close()
 				return req, "", http.StatusBadRequest, fmt.Errorf("unsupported Background Visual extension %q (supported: .jpg, .jpeg, .png, .webp, .mp4, .mov, .gif)", filepath.Ext(safeName))
@@ -1368,27 +1360,6 @@ func (s *Server) resolveAllowedPath(raw string, mustExist bool) (string, error) 
 	return "", fmt.Errorf("path %q escapes allowed roots", raw)
 }
 
-func canonicalBackgroundExt(ext string) (string, bool) {
-	switch strings.ToLower(ext) {
-	case ".jpg":
-		return ".jpg", true
-	case ".jpeg":
-		return ".jpeg", true
-	case ".png":
-		return ".png", true
-	case ".webp":
-		return ".webp", true
-	case ".mp4":
-		return ".mp4", true
-	case ".mov":
-		return ".mov", true
-	case ".gif":
-		return ".gif", true
-	default:
-		return "", false
-	}
-}
-
 func requireSameOrigin(r *http.Request) error {
 	if sfs := strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")); sfs != "" {
 		if !strings.EqualFold(sfs, "same-origin") && !strings.EqualFold(sfs, "none") {
@@ -1423,15 +1394,6 @@ func isLoopbackRemoteAddr(remoteAddr string) bool {
 		host = h
 	}
 	return isLoopbackHost(host)
-}
-
-func extractEncoderName(args []string) string {
-	for i := 0; i < len(args)-1; i++ {
-		if args[i] == "-c:v" {
-			return args[i+1]
-		}
-	}
-	return "libx264"
 }
 
 func sanitizeBaseName(raw, fallback string) string {

@@ -10,10 +10,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/GCherry/ytmix/internal/render"
 )
 
 type sseStreamRecorder struct {
@@ -172,9 +176,64 @@ func TestStaticAssetsAndHealth(t *testing.T) {
 	if health.Encoder == "" {
 		t.Fatalf("expected non-empty encoder in health response: %+v", health)
 	}
+	wantExts := render.SupportedBackgroundExts()
+	if !reflect.DeepEqual(health.SupportedBackgroundExts, wantExts) {
+		t.Fatalf("SupportedBackgroundExts = %+v, want %+v", health.SupportedBackgroundExts, wantExts)
+	}
+}
+
+func TestHealthCachesEncoderProbe(t *testing.T) {
+	var probeCalls atomic.Int32
+	srv, err := NewServer(Config{
+		Host:     "127.0.0.1",
+		Port:     8080,
+		LookPath: okLookPath,
+		GOOS:     "linux",
+		Runner: func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "ffmpeg" {
+				probeCalls.Add(1)
+			}
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer error: %v", err)
+	}
+	defer srv.Close()
+
+	const requests = 5
+	var wg sync.WaitGroup
+	encoders := make([]string, requests)
+	codes := make([]int, requests)
+	for i := 0; i < requests; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+			req.RemoteAddr = "127.0.0.1:41234"
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+			codes[idx] = rec.Code
+			var h healthResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &h); err == nil {
+				encoders[idx] = h.Encoder
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if got := probeCalls.Load(); got != 1 {
+		t.Fatalf("expected ffmpeg encoder probe once across %d health checks, got %d", requests, got)
+	}
+	for i := 0; i < requests; i++ {
+		if codes[i] != http.StatusOK || encoders[i] != "h264_nvenc" {
+			t.Fatalf("request %d: status=%d encoder=%q", i, codes[i], encoders[i])
+		}
+	}
 }
 
 func TestHealthDegradedAndLANRestriction(t *testing.T) {
+	var probeCalls atomic.Int32
 	srv, err := NewServer(Config{
 		Host: "0.0.0.0",
 		Port: 8080,
@@ -184,8 +243,13 @@ func TestHealthDegradedAndLANRestriction(t *testing.T) {
 			}
 			return "/usr/bin/" + name, nil
 		},
-		Runner: stubPipelineRunner(t, nil),
-		GOOS:   "linux",
+		Runner: func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "ffmpeg" {
+				probeCalls.Add(1)
+			}
+			return nil, nil
+		},
+		GOOS: "linux",
 	})
 	if err != nil {
 		t.Fatalf("NewServer error: %v", err)
@@ -200,8 +264,11 @@ func TestHealthDegradedAndLANRestriction(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &health); err != nil {
 		t.Fatal(err)
 	}
-	if health.Status != "degraded" || health.FFmpeg || !health.FFprobe || health.LocalPathsAllowed {
+	if health.Status != "degraded" || health.FFmpeg || !health.FFprobe || health.LocalPathsAllowed || health.Encoder != "unavailable" {
 		t.Fatalf("unexpected LAN/degraded health: %+v", health)
+	}
+	if got := probeCalls.Load(); got != 0 {
+		t.Fatalf("expected 0 ffmpeg encoder probe calls when ffmpeg missing, got %d", got)
 	}
 
 	// Local path probe must be rejected when bound to 0.0.0.0 / non-loopback.
