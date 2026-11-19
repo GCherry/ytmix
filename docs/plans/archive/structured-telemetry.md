@@ -12,11 +12,11 @@ status; write **Phase Summary**; record **Verification Plan** results. When all
 phases are done, fill **Final Recap** and **Deployment Plan**, then archive this
 file to `docs/plans/archive/structured-telemetry.md` per the `real-work` skill (Section 3).
 
-**Repo:** `ytmix` (`/home/antigravity/GCherry/ytmix`) — read [`AGENTS.md`](../../AGENTS.md) before building or testing.
+**Repo:** `ytmix` (`/home/antigravity/GCherry/ytmix`) — read [`AGENTS.md`](../../../AGENTS.md) before building or testing.
 
 **Branch:** `feature/structured-telemetry` off `main` (`Closes #10`).
 
-**Domain docs:** [`GLOSSARY.md`](../../GLOSSARY.md), [`docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md), [`docs/adr/0002-embedded-http-ui-and-sse-telemetry.md`](../adr/0002-embedded-http-ui-and-sse-telemetry.md), [`docs/specs/ytmix_technical_specification.md`](../specs/ytmix_technical_specification.md).
+**Domain docs:** [`GLOSSARY.md`](../../../GLOSSARY.md), [`docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../../adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md), [`docs/adr/0002-embedded-http-ui-and-sse-telemetry.md`](../../adr/0002-embedded-http-ui-and-sse-telemetry.md), [`docs/specs/ytmix_technical_specification.md`](../../specs/ytmix_technical_specification.md).
 
 **Related skills:** `coordinator`, `real-work`, `tdd`, `code-review`, `domain-modeling`.
 
@@ -32,7 +32,7 @@ file to `docs/plans/archive/structured-telemetry.md` per the `real-work` skill (
 |---|----------|------------|
 | 1 | **Overall 0–100% progress allocation across Steps 1–5** | Resolved Nov 19, 2026 11:31:23 AM PST — User accepted recommendation: allocate `0–20%` to Steps 1–4 (`5%` each) and `20–99%` to Step 5 via `ffmpeg -progress pipe:1`, reaching `100%` only on completion. |
 | 2 | **Path A two-stage `ffmpeg` & Step 2 progress scope** | Resolved Nov 19, 2026 11:31:23 AM PST — User accepted recommendation: reserve `20–35%` for Path A `norm_loop.mp4` pre-normalization and `35–99%` for the full-duration mux via `out_time_us` (Step 2 stays milestone-based at `10%`). |
-| 3 | **Editorial Mix Studio (`ytmix ui`) SSE schema & display** | Resolved Nov 19, 2026 11:31:23 AM PST — User accepted recommendation: emit throttled SSE `"progress"` events (`~250ms` or `>= 1%` delta, not appended to unbounded log history) to update `#progress-fill` and `#telemetry-state` (`Running · 42% · 2.4x`) without flooding `#telemetry-log`. |
+| 3 | **Editorial Mix Studio (`ytmix ui`) SSE schema & display** | Resolved Nov 19, 2026 11:31:23 AM PST — User accepted recommendation: emit throttled SSE `"progress"` events (`~250ms` or `>= 5%` jump / `99%`, not appended to unbounded log history) to update `#progress-fill` and `#telemetry-state` (`Running · 42% · 2.4x`) without flooding `#telemetry-log`. |
 | 4 | **CLI terminal output during Step 5** | Resolved Nov 19, 2026 11:31:23 AM PST — User accepted recommendation: keep clean `[1/5]`–`[5/5]` lines by default and overwrite a single TTY status line (`\r`) during Step 5 with `%` and `speed=` (no progress spam on non-TTY stdout). |
 
 ## Decisions (confirmed)
@@ -45,7 +45,7 @@ file to `docs/plans/archive/structured-telemetry.md` per the `real-work` skill (
 | Step & Path Progress Mapping | Steps 1–4 report `5%`, `10%`, `15%`, `20%`. Step 5 starts at `20%` and advances smoothly through `20%–99%`: **Path B / Path C** map `out_time_us / (totalDuration * 1e6)` across `20–99%`; **Path A** probes the `Background Visual` loop duration best-effort via `ffprobe` to map `norm_loop` across `20–35%` (falling back to `25%` until `progress=end` -> `35%` when duration is unavailable/N/A, e.g. animated GIFs) and maps the full-duration mux across `35–99%`. Completion emits `100%`. |
 | Structured Telemetry Sink | Replace `stdout io.Writer` on `mixer.Run` and `mixer.RunWithTracks` with `TelemetrySink` (`func(TelemetryEvent)`), emitting `EventStep` (`Step`, `TotalSteps`, `Progress`, `Message`, `Detail`), `EventProgress` (`Step`, `TotalSteps`, `Progress`, `OutTimeSec`, `TotalDurationSec`, `Speed`), and `EventDone` (`Progress: 100`, `Message`). |
 | CLI TTY Adapter | Provide `mixer.NewCLITelemetry(w io.Writer, isTTY bool) TelemetrySink` used by `cmd/ytmix/main.go` (detecting TTY via `os.Stdout.Stat()` `ModeCharDevice`). Non-TTY writes only `[1/5]`–`[5/5]` and `Done!` lines; TTY additionally overwrites a single `\r[5/5] Rendering Mix... 42% (2.4x)` line (throttled `>= 250ms` or `>= 1%` delta) and clears/newlines cleanly before `Done!` or on exit. |
-| UI SSE Adapter & Reconnect Behavior | Remove `sseLogWriter` and `stepLinePattern` from `internal/ui/jobs.go`. `Server.runRenderJob` wires a `TelemetrySink` that records `EventStep` in `job.events` history, throttles `EventProgress` (`>= 250ms` or `>= 1%` delta) as live SSE `"progress"` events (storing only `latestProgress` on `renderJob` for reconnect replay rather than bloating `job.events`), and updates `app.js` to animate `#progress-fill` and `#telemetry-state`. |
+| UI SSE Adapter & Reconnect Behavior | Remove `sseLogWriter` and `stepLinePattern` from `internal/ui/jobs.go`. `Server.runRenderJob` wires a `TelemetrySink` that records `EventStep` in `job.events` history, throttles `EventProgress` (`>= 250ms`, `>= 5%` jump, or `99%`) as live SSE `"progress"` events (storing only `latestProgress` on `renderJob` for reconnect replay rather than bloating `job.events`), and updates `app.js` to animate `#progress-fill` and `#telemetry-state`. |
 | Canonical Glossary Vocabulary | Use canonical `GLOSSARY.md` terms (`Track`, `Background Visual`, `Mix`, `Loudness Normalization`, `Chapter Timestamps`, `Title Overlay`, `Rendering Path`) in all UI labels, telemetry messages, and docs. |
 
 ## Grill
@@ -204,7 +204,7 @@ Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 - [x] Remove `sseLogWriter`, `stepLinePattern`, and unused `bytes`/`regexp` imports from `internal/ui/jobs.go`.
 - [x] Add `latestProgress *sseEvent` snapshot handling on `renderJob` (`emitProgress` / `subscribe`) so live `"progress"` events stream to subscribers and reconnecting clients without inflating `job.events` history.
 - [x] Add `StreamRunner` to `ui.Config` (defaulting to `mixer.ExecStreamRunner` in `ui.NewServer` and `cmd/ytmix/main.go` `runUIServer`) and remove `DetectEncoderArgs` closure wrapper in `handleHealth`.
-- [x] Wire a throttled (`>= 250ms` or `>= 1%` progress delta) `mixer.TelemetrySink` adapter in `Server.runRenderJob` emitting `"step"`, `"progress"`, and `"log"` SSE events.
+- [x] Wire a throttled (`>= 250ms`, `>= 5%` progress jump, or `99%`) `mixer.TelemetrySink` adapter in `Server.runRenderJob` emitting `"step"`, `"progress"`, and `"log"` SSE events.
 - [x] Update `internal/ui/assets/app.js` `subscribeSSE` to handle `"progress"` events by updating `#progress-fill` and `#telemetry-state` (`Running · 42% · 2.4x`) while keeping `"step"` milestones in `#telemetry-log`.
 - [x] Update `internal/ui/server_test.go` to verify `[5/5]` starts at `20%` (not `100%`), `"progress"` SSE events advance smoothly, reconnect replay preserves latest progress, and `go test -race ./internal/ui/...` passes.
 
