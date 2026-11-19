@@ -1,7 +1,9 @@
 package render
 
 import (
+	"context"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -82,14 +84,14 @@ func TestEscapeFFmpegFilterPath(t *testing.T) {
 func TestDetectEncoderArgs(t *testing.T) {
 	t.Run("darwin uses h264_videotoolbox when 1-frame probe succeeds", func(t *testing.T) {
 		var probedArgs []string
-		runner := func(name string, args ...string) ([]byte, error) {
+		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
 			if name != "ffmpeg" {
 				t.Fatalf("unexpected binary %q", name)
 			}
 			probedArgs = args
 			return nil, nil
 		}
-		got := DetectEncoderArgs("darwin", runner)
+		got := DetectEncoderArgs(context.Background(), "darwin", runner)
 		want := []string{"-c:v", "h264_videotoolbox", "-b:v", "6000k"}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("got %v, want %v", got, want)
@@ -103,11 +105,11 @@ func TestDetectEncoderArgs(t *testing.T) {
 	t.Run("windows and linux use h264_nvenc when 1-frame probe succeeds", func(t *testing.T) {
 		for _, goos := range []string{"windows", "linux"} {
 			var probedArgs []string
-			runner := func(name string, args ...string) ([]byte, error) {
+			runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
 				probedArgs = args
 				return nil, nil
 			}
-			got := DetectEncoderArgs(goos, runner)
+			got := DetectEncoderArgs(context.Background(), goos, runner)
 			want := []string{"-c:v", "h264_nvenc", "-preset", "p4", "-cq", "20"}
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("%s: got %v, want %v", goos, got, want)
@@ -120,12 +122,12 @@ func TestDetectEncoderArgs(t *testing.T) {
 	})
 
 	t.Run("falls back to libx264 when hardware probe fails", func(t *testing.T) {
-		failRunner := func(name string, args ...string) ([]byte, error) {
+		failRunner := func(_ context.Context, name string, args ...string) ([]byte, error) {
 			return nil, errors.New("no gpu")
 		}
 		wantFallback := []string{"-c:v", "libx264", "-preset", "veryfast", "-crf", "20"}
 		for _, goos := range []string{"darwin", "windows", "linux"} {
-			if got := DetectEncoderArgs(goos, failRunner); !reflect.DeepEqual(got, wantFallback) {
+			if got := DetectEncoderArgs(context.Background(), goos, failRunner); !reflect.DeepEqual(got, wantFallback) {
 				t.Fatalf("%s: got %v, want %v", goos, got, wantFallback)
 			}
 		}
@@ -220,15 +222,50 @@ func TestBuildRenderArgs(t *testing.T) {
 	})
 }
 
+func TestParseProgressLine(t *testing.T) {
+	var sample ProgressSample
+	lines := []string{
+		"frame=12",
+		"out_time_us=N/A",
+		"speed=N/A",
+		"progress=continue",
+		"out_time_us=5000000",
+		"speed=2.45x",
+		"progress=continue",
+		"out_time_us=10000000",
+		"speed=3.10x",
+		"progress=end",
+	}
+
+	var readySamples []ProgressSample
+	for _, line := range lines {
+		if ParseProgressLine(line, &sample) {
+			readySamples = append(readySamples, sample)
+		}
+	}
+	if len(readySamples) != 3 {
+		t.Fatalf("expected 3 ready samples, got %d: %+v", len(readySamples), readySamples)
+	}
+	if readySamples[0].OutTimeSec != 0 || readySamples[0].Speed != "" || readySamples[0].Done {
+		t.Fatalf("sample[0] = %+v", readySamples[0])
+	}
+	if readySamples[1].OutTimeSec != 5.0 || readySamples[1].Speed != "2.45x" || readySamples[1].Done {
+		t.Fatalf("sample[1] = %+v", readySamples[1])
+	}
+	if readySamples[2].OutTimeSec != 10.0 || readySamples[2].Speed != "3.10x" || !readySamples[2].Done {
+		t.Fatalf("sample[2] = %+v", readySamples[2])
+	}
+}
+
 func TestRenderExecution(t *testing.T) {
-	t.Run("Path A runs pre-normalize then mux", func(t *testing.T) {
+	t.Run("Path A runs pre-normalize then mux via CommandRunner fallback", func(t *testing.T) {
 		tempDir := t.TempDir()
 		var cmds [][]string
-		runner := func(name string, args ...string) ([]byte, error) {
+		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
 			cmds = append(cmds, append([]string{name}, args...))
 			return nil, nil
 		}
-		p, err := Render("loop.mp4", filepath.Join(tempDir, "merged_audio.m4a"), "", tempDir, "out.mp4", false, "windows", runner)
+		p, err := Render(context.Background(), "loop.mp4", filepath.Join(tempDir, "merged_audio.m4a"), "", tempDir, "out.mp4", false, 10.0, "windows", runner, nil, nil)
 		if err != nil {
 			t.Fatalf("Render Path A error: %v", err)
 		}
@@ -246,18 +283,122 @@ func TestRenderExecution(t *testing.T) {
 		}
 	})
 
+	t.Run("Path A streams -progress pipe:1 across norm_loop (20-35%) and mux (35-99%)", func(t *testing.T) {
+		tempDir := t.TempDir()
+		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "ffprobe" {
+				return []byte(`{"format":{"duration":"4.0"}}`), nil
+			}
+			return nil, nil
+		}
+
+		var streamCmds [][]string
+		streamRunner := func(_ context.Context, onLine func(string), name string, args ...string) error {
+			streamCmds = append(streamCmds, append([]string{name}, args...))
+			if len(streamCmds) == 1 {
+				for _, l := range []string{"out_time_us=2000000", "speed=1.50x", "progress=continue", "out_time_us=4000000", "speed=1.80x", "progress=end"} {
+					onLine(l)
+				}
+			} else {
+				for _, l := range []string{"out_time_us=5000000", "speed=8.00x", "progress=continue", "out_time_us=15000000", "speed=9.00x", "progress=end"} {
+					onLine(l)
+				}
+			}
+			return nil
+		}
+
+		var updates []ProgressUpdate
+		p, err := Render(context.Background(), "loop.mp4", filepath.Join(tempDir, "merged_audio.m4a"), "", tempDir, "out.mp4", false, 10.0, "linux", runner, streamRunner, func(u ProgressUpdate) {
+			updates = append(updates, u)
+		})
+		if err != nil {
+			t.Fatalf("Render Path A stream error: %v", err)
+		}
+		if p != PathA {
+			t.Fatalf("path = %q, want %q", p, PathA)
+		}
+		if len(streamCmds) != 2 {
+			t.Fatalf("expected 2 streamed ffmpeg calls, got %d", len(streamCmds))
+		}
+		for i, cmd := range streamCmds {
+			joined := strings.Join(cmd, " ")
+			if !strings.Contains(joined, "-progress pipe:1") {
+				t.Fatalf("cmd[%d] missing -progress pipe:1: %v", i, cmd)
+			}
+		}
+		if len(updates) != 4 {
+			t.Fatalf("expected 4 progress updates, got %d: %+v", len(updates), updates)
+		}
+		if math.Abs(updates[0].Fraction-(0.5*PathANormWeight)) > 0.001 || updates[0].Substage != "norm_loop" {
+			t.Fatalf("update[0] = %+v", updates[0])
+		}
+		if math.Abs(updates[1].Fraction-PathANormWeight) > 0.001 || !updates[1].Done {
+			t.Fatalf("update[1] = %+v", updates[1])
+		}
+		wantMidMux := PathANormWeight + 0.5*(1.0-PathANormWeight)
+		if math.Abs(updates[2].Fraction-wantMidMux) > 0.001 || updates[2].Substage != "mux" || updates[2].Speed != "8.00x" {
+			t.Fatalf("update[2] = %+v", updates[2])
+		}
+		if updates[3].Fraction != 1.0 || !updates[3].Done {
+			t.Fatalf("update[3] = %+v (expected clamped 1.0 on overflow)", updates[3])
+		}
+	})
+
+	t.Run("Path A handles unavailable GIF loop duration gracefully", func(t *testing.T) {
+		tempDir := t.TempDir()
+		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "ffprobe" {
+				return []byte(`{"format":{"duration":"N/A"}}`), nil
+			}
+			return nil, nil
+		}
+		call := 0
+		streamRunner := func(_ context.Context, onLine func(string), name string, args ...string) error {
+			call++
+			if call == 1 {
+				onLine("out_time_us=1000000")
+				onLine("progress=continue")
+				onLine("progress=end")
+			} else {
+				onLine("out_time_us=10000000")
+				onLine("progress=end")
+			}
+			return nil
+		}
+
+		var updates []ProgressUpdate
+		_, err := Render(context.Background(), "anim.gif", filepath.Join(tempDir, "merged_audio.m4a"), "", tempDir, "out.mp4", false, 10.0, "linux", runner, streamRunner, func(u ProgressUpdate) {
+			updates = append(updates, u)
+		})
+		if err != nil {
+			t.Fatalf("Render Path A GIF error: %v", err)
+		}
+		if len(updates) != 3 {
+			t.Fatalf("expected 3 updates, got %d: %+v", len(updates), updates)
+		}
+		if updates[0].Fraction <= 0 || updates[0].Fraction >= PathANormWeight {
+			t.Fatalf("expected fallback mid-norm fraction, got %+v", updates[0])
+		}
+		if math.Abs(updates[1].Fraction-PathANormWeight) > 0.001 {
+			t.Fatalf("expected PathANormWeight on norm end, got %+v", updates[1])
+		}
+		if updates[2].Fraction != 1.0 {
+			t.Fatalf("expected 1.0 on mux end, got %+v", updates[2])
+		}
+	})
+
 	t.Run("Path B probes HW encoder and falls back cleanly on probe failure", func(t *testing.T) {
 		tempDir := t.TempDir()
 		assPath := filepath.Join(tempDir, "titles.ass")
 		var cmds [][]string
-		runner := func(name string, args ...string) ([]byte, error) {
+		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
 			cmds = append(cmds, append([]string{name}, args...))
 			if len(args) > 0 && args[0] == "-v" {
 				return nil, errors.New("nvenc unavailable")
 			}
 			return nil, nil
 		}
-		p, err := Render("loop.gif", filepath.Join(tempDir, "merged_audio.m4a"), assPath, tempDir, "out.mp4", true, "linux", runner)
+		p, err := Render(context.Background(), "loop.gif", filepath.Join(tempDir, "merged_audio.m4a"), assPath, tempDir, "out.mp4", true, 20.0, "linux", runner, nil, nil)
 		if err != nil {
 			t.Fatalf("Render Path B error: %v", err)
 		}
@@ -273,9 +414,39 @@ func TestRenderExecution(t *testing.T) {
 		}
 	})
 
+	t.Run("Path C streams progress monotonically from 0.0 to 1.0", func(t *testing.T) {
+		tempDir := t.TempDir()
+		streamRunner := func(_ context.Context, onLine func(string), name string, args ...string) error {
+			for _, l := range []string{
+				"out_time_us=5000000", "speed=2.00x", "progress=continue",
+				"out_time_us=10000000", "speed=2.20x", "progress=continue",
+				"out_time_us=20000000", "speed=2.50x", "progress=end",
+			} {
+				onLine(l)
+			}
+			return nil
+		}
+		var updates []ProgressUpdate
+		p, err := Render(context.Background(), "cover.png", filepath.Join(tempDir, "merged_audio.m4a"), "", tempDir, "out.mp4", false, 20.0, "linux", nil, streamRunner, func(u ProgressUpdate) {
+			updates = append(updates, u)
+		})
+		if err != nil {
+			t.Fatalf("Render Path C error: %v", err)
+		}
+		if p != PathC {
+			t.Fatalf("path = %q, want %q", p, PathC)
+		}
+		if len(updates) != 3 {
+			t.Fatalf("expected 3 updates, got %d", len(updates))
+		}
+		if updates[0].Fraction != 0.25 || updates[1].Fraction != 0.5 || updates[2].Fraction != 1.0 || !updates[2].Done {
+			t.Fatalf("unexpected updates: %+v", updates)
+		}
+	})
+
 	t.Run("errors when overlayTitles is true without assPath", func(t *testing.T) {
-		runner := func(name string, args ...string) ([]byte, error) { return nil, nil }
-		if _, err := Render("bg.png", "merged.m4a", "", t.TempDir(), "out.mp4", true, "windows", runner); err == nil {
+		runner := func(_ context.Context, name string, args ...string) ([]byte, error) { return nil, nil }
+		if _, err := Render(context.Background(), "bg.png", "merged.m4a", "", t.TempDir(), "out.mp4", true, 10.0, "windows", runner, nil, nil); err == nil {
 			t.Fatal("expected error when assPath is empty with overlayTitles=true")
 		}
 	})
@@ -283,8 +454,8 @@ func TestRenderExecution(t *testing.T) {
 	t.Run("creates missing parent directory for outPath", func(t *testing.T) {
 		tempDir := t.TempDir()
 		nestedOut := filepath.Join(tempDir, "exports", "2026", "mix.mp4")
-		runner := func(name string, args ...string) ([]byte, error) { return nil, nil }
-		if _, err := Render("cover.png", filepath.Join(tempDir, "merged.m4a"), "", tempDir, nestedOut, false, "linux", runner); err != nil {
+		runner := func(_ context.Context, name string, args ...string) ([]byte, error) { return nil, nil }
+		if _, err := Render(context.Background(), "cover.png", filepath.Join(tempDir, "merged.m4a"), "", tempDir, nestedOut, false, 10.0, "linux", runner, nil, nil); err != nil {
 			t.Fatalf("Render nested outPath error: %v", err)
 		}
 		if _, err := os.Stat(filepath.Dir(nestedOut)); err != nil {

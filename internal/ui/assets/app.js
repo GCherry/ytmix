@@ -639,7 +639,19 @@
       const payload = JSON.parse(e.data);
       markStep(payload.step, false);
       $("progress-fill").style.width = `${payload.progress || 0}%`;
+      $("telemetry-state").textContent = `Running · ${payload.progress || 0}%`;
       appendLog(payload.message);
+    });
+
+    es.addEventListener("progress", (e) => {
+      const payload = JSON.parse(e.data);
+      const pct = Math.max(0, Math.min(99, Number(payload.progress) || 0));
+      $("progress-fill").style.width = `${pct}%`;
+      const parts = ["Running", `${pct}%`];
+      if (payload.speed) {
+        parts.push(payload.speed);
+      }
+      $("telemetry-state").textContent = parts.join(" · ");
     });
 
     es.addEventListener("log", (e) => {

@@ -1,6 +1,7 @@
 package audio
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"reflect"
@@ -58,7 +59,7 @@ func TestAudioNormalizationAndMerge(t *testing.T) {
 		durations := []float64{5.0, 5.0}
 
 		var commands [][]string
-		runner := func(name string, args ...string) ([]byte, error) {
+		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
 			commands = append(commands, append([]string{name}, args...))
 			if name == "ffprobe" {
 				target := args[len(args)-1]
@@ -70,7 +71,7 @@ func TestAudioNormalizationAndMerge(t *testing.T) {
 			return nil, nil
 		}
 
-		normPaths, normDurations, err := NormalizeTracks(paths, fileNames, tempDir, runner)
+		normPaths, normDurations, err := NormalizeTracks(context.Background(), paths, fileNames, tempDir, runner)
 		if err != nil {
 			t.Fatalf("NormalizeTracks failed: %v", err)
 		}
@@ -93,8 +94,36 @@ func TestAudioNormalizationAndMerge(t *testing.T) {
 		}
 
 		// Crossfade 4.0 was < 5.0 pre-norm, but >= 3.8 post-norm -> must fail in ProcessAndMerge.
-		if _, _, _, err := ProcessAndMerge(paths, fileNames, durations, tempDir, true, 4.0, runner); err == nil {
+		if _, _, _, err := ProcessAndMerge(context.Background(), paths, fileNames, durations, tempDir, true, 4.0, runner); err == nil {
 			t.Fatal("expected post-normalization crossfade error")
+		}
+	})
+
+	t.Run("NormalizeTracks aborts between tracks when context is cancelled", func(t *testing.T) {
+		tempDir := t.TempDir()
+		paths := []string{
+			filepath.Join(tempDir, "01.mp3"),
+			filepath.Join(tempDir, "02.mp3"),
+		}
+		fileNames := []string{"01.mp3", "02.mp3"}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		var calls int
+		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+			calls++
+			if name == "ffprobe" {
+				cancel()
+				return []byte(`{"format":{"duration":"4.800000","tags":{}}}`), nil
+			}
+			return nil, nil
+		}
+
+		_, _, err := NormalizeTracks(ctx, paths, fileNames, tempDir, runner)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+		if calls != 2 {
+			t.Fatalf("expected only track 1 (ffmpeg + ffprobe = 2 calls) before cancel, got %d calls", calls)
 		}
 	})
 
@@ -105,11 +134,11 @@ func TestAudioNormalizationAndMerge(t *testing.T) {
 		singleDurs := []float64{10.0}
 
 		var singleArgs []string
-		runner := func(name string, args ...string) ([]byte, error) {
+		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
 			singleArgs = append([]string{name}, args...)
 			return nil, nil
 		}
-		mergedPath, _, _, err := ProcessAndMerge(singlePaths, singleNames, singleDurs, tempDir, false, 3.0, runner)
+		mergedPath, _, _, err := ProcessAndMerge(context.Background(), singlePaths, singleNames, singleDurs, tempDir, false, 3.0, runner)
 		if err != nil {
 			t.Fatalf("single track merge error: %v", err)
 		}
@@ -128,11 +157,11 @@ func TestAudioNormalizationAndMerge(t *testing.T) {
 		twoNames := []string{"1.mp3", "2.mp3"}
 		twoDurs := []float64{10.0, 10.0}
 		var multiArgs []string
-		multiRunner := func(name string, args ...string) ([]byte, error) {
+		multiRunner := func(_ context.Context, name string, args ...string) ([]byte, error) {
 			multiArgs = append([]string{name}, args...)
 			return nil, nil
 		}
-		if _, _, _, err := ProcessAndMerge(twoPaths, twoNames, twoDurs, tempDir, false, 2.0, multiRunner); err != nil {
+		if _, _, _, err := ProcessAndMerge(context.Background(), twoPaths, twoNames, twoDurs, tempDir, false, 2.0, multiRunner); err != nil {
 			t.Fatalf("multi track merge error: %v", err)
 		}
 		multiJoined := strings.Join(multiArgs, " ")
@@ -147,16 +176,16 @@ func TestAudioNormalizationAndMerge(t *testing.T) {
 		paths := []string{filepath.Join(tempDir, "1.mp3")}
 		fileNames := []string{"1.mp3"}
 		durations := []float64{5.0}
-		failFFmpeg := func(name string, args ...string) ([]byte, error) {
+		failFFmpeg := func(_ context.Context, name string, args ...string) ([]byte, error) {
 			if name == "ffmpeg" {
 				return nil, errors.New("ffmpeg failed: exit status 1\nstderr:\ninvalid audio stream")
 			}
 			return nil, nil
 		}
-		if _, _, _, err := ProcessAndMerge(paths, fileNames, durations, tempDir, true, 0, failFFmpeg); err == nil || !strings.Contains(err.Error(), "invalid audio stream") {
+		if _, _, _, err := ProcessAndMerge(context.Background(), paths, fileNames, durations, tempDir, true, 0, failFFmpeg); err == nil || !strings.Contains(err.Error(), "invalid audio stream") {
 			t.Fatalf("expected stderr propagation on normalize, got: %v", err)
 		}
-		if _, _, _, err := ProcessAndMerge(paths, fileNames, durations, tempDir, false, 0, failFFmpeg); err == nil || !strings.Contains(err.Error(), "invalid audio stream") {
+		if _, _, _, err := ProcessAndMerge(context.Background(), paths, fileNames, durations, tempDir, false, 0, failFFmpeg); err == nil || !strings.Contains(err.Error(), "invalid audio stream") {
 			t.Fatalf("expected stderr propagation on merge, got: %v", err)
 		}
 	})

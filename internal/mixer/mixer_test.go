@@ -156,15 +156,33 @@ func TestRunPipelineSteps1To5(t *testing.T) {
 			return nil, nil
 		}
 
-		var stdout bytes.Buffer
-		if err := Run(context.Background(), cfg, &stdout, okLookPath, runner); err != nil {
+		var events []TelemetryEvent
+		sink := func(ev TelemetryEvent) {
+			events = append(events, ev)
+		}
+		if err := Run(context.Background(), cfg, sink, okLookPath, runner, nil); err != nil {
 			t.Fatalf("Run Path A error: %v", err)
 		}
 
+		var stdout bytes.Buffer
+		cliSink := NewCLITelemetry(&stdout, false)
+		for _, ev := range events {
+			cliSink(ev)
+		}
 		logOut := stdout.String()
 		for _, step := range []string{"[1/5]", "[2/5]", "[3/5]", "[4/5]", "[5/5]", "Path A"} {
 			if !strings.Contains(logOut, step) {
-				t.Errorf("expected %q in stdout, got:\n%s", step, logOut)
+				t.Errorf("expected %q in telemetry output, got:\n%s", step, logOut)
+			}
+		}
+
+		wantStepProgress := []int{5, 10, 15, 20, 20, 100}
+		if len(events) != len(wantStepProgress) {
+			t.Fatalf("expected %d events, got %d: %+v", len(wantStepProgress), len(events), events)
+		}
+		for i, wantPct := range wantStepProgress {
+			if events[i].Progress != wantPct {
+				t.Errorf("event[%d].Progress = %d, want %d (%+v)", i, events[i].Progress, wantPct, events[i])
 			}
 		}
 
@@ -231,7 +249,7 @@ func TestRunPipelineSteps1To5(t *testing.T) {
 		}
 
 		var stdout bytes.Buffer
-		if err := Run(context.Background(), cfg, &stdout, okLookPath, runner); err != nil {
+		if err := Run(context.Background(), cfg, NewCLITelemetry(&stdout, false), okLookPath, runner, nil); err != nil {
 			t.Fatalf("Run Path B error: %v", err)
 		}
 		if len(renderArgs) == 0 {
@@ -247,7 +265,7 @@ func TestRunPipelineSteps1To5(t *testing.T) {
 		}
 	})
 
-	t.Run("Path C static image with --overlay-titles", func(t *testing.T) {
+	t.Run("Path C static image with --overlay-titles and live -progress stream", func(t *testing.T) {
 		workDir, audioDir, bgPath := setupStubMixWorkspace(t, "cover.png")
 		cfg := Config{
 			AudioDir:      audioDir,
@@ -258,25 +276,44 @@ func TestRunPipelineSteps1To5(t *testing.T) {
 			FontName:      "Arial",
 		}
 
-		var lastArgs []string
 		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
 			if name == "ffprobe" {
 				return []byte(`{"format":{"duration":"4.000000","tags":{}}}`), nil
 			}
-			lastArgs = args
 			return nil, nil
 		}
+		var lastStreamArgs []string
+		streamRunner := func(_ context.Context, onLine func(string), name string, args ...string) error {
+			lastStreamArgs = args
+			for _, l := range []string{
+				"out_time_us=4000000", "speed=2.00x", "progress=continue",
+				"out_time_us=8000000", "speed=2.50x", "progress=end",
+			} {
+				onLine(l)
+			}
+			return nil
+		}
 
-		var stdout bytes.Buffer
-		if err := Run(context.Background(), cfg, &stdout, okLookPath, runner); err != nil {
+		var events []TelemetryEvent
+		if err := Run(context.Background(), cfg, func(ev TelemetryEvent) { events = append(events, ev) }, okLookPath, runner, streamRunner); err != nil {
 			t.Fatalf("Run Path C error: %v", err)
 		}
-		joined := strings.Join(lastArgs, " ")
-		if !strings.Contains(joined, "-loop 1 -framerate 10") || !strings.Contains(joined, "-tune stillimage") {
-			t.Fatalf("expected Path C args, got: %s", joined)
+		joined := strings.Join(lastStreamArgs, " ")
+		if !strings.Contains(joined, "-progress pipe:1") || !strings.Contains(joined, "-loop 1 -framerate 10") || !strings.Contains(joined, "-tune stillimage") {
+			t.Fatalf("expected Path C streamed args, got: %s", joined)
 		}
-		if !strings.Contains(stdout.String(), "Path C") {
-			t.Errorf("expected Path C in stdout:\n%s", stdout.String())
+
+		var progressVals []int
+		for _, ev := range events {
+			if ev.Kind == EventProgress {
+				progressVals = append(progressVals, ev.Progress)
+			}
+		}
+		if !reflect.DeepEqual(progressVals, []int{60, 99}) {
+			t.Fatalf("Step 5 EventProgress = %v, want [60 99] (events: %+v)", progressVals, events)
+		}
+		if events[len(events)-1].Kind != EventDone || events[len(events)-1].Progress != 100 || !strings.Contains(events[len(events)-1].Message, "Path C") {
+			t.Fatalf("unexpected final event: %+v", events[len(events)-1])
 		}
 	})
 
@@ -291,13 +328,44 @@ func TestRunPipelineSteps1To5(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		var stdout bytes.Buffer
 		runner := func(_ context.Context, _ string, _ ...string) ([]byte, error) {
 			t.Fatal("runner should not be invoked when context is cancelled")
 			return nil, nil
 		}
-		if err := Run(ctx, cfg, &stdout, okLookPath, runner); !errors.Is(err, context.Canceled) {
+		if err := Run(ctx, cfg, nil, okLookPath, runner, nil); !errors.Is(err, context.Canceled) {
 			t.Fatalf("expected context.Canceled, got: %v", err)
+		}
+	})
+}
+
+func TestCLITelemetryFormatting(t *testing.T) {
+	t.Run("non-TTY suppresses EventProgress and prints milestones cleanly", func(t *testing.T) {
+		var buf bytes.Buffer
+		sink := NewCLITelemetry(&buf, false)
+		sink(TelemetryEvent{Kind: EventStep, Step: 5, TotalSteps: 5, Progress: 20, Message: "[5/5] Rendering Mix video..."})
+		sink(TelemetryEvent{Kind: EventProgress, Step: 5, TotalSteps: 5, Progress: 55, Speed: "2.4x"})
+		sink(TelemetryEvent{Kind: EventDone, Step: 5, TotalSteps: 5, Progress: 100, Message: "Done! Rendered out.mp4."})
+
+		got := buf.String()
+		if strings.Contains(got, "\r") || strings.Contains(got, "55%") {
+			t.Fatalf("non-TTY should not emit \\r or progress spam, got: %q", got)
+		}
+		want := "[5/5] Rendering Mix video...\nDone! Rendered out.mp4.\n"
+		if got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("TTY overwrites single status line with speed and emits newline before Done", func(t *testing.T) {
+		var buf bytes.Buffer
+		sink := NewCLITelemetry(&buf, true)
+		sink(TelemetryEvent{Kind: EventStep, Step: 5, TotalSteps: 5, Progress: 20, Message: "[5/5] Rendering Mix video..."})
+		sink(TelemetryEvent{Kind: EventProgress, Step: 5, TotalSteps: 5, Progress: 55, Speed: "2.4x"})
+		sink(TelemetryEvent{Kind: EventDone, Step: 5, TotalSteps: 5, Progress: 100, Message: "Done! Rendered out.mp4."})
+
+		got := buf.String()
+		if !strings.Contains(got, "\r[5/5] Rendering Mix... 55% (2.4x)") || !strings.Contains(got, "\nDone! Rendered out.mp4.\n") {
+			t.Fatalf("unexpected TTY output: %q", got)
 		}
 	})
 }
@@ -383,7 +451,7 @@ func TestProbeTrackFilesAndRunWithTracks(t *testing.T) {
 		}
 
 		var stdout bytes.Buffer
-		if err := RunWithTracks(context.Background(), cfg, tracks, &stdout, okLookPath, runner); err != nil {
+		if err := RunWithTracks(context.Background(), cfg, tracks, NewCLITelemetry(&stdout, false), okLookPath, runner, nil); err != nil {
 			t.Fatalf("RunWithTracks error: %v", err)
 		}
 
@@ -406,9 +474,9 @@ func TestProbeTrackFilesAndRunWithTracks(t *testing.T) {
 	t.Run("RunWithTracks rejects empty Track slice", func(t *testing.T) {
 		workDir, _, bgPath := setupStubMixWorkspace(t, "cover.png")
 		cfg := Config{BG: bgPath, Out: filepath.Join(workDir, "out.mp4"), Timestamps: filepath.Join(workDir, "ts.txt")}
-		err := RunWithTracks(context.Background(), cfg, nil, &bytes.Buffer{}, okLookPath, func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+		err := RunWithTracks(context.Background(), cfg, nil, nil, okLookPath, func(_ context.Context, _ string, _ ...string) ([]byte, error) {
 			return nil, nil
-		})
+		}, nil)
 		if err == nil {
 			t.Fatal("expected error for empty track slice")
 		}
@@ -524,7 +592,7 @@ func TestResolveAndPrepareOutputTargets(t *testing.T) {
 			Out:        workDir,
 			Timestamps: filepath.Join(workDir, "ts.txt"),
 		}
-		if err := Run(context.Background(), badCfg, &bytes.Buffer{}, okLookPath, runner); err == nil {
+		if err := Run(context.Background(), badCfg, nil, okLookPath, runner, nil); err == nil {
 			t.Fatal("expected upfront error for directory --out")
 		}
 		if probeCalled {
@@ -540,11 +608,52 @@ func TestResolveAndPrepareOutputTargets(t *testing.T) {
 			Timestamps: "chapters.txt",
 		}
 		var stdout bytes.Buffer
-		if err := Run(context.Background(), goodCfg, &stdout, okLookPath, runner); err != nil {
+		if err := Run(context.Background(), goodCfg, NewCLITelemetry(&stdout, false), okLookPath, runner, nil); err != nil {
 			t.Fatalf("Run with OutDir error: %v", err)
 		}
 		if _, err := os.Stat(filepath.Join(outDir, "chapters.txt")); err != nil {
 			t.Fatalf("expected chapters.txt inside OutDir: %v", err)
+		}
+	})
+}
+
+func TestExecStreamRunner(t *testing.T) {
+	if os.Getenv("YTMIX_TEST_STREAM_HELPER") == "1" {
+		if os.Getenv("YTMIX_TEST_STREAM_FAIL") == "1" {
+			_, _ = os.Stderr.WriteString("simulated ffmpeg error\n")
+			os.Exit(1)
+		}
+		_, _ = os.Stdout.WriteString("out_time_us=1000000\nprogress=continue\nout_time_us=2000000\nprogress=end\n")
+		os.Exit(0)
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("streams stdout lines sequentially", func(t *testing.T) {
+		t.Setenv("YTMIX_TEST_STREAM_HELPER", "1")
+		t.Setenv("YTMIX_TEST_STREAM_FAIL", "0")
+		var lines []string
+		err := ExecStreamRunner(context.Background(), func(line string) {
+			lines = append(lines, line)
+		}, exe, "-test.run=^TestExecStreamRunner$")
+		if err != nil {
+			t.Fatalf("ExecStreamRunner error: %v", err)
+		}
+		want := []string{"out_time_us=1000000", "progress=continue", "out_time_us=2000000", "progress=end"}
+		if !reflect.DeepEqual(lines, want) {
+			t.Fatalf("lines = %v, want %v", lines, want)
+		}
+	})
+
+	t.Run("captures stderr when subprocess exits non-zero", func(t *testing.T) {
+		t.Setenv("YTMIX_TEST_STREAM_HELPER", "1")
+		t.Setenv("YTMIX_TEST_STREAM_FAIL", "1")
+		err := ExecStreamRunner(context.Background(), nil, exe, "-test.run=^TestExecStreamRunner$")
+		if err == nil || !strings.Contains(err.Error(), "simulated ffmpeg error") {
+			t.Fatalf("expected stderr in error, got: %v", err)
 		}
 	})
 }

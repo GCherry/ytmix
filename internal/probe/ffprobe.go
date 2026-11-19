@@ -1,6 +1,7 @@
 package probe
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
@@ -78,8 +79,15 @@ func ResolveDisplayTitle(id3Title, filename string) string {
 }
 
 // ProbeFile runs ffprobe on path and extracts its duration in seconds and ID3 title tag.
-func ProbeFile(path string, runner func(name string, args ...string) ([]byte, error)) (duration float64, id3Title string, err error) {
+func ProbeFile(ctx context.Context, path string, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) (duration float64, id3Title string, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, "", err
+	}
 	out, err := runner(
+		ctx,
 		"ffprobe",
 		"-v", "error",
 		"-show_entries", "format=duration",
