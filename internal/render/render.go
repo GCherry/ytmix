@@ -94,20 +94,81 @@ func ParseProgressLine(line string, sample *ProgressSample) bool {
 	return false
 }
 
+// BackgroundKind identifies whether a Background Visual is a static image or looping video/GIF.
+type BackgroundKind string
+
+const (
+	// BackgroundKindImage identifies static image Background Visuals (.jpg, .jpeg, .png, .webp).
+	BackgroundKindImage BackgroundKind = "image"
+	// BackgroundKindVideo identifies looping video/GIF Background Visuals (.mp4, .mov, .gif).
+	BackgroundKindVideo BackgroundKind = "video"
+)
+
+// BackgroundExts lists the canonical supported Background Visual file extensions grouped by kind.
+type BackgroundExts struct {
+	Image []string `json:"image"`
+	Video []string `json:"video"`
+}
+
+// SupportedBackgroundExts returns fresh slices of supported Background Visual extensions.
+func SupportedBackgroundExts() BackgroundExts {
+	return BackgroundExts{
+		Image: []string{".jpg", ".jpeg", ".png", ".webp"},
+		Video: []string{".mp4", ".mov", ".gif"},
+	}
+}
+
+// CanonicalBackgroundExt validates ext case-insensitively and returns a canonical literal extension string.
+func CanonicalBackgroundExt(ext string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(ext)) {
+	case ".jpg":
+		return ".jpg", true
+	case ".jpeg":
+		return ".jpeg", true
+	case ".png":
+		return ".png", true
+	case ".webp":
+		return ".webp", true
+	case ".mp4":
+		return ".mp4", true
+	case ".mov":
+		return ".mov", true
+	case ".gif":
+		return ".gif", true
+	default:
+		return "", false
+	}
+}
+
+// ClassifyBackground classifies bgPath as a static image or looping video/GIF Background Visual
+// and returns its canonical extension.
+func ClassifyBackground(bgPath string) (BackgroundKind, string, error) {
+	rawExt := filepath.Ext(bgPath)
+	canonical, ok := CanonicalBackgroundExt(rawExt)
+	if !ok {
+		return "", "", fmt.Errorf("unsupported Background Visual extension %q (supported: .jpg, .jpeg, .png, .webp, .mp4, .mov, .gif)", rawExt)
+	}
+	switch canonical {
+	case ".mp4", ".mov", ".gif":
+		return BackgroundKindVideo, canonical, nil
+	default:
+		return BackgroundKindImage, canonical, nil
+	}
+}
+
 // SelectPath chooses the Rendering Path from the Background Visual file extension and overlayTitles flag.
 func SelectPath(bgPath string, overlayTitles bool) (Path, error) {
-	ext := strings.ToLower(filepath.Ext(bgPath))
-	switch ext {
-	case ".mp4", ".mov", ".gif":
+	kind, _, err := ClassifyBackground(bgPath)
+	if err != nil {
+		return "", err
+	}
+	if kind == BackgroundKindVideo {
 		if overlayTitles {
 			return PathB, nil
 		}
 		return PathA, nil
-	case ".jpg", ".jpeg", ".png", ".webp":
-		return PathC, nil
-	default:
-		return "", fmt.Errorf("unsupported Background Visual extension %q", filepath.Ext(bgPath))
 	}
+	return PathC, nil
 }
 
 // EscapeFFmpegFilterPath normalizes slashes and escapes colons and apostrophes for FFmpeg's subtitles= filter.
@@ -115,9 +176,15 @@ func EscapeFFmpegFilterPath(path string) string {
 	return filterPathEscaper.Replace(filepath.ToSlash(path))
 }
 
-// DetectEncoderArgs probes hardware H.264 encoder usability via a 1-frame null encode
-// and falls back to libx264 software encoding when hardware acceleration is unavailable.
-func DetectEncoderArgs(ctx context.Context, goos string, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) []string {
+// EncoderInfo describes the selected H.264 video encoder name and FFmpeg encoder flags.
+type EncoderInfo struct {
+	Name string
+	Args []string
+}
+
+// DetectEncoder probes hardware H.264 encoder usability via a 1-frame null encode
+// and returns structured encoder metadata with libx264 software fallback.
+func DetectEncoder(ctx context.Context, goos string, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) EncoderInfo {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -140,14 +207,29 @@ func DetectEncoderArgs(ctx context.Context, goos string, runner func(ctx context
 	switch goos {
 	case "darwin":
 		if probeEncoder("h264_videotoolbox") {
-			return []string{"-c:v", "h264_videotoolbox", "-b:v", "6000k"}
+			return EncoderInfo{
+				Name: "h264_videotoolbox",
+				Args: []string{"-c:v", "h264_videotoolbox", "-b:v", "6000k"},
+			}
 		}
 	case "windows", "linux":
 		if probeEncoder("h264_nvenc") {
-			return []string{"-c:v", "h264_nvenc", "-preset", "p4", "-cq", "20"}
+			return EncoderInfo{
+				Name: "h264_nvenc",
+				Args: []string{"-c:v", "h264_nvenc", "-preset", "p4", "-cq", "20"},
+			}
 		}
 	}
-	return []string{"-c:v", "libx264", "-preset", "veryfast", "-crf", "20"}
+	return EncoderInfo{
+		Name: "libx264",
+		Args: []string{"-c:v", "libx264", "-preset", "veryfast", "-crf", "20"},
+	}
+}
+
+// DetectEncoderArgs probes hardware H.264 encoder usability via a 1-frame null encode
+// and falls back to libx264 software encoding when hardware acceleration is unavailable.
+func DetectEncoderArgs(ctx context.Context, goos string, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) []string {
+	return DetectEncoder(ctx, goos, runner).Args
 }
 
 func buildVideoFilter(assPath string, overlayTitles bool, extraFilters ...string) string {
@@ -358,8 +440,8 @@ func Render(
 			return "", fmt.Errorf("mux background loop (%s): %w", PathA, err)
 		}
 	case PathB:
-		encoderArgs := DetectEncoderArgs(ctx, goos, runner)
-		if err := runFFmpegRender(ctx, "render", BuildPathBArgs(bgPath, mergedAudioPath, assPath, outPath, encoderArgs), totalDuration, 0, 1.0, runner, streamRunner, onProgress); err != nil {
+		encoder := DetectEncoder(ctx, goos, runner)
+		if err := runFFmpegRender(ctx, "render", BuildPathBArgs(bgPath, mergedAudioPath, assPath, outPath, encoder.Args), totalDuration, 0, 1.0, runner, streamRunner, onProgress); err != nil {
 			return "", fmt.Errorf("render overlay loop (%s): %w", PathB, err)
 		}
 	case PathC:
