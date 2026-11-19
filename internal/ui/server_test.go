@@ -1217,12 +1217,14 @@ func TestPathDServerHealthRenderLANAndTrackAudio(t *testing.T) {
 			}
 			return baseRunner(ctx, name, args...)
 		}
+		ws := t.TempDir()
 		srv, err := NewServer(Config{
-			Host:     "127.0.0.1",
-			Port:     8080,
-			LookPath: okLookPath,
-			Runner:   runnerNo3D,
-			GOOS:     "linux",
+			Host:         "127.0.0.1",
+			Port:         8080,
+			WorkspaceDir: ws,
+			LookPath:     okLookPath,
+			Runner:       runnerNo3D,
+			GOOS:         "linux",
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -1265,12 +1267,14 @@ func TestPathDServerHealthRenderLANAndTrackAudio(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Unavailable 3dscope fails synchronously with 400.
+		// Unavailable 3dscope fails synchronously with 400 before creating OutDir on disk.
+		uncreatedOutDir := filepath.Join(ws, "should-not-exist")
 		badBody, _ := json.Marshal(map[string]any{
 			"sessionId":  probed.SessionID,
 			"trackIds":   []string{probed.Tracks[0].ID},
 			"bgMode":     "visualizer",
 			"visualizer": "3dscope",
+			"outDir":     uncreatedOutDir,
 		})
 		badReq := httptest.NewRequest(http.MethodPost, "/api/render", bytes.NewReader(badBody))
 		badReq.Header.Set("Content-Type", "application/json")
@@ -1279,6 +1283,9 @@ func TestPathDServerHealthRenderLANAndTrackAudio(t *testing.T) {
 		srv.Handler().ServeHTTP(badRec, badReq)
 		if badRec.Code != http.StatusBadRequest || !strings.Contains(badRec.Body.String(), "a3dscope") {
 			t.Fatalf("expected 400 mentioning a3dscope, got %d: %s", badRec.Code, badRec.Body.String())
+		}
+		if _, statErr := os.Stat(uncreatedOutDir); !os.IsNotExist(statErr) {
+			t.Fatalf("expected rejected visualizer filter not to create %q, statErr=%v", uncreatedOutDir, statErr)
 		}
 
 		// Invalid brightness (explicit 0 and 9 and 101), negative fade, mutual exclusion all fail with 400.
@@ -1334,11 +1341,12 @@ func TestPathDServerHealthRenderLANAndTrackAudio(t *testing.T) {
 
 	t.Run("LAN session allows Path D Auto Visualizer render while blocking local bgPath", func(t *testing.T) {
 		srv, err := NewServer(Config{
-			Host:     "0.0.0.0",
-			Port:     8080,
-			LookPath: okLookPath,
-			Runner:   stubPipelineRunner(t, nil),
-			GOOS:     "linux",
+			Host:         "0.0.0.0",
+			Port:         8080,
+			WorkspaceDir: t.TempDir(),
+			LookPath:     okLookPath,
+			Runner:       stubPipelineRunner(t, nil),
+			GOOS:         "linux",
 		})
 		if err != nil {
 			t.Fatal(err)

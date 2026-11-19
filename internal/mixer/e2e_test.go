@@ -273,7 +273,7 @@ func TestE2EPipeline(t *testing.T) {
 		}
 	})
 
-	t.Run("Test 6 Path D ember with brightness dimmer, short fade clamp, overlay, and dim titles", func(t *testing.T) {
+	t.Run("Test 6 Path D ember with brightness dimmer, short-duration fade omission, overlay, and dim titles", func(t *testing.T) {
 		outMP4 := filepath.Join(workDir, "out_path_d_ember.mp4")
 		tsPath := filepath.Join(workDir, "timestamps_d_ember.txt")
 		var stdout bytes.Buffer

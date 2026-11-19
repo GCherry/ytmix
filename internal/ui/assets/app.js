@@ -486,6 +486,8 @@
     if (state.tracks.length === 0) {
       stopAudition();
       state.selectedTrackIdx = 0;
+    } else if (index < state.selectedTrackIdx) {
+      state.selectedTrackIdx = Math.max(0, state.selectedTrackIdx - 1);
     } else if (state.selectedTrackIdx >= state.tracks.length) {
       state.selectedTrackIdx = Math.max(0, state.tracks.length - 1);
       if (wasSelected && state.auditioning) {
@@ -666,7 +668,7 @@
       svg.setAttribute("class", "preset-thumb");
       svg.setAttribute("viewBox", "0 0 44 26");
       svg.style.color = activeTheme.primary;
-      svg.innerHTML = PRESET_THUMBS[p.id] || "";
+      svg.innerHTML = Object.prototype.hasOwnProperty.call(PRESET_THUMBS, p.id) ? PRESET_THUMBS[p.id] : "";
 
       const topRight = document.createElement("div");
       topRight.className = "preset-top-right";
@@ -1223,6 +1225,10 @@
     state.fadePreviewStartMs = null;
     state.fadePreviewFactor = 1;
     state.fadePreviewState = "idle";
+    const overlayEl = $("stage-overlay");
+    if (overlayEl) {
+      overlayEl.style.opacity = "";
+    }
   }
 
   function ensureAudioGraph() {
@@ -1912,6 +1918,7 @@
         ctx.fillStyle = `rgba(0, 0, 0, ${(1 - effectiveBrightness).toFixed(3)})`;
         ctx.fillRect(0, 0, W, H);
       }
+      $("stage-overlay").style.opacity = state.fadePreviewState === "idle" ? "" : state.fadePreviewFactor.toFixed(3);
     }
 
     stageAnimId = requestAnimationFrame(stageFrameLoop);

@@ -86,4 +86,4 @@ All paths stream FFmpeg `-progress pipe:1` telemetry and map merged audio strict
 - **Test 3 (Path C):** Static image, `--overlay-titles` (`8.0s`).
 - **Test 4 (Path D Default):** Omitted `--bg`, `bars`, `--visualizer-glow` (`8.0s`).
 - **Test 5 (Path D Blackout):** Omitted `--bg`, `black` (`2 fps` `-tune stillimage`), verifying `1920x1080` H.264/AAC and near-zero pixel luminance (`YAVG <= 17.0`).
-- **Test 6 (Path D Dark/Sleep Controls):** Omitted `--bg`, `ember`, `--visualizer-brightness 40`, `--fade-to-black 1m` (short-clip clamp check), `--overlay-titles`, `--dim-titles` (`8.0s`).
+- **Test 6 (Path D Dark/Sleep Controls):** Omitted `--bg`, `ember`, `--visualizer-brightness 40`, `--fade-to-black 1m` (short test Mix checking fade omission when `st >= totalDuration`), `--overlay-titles`, `--dim-titles` (`8.0s`).

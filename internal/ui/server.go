@@ -765,8 +765,9 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if math.IsNaN(req.FadeToBlackMinutes) || math.IsInf(req.FadeToBlackMinutes, 0) || req.FadeToBlackMinutes < 0 {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("fadeToBlackMinutes must be >= 0 (got %v)", req.FadeToBlackMinutes))
+	maxFadeMinutes := float64(math.MaxInt64) / float64(time.Minute)
+	if math.IsNaN(req.FadeToBlackMinutes) || math.IsInf(req.FadeToBlackMinutes, 0) || req.FadeToBlackMinutes < 0 || req.FadeToBlackMinutes > maxFadeMinutes {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("fadeToBlackMinutes must be between 0 and %g (got %v)", maxFadeMinutes, req.FadeToBlackMinutes))
 		return
 	}
 	vizGlow := true
@@ -865,20 +866,27 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 		DimTitles:            req.DimTitles,
 	}
 
-	preparedCfg, pathKind, err := mixer.PreflightConfig(mixCfg, s.cfg.LookPath, localAllowed)
+	preparedCfg, pathKind, err := mixer.PreflightConfig(mixCfg, s.cfg.LookPath, false)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	mixCfg = preparedCfg
-	outPath = preparedCfg.Out
-	tsPath = preparedCfg.Timestamps
 	if pathKind == render.PathD {
-		if err := mixer.ValidateVisualizerFilters(r.Context(), mixCfg, s.cfg.Runner, s.detectFilters(r.Context())); err != nil {
+		if err := mixer.ValidateVisualizerFilters(r.Context(), preparedCfg, s.cfg.Runner, s.detectFilters(r.Context())); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	}
+	if localAllowed {
+		preparedCfg, err = mixer.PrepareOutputTargets(preparedCfg)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	mixCfg = preparedCfg
+	outPath = preparedCfg.Out
+	tsPath = preparedCfg.Timestamps
 
 	jobID, err := newOpaqueID("job")
 	if err != nil {

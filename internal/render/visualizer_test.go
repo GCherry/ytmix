@@ -254,15 +254,24 @@ func TestPathDFadeAndFilterBuilders(t *testing.T) {
 			t.Fatalf("unexpected ember filtergraph:\n%s", fcDim45)
 		}
 
-		fcPhase, _ := BuildPathDFilterComplex("", false, 600, VisualizerConfig{Preset: "phase", Brightness: 100})
+		fcPhase, err := BuildPathDFilterComplex("", false, 600, VisualizerConfig{Preset: "phase", Brightness: 100})
+		if err != nil {
+			t.Fatal(err)
+		}
 		if !strings.Contains(fcPhase, "[aout]anullsink") {
 			t.Fatalf("expected [aout]anullsink in phase filtergraph:\n%s", fcPhase)
 		}
-		fcCQT, _ := BuildPathDFilterComplex("", false, 600, VisualizerConfig{Preset: "cqt", Brightness: 100})
+		fcCQT, err := BuildPathDFilterComplex("", false, 600, VisualizerConfig{Preset: "cqt", Brightness: 100})
+		if err != nil {
+			t.Fatal(err)
+		}
 		if !strings.Contains(fcCQT, "axis=0:text=0") {
 			t.Fatalf("expected axis=0:text=0 in cqt filtergraph:\n%s", fcCQT)
 		}
-		fcVU, _ := BuildPathDFilterComplex("", false, 600, VisualizerConfig{Preset: "vu", Brightness: 100})
+		fcVU, err := BuildPathDFilterComplex("", false, 600, VisualizerConfig{Preset: "vu", Brightness: 100})
+		if err != nil {
+			t.Fatal(err)
+		}
 		if !strings.Contains(fcVU, "t=0:v=0") {
 			t.Fatalf("expected t=0:v=0 in vu filtergraph:\n%s", fcVU)
 		}

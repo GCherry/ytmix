@@ -494,7 +494,7 @@ func prepareRun(ctx context.Context, cfg Config, lookPath func(string) (string, 
 	}
 
 	start := time.Now()
-	preparedCfg, pathKind, err := PreflightConfig(cfg, lookPath, true)
+	preparedCfg, pathKind, err := PreflightConfig(cfg, lookPath, false)
 	if err != nil {
 		return ctx, cfg, start, err
 	}
@@ -502,6 +502,10 @@ func prepareRun(ctx context.Context, cfg Config, lookPath func(string) (string, 
 		if err := ValidateVisualizerFilters(ctx, preparedCfg, runner, nil); err != nil {
 			return ctx, cfg, start, err
 		}
+	}
+	preparedCfg, err = PrepareOutputTargets(preparedCfg)
+	if err != nil {
+		return ctx, cfg, start, err
 	}
 	return ctx, preparedCfg, start, nil
 }
