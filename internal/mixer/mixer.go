@@ -1,6 +1,7 @@
 package mixer
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -47,6 +48,84 @@ type Config struct {
 // CommandRunner executes an external binary and returns stdout or an error containing stderr.
 type CommandRunner func(ctx context.Context, name string, args ...string) ([]byte, error)
 
+// StreamRunner executes an external binary and streams each stdout line to onStdoutLine.
+type StreamRunner func(ctx context.Context, onStdoutLine func(string), name string, args ...string) error
+
+// EventKind classifies structured pipeline telemetry emitted by mixer.Run and mixer.RunWithTracks.
+type EventKind string
+
+const (
+	EventStep     EventKind = "step"
+	EventProgress EventKind = "progress"
+	EventDone     EventKind = "done"
+)
+
+// TelemetryEvent describes a structured pipeline milestone, live render progress sample, or completion event.
+type TelemetryEvent struct {
+	Kind             EventKind
+	Step             int
+	TotalSteps       int
+	Progress         int
+	Message          string
+	Detail           string
+	Substage         string
+	OutTimeSec       float64
+	TotalDurationSec float64
+	Speed            string
+}
+
+// TelemetrySink receives structured telemetry events during a Mix build.
+type TelemetrySink func(TelemetryEvent)
+
+// NewCLITelemetry returns a TelemetrySink that formats clean [1/5]–[5/5] milestones for w,
+// overwriting a single Step 5 status line when isTTY is true.
+func NewCLITelemetry(w io.Writer, isTTY bool) TelemetrySink {
+	if w == nil {
+		return nil
+	}
+	var dirtyTTY bool
+	var lastPct int
+	var lastEmit time.Time
+	return func(ev TelemetryEvent) {
+		switch ev.Kind {
+		case EventStep:
+			if dirtyTTY {
+				fmt.Fprintln(w)
+				dirtyTTY = false
+			}
+			fmt.Fprintln(w, ev.Message)
+		case EventProgress:
+			if !isTTY {
+				return
+			}
+			now := time.Now()
+			if ev.Progress == lastPct && now.Sub(lastEmit) < 250*time.Millisecond {
+				return
+			}
+			lastPct = ev.Progress
+			lastEmit = now
+			speedPart := ""
+			if ev.Speed != "" {
+				speedPart = fmt.Sprintf(" (%s)", ev.Speed)
+			}
+			fmt.Fprintf(w, "\r[5/5] Rendering Mix... %d%%%s", ev.Progress, speedPart)
+			dirtyTTY = true
+		case EventDone:
+			if dirtyTTY {
+				fmt.Fprintln(w)
+				dirtyTTY = false
+			}
+			fmt.Fprintln(w, ev.Message)
+		}
+	}
+}
+
+func emitTelemetry(sink TelemetrySink, ev TelemetryEvent) {
+	if sink != nil {
+		sink(ev)
+	}
+}
+
 // ExecCommandRunner invokes an external binary via os/exec and includes stderr in returned errors.
 func ExecCommandRunner(ctx context.Context, name string, args ...string) ([]byte, error) {
 	if ctx == nil {
@@ -65,6 +144,46 @@ func ExecCommandRunner(ctx context.Context, name string, args ...string) ([]byte
 		return nil, fmt.Errorf("%s failed: %w", name, err)
 	}
 	return stdout.Bytes(), nil
+}
+
+// ExecStreamRunner invokes an external binary via os/exec, streaming stdout lines to onStdoutLine
+// while capturing stderr for failure reporting.
+func ExecStreamRunner(ctx context.Context, onStdoutLine func(string), name string, args ...string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// #nosec G204 -- ADR-0001: intentional ffmpeg/ffprobe subprocess wrapper; callers pass hardcoded binary names and discrete arg slices.
+	cmd := exec.CommandContext(ctx, name, args...)
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("%s stdout pipe: %w", name, err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("%s start failed: %w", name, err)
+	}
+
+	scanner := bufio.NewScanner(stdoutPipe)
+	scanner.Buffer(make([]byte, 0, 16*1024), 1024*1024)
+	for scanner.Scan() {
+		if onStdoutLine != nil {
+			onStdoutLine(scanner.Text())
+		}
+	}
+	scanErr := scanner.Err()
+	waitErr := cmd.Wait()
+	if waitErr != nil {
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg != "" {
+			return fmt.Errorf("%s failed: %w\nstderr:\n%s", name, waitErr, errMsg)
+		}
+		return fmt.Errorf("%s failed: %w", name, waitErr)
+	}
+	if scanErr != nil {
+		return fmt.Errorf("%s read stdout: %w", name, scanErr)
+	}
+	return nil
 }
 
 // IsSupportedBackgroundExt reports whether ext is a supported Background Visual extension.
@@ -168,16 +287,12 @@ func probeFiles(ctx context.Context, files []string, runner CommandRunner) ([]Tr
 }
 
 func probeNamedFiles(ctx context.Context, files []NamedTrackFile, runner CommandRunner) ([]Track, error) {
-	ctxRunner := func(name string, args ...string) ([]byte, error) {
-		return runner(ctx, name, args...)
-	}
-
 	tracks := make([]Track, 0, len(files))
 	for _, f := range files {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		dur, id3Title, err := probe.ProbeFile(f.Path, ctxRunner)
+		dur, id3Title, err := probe.ProbeFile(ctx, f.Path, runner)
 		if err != nil {
 			return nil, err
 		}
@@ -294,53 +409,61 @@ func ensureOutputTarget(flagName, targetPath string) error {
 	return nil
 }
 
-func prepareRun(ctx context.Context, cfg Config, stdout io.Writer, lookPath func(string) (string, error)) (context.Context, Config, io.Writer, time.Time, error) {
+func prepareRun(ctx context.Context, cfg Config, lookPath func(string) (string, error)) (context.Context, Config, time.Time, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if stdout == nil {
-		stdout = io.Discard
-	}
 	if err := ctx.Err(); err != nil {
-		return ctx, cfg, stdout, time.Time{}, err
+		return ctx, cfg, time.Time{}, err
 	}
 
 	start := time.Now()
 	if err := ValidateConfig(cfg, lookPath); err != nil {
-		return ctx, cfg, stdout, start, err
+		return ctx, cfg, start, err
 	}
 	bgInfo, err := os.Stat(cfg.BG)
 	if err != nil {
-		return ctx, cfg, stdout, start, fmt.Errorf("cannot access Background Visual %q: %w", cfg.BG, err)
+		return ctx, cfg, start, fmt.Errorf("cannot access Background Visual %q: %w", cfg.BG, err)
 	}
 	if bgInfo.IsDir() {
-		return ctx, cfg, stdout, start, fmt.Errorf("background visual path %q is a directory, expected a file", cfg.BG)
+		return ctx, cfg, start, fmt.Errorf("background visual path %q is a directory, expected a file", cfg.BG)
 	}
 	preparedCfg, err := PrepareOutputTargets(cfg)
 	if err != nil {
-		return ctx, cfg, stdout, start, err
+		return ctx, cfg, start, err
 	}
-	return ctx, preparedCfg, stdout, start, nil
+	return ctx, preparedCfg, start, nil
+}
+
+func emitStep(sink TelemetrySink, step, total, progress int, detail string) {
+	emitTelemetry(sink, TelemetryEvent{
+		Kind:       EventStep,
+		Step:       step,
+		TotalSteps: total,
+		Progress:   progress,
+		Message:    fmt.Sprintf("[%d/%d] %s", step, total, detail),
+		Detail:     detail,
+	})
 }
 
 // Run executes the full 5-step ytmix Mix pipeline from cfg.AudioDir.
-func Run(ctx context.Context, cfg Config, stdout io.Writer, lookPath func(string) (string, error), runner CommandRunner) error {
-	ctx, cfg, stdout, start, err := prepareRun(ctx, cfg, stdout, lookPath)
+func Run(ctx context.Context, cfg Config, sink TelemetrySink, lookPath func(string) (string, error), runner CommandRunner, streamRunner StreamRunner) error {
+	ctx, cfg, start, err := prepareRun(ctx, cfg, lookPath)
 	if err != nil {
 		return err
 	}
 
-	fmt.Fprintf(stdout, "[1/5] Probing Tracks in %s...\n", cfg.AudioDir)
+	emitStep(sink, 1, 5, 5, fmt.Sprintf("Probing Tracks in %s...", cfg.AudioDir))
 	tracks, err := ProbeTracks(ctx, cfg.AudioDir, cfg.Shuffle, nil, runner)
 	if err != nil {
 		return err
 	}
-	return runPipeline(ctx, cfg, tracks, stdout, start, runner)
+	return runPipeline(ctx, cfg, tracks, sink, start, runner, streamRunner)
 }
 
 // RunWithTracks executes the 5-step ytmix Mix pipeline using an explicit, caller-ordered Track slice.
-func RunWithTracks(ctx context.Context, cfg Config, tracks []Track, stdout io.Writer, lookPath func(string) (string, error), runner CommandRunner) error {
-	ctx, cfg, stdout, start, err := prepareRun(ctx, cfg, stdout, lookPath)
+func RunWithTracks(ctx context.Context, cfg Config, tracks []Track, sink TelemetrySink, lookPath func(string) (string, error), runner CommandRunner, streamRunner StreamRunner) error {
+	ctx, cfg, start, err := prepareRun(ctx, cfg, lookPath)
 	if err != nil {
 		return err
 	}
@@ -365,20 +488,16 @@ func RunWithTracks(ctx context.Context, cfg Config, tracks []Track, stdout io.Wr
 		resolved[i] = tr
 	}
 
-	fmt.Fprintf(stdout, "[1/5] Using %d selected Track(s)...\n", len(resolved))
-	return runPipeline(ctx, cfg, resolved, stdout, start, runner)
+	emitStep(sink, 1, 5, 5, fmt.Sprintf("Using %d selected Track(s)...", len(resolved)))
+	return runPipeline(ctx, cfg, resolved, sink, start, runner, streamRunner)
 }
 
-func runPipeline(ctx context.Context, cfg Config, tracks []Track, stdout io.Writer, start time.Time, runner CommandRunner) error {
+func runPipeline(ctx context.Context, cfg Config, tracks []Track, sink TelemetrySink, start time.Time, runner CommandRunner, streamRunner StreamRunner) error {
 	tempDir, err := os.MkdirTemp("", "ytmix-*")
 	if err != nil {
 		return fmt.Errorf("create temp workspace: %w", err)
 	}
 	defer os.RemoveAll(tempDir)
-
-	ctxRunner := func(name string, args ...string) ([]byte, error) {
-		return runner(ctx, name, args...)
-	}
 
 	paths := make([]string, len(tracks))
 	fileNames := make([]string, len(tracks))
@@ -389,8 +508,8 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, stdout io.Writ
 		durations[i] = tr.Duration
 	}
 
-	fmt.Fprintf(stdout, "[2/5] Processing & merging %d Track(s) (normalize=%v, crossfade=%.2fs)...\n", len(tracks), cfg.Normalize, cfg.Crossfade)
-	mergedAudioPath, updatedPaths, updatedDurations, err := audio.ProcessAndMerge(paths, fileNames, durations, tempDir, cfg.Normalize, cfg.Crossfade, ctxRunner)
+	emitStep(sink, 2, 5, 10, fmt.Sprintf("Processing & merging %d Track(s) (normalize=%v, crossfade=%.2fs)...", len(tracks), cfg.Normalize, cfg.Crossfade))
+	mergedAudioPath, updatedPaths, updatedDurations, err := audio.ProcessAndMerge(ctx, paths, fileNames, durations, tempDir, cfg.Normalize, cfg.Crossfade, runner)
 	if err != nil {
 		return err
 	}
@@ -404,7 +523,7 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, stdout io.Writ
 		titles[i] = tr.DisplayTitle
 	}
 
-	fmt.Fprintf(stdout, "[3/5] Writing Chapter Timestamps to %s...\n", cfg.Timestamps)
+	emitStep(sink, 3, 5, 15, fmt.Sprintf("Writing Chapter Timestamps to %s...", cfg.Timestamps))
 	sched, err := subtitle.WriteChapters(cfg.Timestamps, titles, updatedDurations, cfg.Crossfade)
 	if err != nil {
 		return err
@@ -413,21 +532,55 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, stdout io.Writ
 	var assPath string
 	if cfg.OverlayTitles {
 		assPath = filepath.Join(tempDir, "titles.ass")
-		fmt.Fprintf(stdout, "[4/5] Generating Title Overlays (.ass) at %s...\n", assPath)
+		emitStep(sink, 4, 5, 20, fmt.Sprintf("Generating Title Overlays (.ass) at %s...", assPath))
 		if err := subtitle.WriteASS(assPath, titles, sched.Starts, sched.TotalDuration, cfg.TitleDuration, cfg.FontName); err != nil {
 			return err
 		}
 	} else {
-		fmt.Fprintf(stdout, "[4/5] Skipping Title Overlays (--overlay-titles=false).\n")
+		emitStep(sink, 4, 5, 20, "Skipping Title Overlays (--overlay-titles=false).")
 	}
 
-	fmt.Fprintf(stdout, "[5/5] Rendering Mix video to %s...\n", cfg.Out)
-	pathKind, err := render.Render(cfg.BG, mergedAudioPath, assPath, tempDir, cfg.Out, cfg.OverlayTitles, runtime.GOOS, ctxRunner)
+	emitStep(sink, 5, 5, 20, fmt.Sprintf("Rendering Mix video to %s...", cfg.Out))
+	var renderStream render.StreamRunner
+	if streamRunner != nil {
+		renderStream = render.StreamRunner(streamRunner)
+	}
+	var onRenderProgress render.ProgressFunc
+	if sink != nil {
+		onRenderProgress = func(u render.ProgressUpdate) {
+			pct := 20 + int(math.Round(u.Fraction*79))
+			if pct < 20 {
+				pct = 20
+			}
+			if pct > 99 {
+				pct = 99
+			}
+			emitTelemetry(sink, TelemetryEvent{
+				Kind:             EventProgress,
+				Step:             5,
+				TotalSteps:       5,
+				Progress:         pct,
+				Substage:         u.Substage,
+				OutTimeSec:       u.OutTimeSec,
+				TotalDurationSec: sched.TotalDuration,
+				Speed:            u.Speed,
+			})
+		}
+	}
+	pathKind, err := render.Render(ctx, cfg.BG, mergedAudioPath, assPath, tempDir, cfg.Out, cfg.OverlayTitles, sched.TotalDuration, runtime.GOOS, runner, renderStream, onRenderProgress)
 	if err != nil {
 		return err
 	}
 
-	fmt.Fprintf(stdout, "Done! Rendered %s via %s in %s (audio duration %.2fs, chapters: %s).\n",
+	doneMsg := fmt.Sprintf("Done! Rendered %s via %s in %s (audio duration %.2fs, chapters: %s).",
 		cfg.Out, pathKind, time.Since(start).Round(time.Millisecond), sched.TotalDuration, cfg.Timestamps)
+	emitTelemetry(sink, TelemetryEvent{
+		Kind:             EventDone,
+		Step:             5,
+		TotalSteps:       5,
+		Progress:         100,
+		Message:          doneMsg,
+		TotalDurationSec: sched.TotalDuration,
+	})
 	return nil
 }

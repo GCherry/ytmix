@@ -266,12 +266,32 @@ func TestProbeUploadValidationAndOpaqueTokens(t *testing.T) {
 
 func TestRenderUploadFlowSSEAndDownloads(t *testing.T) {
 	outDir := t.TempDir()
+	baseRunner := stubPipelineRunner(t, map[string]string{"track_0002": "10.0", "track_0001": "6.0"})
+	streamRunner := func(ctx context.Context, onLine func(string), name string, args ...string) error {
+		if _, err := baseRunner(ctx, name, args...); err != nil {
+			return err
+		}
+		for _, line := range []string{
+			"out_time_us=3500000",
+			"speed=2.10x",
+			"progress=continue",
+			"out_time_us=14000000",
+			"speed=2.40x",
+			"progress=end",
+		} {
+			if onLine != nil {
+				onLine(line)
+			}
+		}
+		return nil
+	}
 	srv, err := NewServer(Config{
 		Host:           "127.0.0.1",
 		Port:           8080,
 		WorkspaceDir:   outDir,
 		LookPath:       okLookPath,
-		Runner:         stubPipelineRunner(t, map[string]string{"track_0002": "10.0", "track_0001": "6.0"}),
+		Runner:         baseRunner,
+		StreamRunner:   streamRunner,
 		GOOS:           "linux",
 		MaxUploadBytes: 10 * 1024 * 1024,
 	})
@@ -370,6 +390,26 @@ func TestRenderUploadFlowSSEAndDownloads(t *testing.T) {
 		if !strings.Contains(rawEvents, step) {
 			t.Errorf("missing SSE step %s in:\n%s", step, rawEvents)
 		}
+	}
+	if !strings.Contains(rawEvents, `"detail":"Rendering Mix video to `) || !strings.Contains(rawEvents, `"progress":20,"step":5,"total":5}`) {
+		t.Errorf("expected Step 5 step event to report progress=20 (not 100):\n%s", rawEvents)
+	}
+	if !strings.Contains(rawEvents, "event: progress") || !strings.Contains(rawEvents, `"speed":"2.10x"`) {
+		t.Errorf("expected live SSE progress events with speed:\n%s", rawEvents)
+	}
+
+	// Verify latestProgress reconnect snapshot does not bloat job.events history.
+	job := newRenderJob("job_snap", outDir, "out.mp4", "out.mp4", "ts.txt", "ts.txt", "Path C", func() {})
+	job.emit("step", map[string]any{"step": 5, "progress": 20})
+	job.emitProgress(map[string]any{"step": 5, "progress": 42, "speed": "2.0x"})
+	job.emitProgress(map[string]any{"step": 5, "progress": 77, "speed": "2.5x"})
+	hist, sub, done := job.subscribe()
+	job.unsubscribe(sub)
+	if done {
+		t.Fatal("expected running job not to be done")
+	}
+	if len(hist) != 2 || hist[0].name != "step" || hist[1].name != "progress" || !strings.Contains(hist[1].data, `"progress":77`) {
+		t.Fatalf("expected 1 step + 1 latest progress snapshot on reconnect, got: %+v", hist)
 	}
 
 	// 4. Verify downloadable output.mp4 and reordered timestamps.txt.

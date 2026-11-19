@@ -1,6 +1,7 @@
 package probe
 
 import (
+	"context"
 	"errors"
 	"math/rand/v2"
 	"os"
@@ -97,7 +98,7 @@ func TestTitleAndTrackDiscovery(t *testing.T) {
 		}
 
 		var calls [][]string
-		stubRunner := func(name string, args ...string) ([]byte, error) {
+		stubRunner := func(_ context.Context, name string, args ...string) ([]byte, error) {
 			if name != "ffprobe" {
 				return nil, errors.New("unexpected binary: " + name)
 			}
@@ -109,11 +110,11 @@ func TestTitleAndTrackDiscovery(t *testing.T) {
 			return []byte(`{"format":{"duration":"90.250000","tags":{}}}`), nil
 		}
 
-		dur1, title1, err := ProbeFile(p1, stubRunner)
+		dur1, title1, err := ProbeFile(context.Background(), p1, stubRunner)
 		if err != nil {
 			t.Fatalf("ProbeFile p1 error: %v", err)
 		}
-		dur2, title2, err := ProbeFile(p2, stubRunner)
+		dur2, title2, err := ProbeFile(context.Background(), p2, stubRunner)
 		if err != nil {
 			t.Fatalf("ProbeFile p2 error: %v", err)
 		}
@@ -127,6 +128,23 @@ func TestTitleAndTrackDiscovery(t *testing.T) {
 		}
 		if ResolveDisplayTitle(title2, p2) != "Second" || dur2 != 90.25 {
 			t.Fatalf("p2 = (%v, %q)", dur2, title2)
+		}
+	})
+
+	t.Run("stops immediately when context is cancelled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		called := false
+		_, _, err := ProbeFile(ctx, "01.mp3", func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+			called = true
+			return nil, nil
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+		if called {
+			t.Fatal("expected runner not to be invoked on cancelled context")
 		}
 	})
 }

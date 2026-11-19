@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -9,8 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"regexp"
-	"strings"
 	"sync"
 
 	"github.com/GCherry/ytmix/internal/mixer"
@@ -20,8 +17,6 @@ const (
 	defaultMaxJobs     = 5
 	defaultMaxSessions = 10
 )
-
-var stepLinePattern = regexp.MustCompile(`^\[(\d+)/(\d+)\]\s*(.+)$`)
 
 type sessionState struct {
 	id      string
@@ -54,12 +49,13 @@ type renderJob struct {
 	renderingPath string
 	cancel        context.CancelFunc
 
-	mu     sync.Mutex
-	status jobStatus
-	errMsg string
-	events []sseEvent
-	subs   map[chan sseEvent]struct{}
-	closed bool
+	mu             sync.Mutex
+	status         jobStatus
+	errMsg         string
+	events         []sseEvent
+	latestProgress *sseEvent
+	subs           map[chan sseEvent]struct{}
+	closed         bool
 }
 
 func newOpaqueID(prefix string) (string, error) {
@@ -107,6 +103,28 @@ func (j *renderJob) emit(name string, payload any) {
 	}
 }
 
+func (j *renderJob) emitProgress(payload any) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	ev := sseEvent{name: "progress", data: string(raw)}
+
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.closed {
+		return
+	}
+	j.latestProgress = &ev
+	for ch := range j.subs {
+		select {
+		case ch <- ev:
+		default:
+			// Slow subscriber buffer full; drop incremental frame rather than blocking FFmpeg pipeline.
+		}
+	}
+}
+
 func (j *renderJob) finish(status jobStatus, errMsg string, finalEventName string, payload any) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -121,6 +139,7 @@ func (j *renderJob) finish(status jobStatus, errMsg string, finalEventName strin
 	}
 	j.status = status
 	j.errMsg = errMsg
+	j.latestProgress = nil
 	j.events = append(j.events, ev)
 	for ch := range j.subs {
 		select {
@@ -139,6 +158,9 @@ func (j *renderJob) subscribe() (history []sseEvent, ch <-chan sseEvent, done bo
 	history = append([]sseEvent(nil), j.events...)
 	if j.status != jobRunning || j.closed {
 		return history, nil, true
+	}
+	if j.latestProgress != nil {
+		history = append(history, *j.latestProgress)
 	}
 	sub := make(chan sseEvent, 32)
 	j.subs[sub] = struct{}{}
@@ -320,55 +342,4 @@ func (st *jobStore) closeAll() {
 			os.RemoveAll(s.tempDir)
 		}
 	}
-}
-
-type sseLogWriter struct {
-	job *renderJob
-	buf bytes.Buffer
-}
-
-func (w *sseLogWriter) Write(p []byte) (int, error) {
-	_, _ = w.buf.Write(p)
-	for {
-		data := w.buf.Bytes()
-		idx := bytes.IndexByte(data, '\n')
-		if idx < 0 {
-			break
-		}
-		line := strings.TrimSpace(string(data[:idx]))
-		w.buf.Next(idx + 1)
-		if line == "" {
-			continue
-		}
-		w.emitLine(line)
-	}
-	return len(p), nil
-}
-
-func (w *sseLogWriter) flushRemaining() {
-	if rem := strings.TrimSpace(w.buf.String()); rem != "" {
-		w.emitLine(rem)
-	}
-	w.buf.Reset()
-}
-
-func (w *sseLogWriter) emitLine(line string) {
-	if matches := stepLinePattern.FindStringSubmatch(line); len(matches) == 4 {
-		var step, total int
-		_, _ = fmt.Sscanf(matches[1], "%d", &step)
-		_, _ = fmt.Sscanf(matches[2], "%d", &total)
-		progress := 0
-		if total > 0 {
-			progress = (step * 100) / total
-		}
-		w.job.emit("step", map[string]any{
-			"step":     step,
-			"total":    total,
-			"message":  line,
-			"detail":   matches[3],
-			"progress": progress,
-		})
-		return
-	}
-	w.job.emit("log", map[string]any{"message": line})
 }

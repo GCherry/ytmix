@@ -1,9 +1,24 @@
 package main
 
 import (
+	"os"
 	"reflect"
 	"testing"
 )
+
+func TestIsCharDevice(t *testing.T) {
+	if isCharDevice(nil) {
+		t.Fatal("expected isCharDevice(nil) to be false")
+	}
+	f, err := os.CreateTemp(t.TempDir(), "not-tty-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if isCharDevice(f) {
+		t.Fatal("expected regular file not to be treated as char device TTY")
+	}
+}
 
 func TestParseFlags(t *testing.T) {
 	t.Run("parses defaults and all 11 flags", func(t *testing.T) {

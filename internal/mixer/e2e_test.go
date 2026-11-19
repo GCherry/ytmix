@@ -136,15 +136,25 @@ func TestE2EPipeline(t *testing.T) {
 		outMP4 := filepath.Join(workDir, "out_path_a.mp4")
 		tsPath := filepath.Join(workDir, "timestamps_a.txt")
 		var stdout bytes.Buffer
+		var sawProgress bool
+		cliSink := NewCLITelemetry(&stdout, false)
 		err := Run(ctx, Config{
 			AudioDir:   audioDir,
 			BG:         loopMP4,
 			Out:        outMP4,
 			Timestamps: tsPath,
 			Crossfade:  1.0,
-		}, &stdout, exec.LookPath, ExecCommandRunner)
+		}, func(ev TelemetryEvent) {
+			if ev.Kind == EventProgress {
+				sawProgress = true
+			}
+			cliSink(ev)
+		}, exec.LookPath, ExecCommandRunner, ExecStreamRunner)
 		if err != nil {
 			t.Fatalf("Path A Run failed: %v\nstdout:\n%s", err, stdout.String())
+		}
+		if !sawProgress {
+			t.Errorf("expected live EventProgress telemetry during Path A render")
 		}
 		assertOutputMP4AndTimestamps(t, outMP4, tsPath, 7.0, "00:00 Sine_One\n00:03 Sine_Two\n")
 	})
@@ -162,7 +172,7 @@ func TestE2EPipeline(t *testing.T) {
 			OverlayTitles: true,
 			TitleDuration: 3,
 			FontName:      "Arial",
-		}, &stdout, exec.LookPath, ExecCommandRunner)
+		}, NewCLITelemetry(&stdout, false), exec.LookPath, ExecCommandRunner, ExecStreamRunner)
 		if err != nil {
 			t.Fatalf("Path B Run failed: %v\nstdout:\n%s", err, stdout.String())
 		}
@@ -180,7 +190,7 @@ func TestE2EPipeline(t *testing.T) {
 			Timestamps:    tsPath,
 			OverlayTitles: true,
 			FontName:      "Arial",
-		}, &stdout, exec.LookPath, ExecCommandRunner)
+		}, NewCLITelemetry(&stdout, false), exec.LookPath, ExecCommandRunner, ExecStreamRunner)
 		if err != nil {
 			t.Fatalf("Path C Run failed: %v\nstdout:\n%s", err, stdout.String())
 		}

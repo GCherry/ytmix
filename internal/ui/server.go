@@ -43,6 +43,7 @@ type Config struct {
 	IncludeHomeRoot bool
 	LookPath        func(string) (string, error)
 	Runner          mixer.CommandRunner
+	StreamRunner    mixer.StreamRunner
 	GOOS            string
 	MaxUploadBytes  int64
 	MaxJobs         int
@@ -162,6 +163,9 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	if cfg.Runner == nil {
 		cfg.Runner = mixer.ExecCommandRunner
+		if cfg.StreamRunner == nil {
+			cfg.StreamRunner = mixer.ExecStreamRunner
+		}
 	}
 	if cfg.GOOS == "" {
 		cfg.GOOS = runtime.GOOS
@@ -302,9 +306,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	status := "ok"
 	encoder := "unavailable"
 	if hasFFmpeg {
-		args := render.DetectEncoderArgs(s.cfg.GOOS, func(name string, a ...string) ([]byte, error) {
-			return s.cfg.Runner(r.Context(), name, a...)
-		})
+		args := render.DetectEncoderArgs(r.Context(), s.cfg.GOOS, s.cfg.Runner)
 		encoder = extractEncoderName(args)
 	} else {
 		status = "degraded"
@@ -835,9 +837,46 @@ func (s *Server) runRenderJob(ctx context.Context, job *renderJob, cfg mixer.Con
 	defer s.store.releaseActive(job.id)
 	defer job.cancel()
 
-	logWriter := &sseLogWriter{job: job}
-	err := mixer.RunWithTracks(ctx, cfg, tracks, logWriter, s.cfg.LookPath, s.cfg.Runner)
-	logWriter.flushRemaining()
+	var mu sync.Mutex
+	lastPct := -1
+	var lastProgressAt time.Time
+	sink := func(ev mixer.TelemetryEvent) {
+		switch ev.Kind {
+		case mixer.EventStep:
+			job.emit("step", map[string]any{
+				"step":     ev.Step,
+				"total":    ev.TotalSteps,
+				"message":  ev.Message,
+				"detail":   ev.Detail,
+				"progress": ev.Progress,
+			})
+		case mixer.EventProgress:
+			mu.Lock()
+			now := time.Now()
+			shouldEmit := ev.Progress != lastPct && (lastPct < 0 || ev.Progress == 99 || ev.Progress-lastPct >= 5 || now.Sub(lastProgressAt) >= 250*time.Millisecond)
+			if shouldEmit {
+				lastPct = ev.Progress
+				lastProgressAt = now
+			}
+			mu.Unlock()
+			if !shouldEmit {
+				return
+			}
+			job.emitProgress(map[string]any{
+				"step":             ev.Step,
+				"total":            ev.TotalSteps,
+				"progress":         ev.Progress,
+				"substage":         ev.Substage,
+				"outTimeSec":       ev.OutTimeSec,
+				"totalDurationSec": ev.TotalDurationSec,
+				"speed":            ev.Speed,
+			})
+		case mixer.EventDone:
+			job.emit("log", map[string]any{"message": ev.Message})
+		}
+	}
+
+	err := mixer.RunWithTracks(ctx, cfg, tracks, sink, s.cfg.LookPath, s.cfg.Runner, s.cfg.StreamRunner)
 	if err != nil {
 		job.finish(jobFailed, err.Error(), "error", map[string]any{
 			"jobId":   job.id,

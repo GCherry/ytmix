@@ -149,10 +149,25 @@ func main() {
 		os.Exit(2)
 	}
 
-	if err := mixer.Run(ctx, cfg, os.Stdout, exec.LookPath, mixer.ExecCommandRunner); err != nil {
+	isTTY := isCharDevice(os.Stdout)
+	if err := mixer.Run(ctx, cfg, mixer.NewCLITelemetry(os.Stdout, isTTY), exec.LookPath, mixer.ExecCommandRunner, mixer.ExecStreamRunner); err != nil {
+		if isTTY {
+			fmt.Fprintln(os.Stdout)
+		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func isCharDevice(f *os.File) bool {
+	if f == nil {
+		return false
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (info.Mode() & os.ModeCharDevice) != 0
 }
 
 func runUIServer(ctx context.Context, uiCfg UIConfig, out io.Writer) error {
@@ -168,6 +183,7 @@ func runUIServer(ctx context.Context, uiCfg UIConfig, out io.Writer) error {
 		IncludeHomeRoot: true,
 		LookPath:        exec.LookPath,
 		Runner:          mixer.ExecCommandRunner,
+		StreamRunner:    mixer.ExecStreamRunner,
 		GOOS:            runtime.GOOS,
 	})
 	if err != nil {

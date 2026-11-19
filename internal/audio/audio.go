@@ -1,6 +1,7 @@
 package audio
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"os"
@@ -73,7 +74,10 @@ func ValidateCrossfade(fileNames []string, durations []float64, crossfade float6
 }
 
 // NormalizeTracks transcodes each Track to a temporary -14 LUFS .wav file and re-probes its duration.
-func NormalizeTracks(paths []string, fileNames []string, tempDir string, runner func(name string, args ...string) ([]byte, error)) ([]string, []float64, error) {
+func NormalizeTracks(ctx context.Context, paths []string, fileNames []string, tempDir string, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) ([]string, []float64, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if len(paths) != len(fileNames) {
 		return nil, nil, fmt.Errorf("mismatched Track paths (%d) and fileNames (%d)", len(paths), len(fileNames))
 	}
@@ -81,8 +85,12 @@ func NormalizeTracks(paths []string, fileNames []string, tempDir string, runner 
 	normPaths := make([]string, len(paths))
 	normDurations := make([]float64, len(paths))
 	for i, p := range paths {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		wavPath := filepath.Join(tempDir, fmt.Sprintf("norm_%04d.wav", i))
 		if _, err := runner(
+			ctx,
 			"ffmpeg",
 			"-y",
 			"-hide_banner",
@@ -96,7 +104,7 @@ func NormalizeTracks(paths []string, fileNames []string, tempDir string, runner 
 			return nil, nil, fmt.Errorf("normalize Track %q: %w", fileNames[i], err)
 		}
 
-		newDur, _, err := probe.ProbeFile(wavPath, runner)
+		newDur, _, err := probe.ProbeFile(ctx, wavPath, runner)
 		if err != nil {
 			return nil, nil, fmt.Errorf("re-probe normalized Track %q: %w", fileNames[i], err)
 		}
@@ -108,7 +116,13 @@ func NormalizeTracks(paths []string, fileNames []string, tempDir string, runner 
 }
 
 // ProcessAndMerge optionally normalizes Tracks and merges them into tempDir/merged_audio.m4a.
-func ProcessAndMerge(paths []string, fileNames []string, durations []float64, tempDir string, normalize bool, crossfade float64, runner func(name string, args ...string) ([]byte, error)) (string, []string, []float64, error) {
+func ProcessAndMerge(ctx context.Context, paths []string, fileNames []string, durations []float64, tempDir string, normalize bool, crossfade float64, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) (string, []string, []float64, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return "", nil, nil, err
+	}
 	if len(paths) == 0 {
 		return "", nil, nil, fmt.Errorf("cannot merge 0 Tracks")
 	}
@@ -120,13 +134,16 @@ func ProcessAndMerge(paths []string, fileNames []string, durations []float64, te
 	workingDurations := durations
 	if normalize {
 		var err error
-		workingPaths, workingDurations, err = NormalizeTracks(paths, fileNames, tempDir, runner)
+		workingPaths, workingDurations, err = NormalizeTracks(ctx, paths, fileNames, tempDir, runner)
 		if err != nil {
 			return "", nil, nil, err
 		}
 	}
 
 	if err := ValidateCrossfade(fileNames, workingDurations, crossfade); err != nil {
+		return "", nil, nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return "", nil, nil, err
 	}
 
@@ -145,6 +162,7 @@ func ProcessAndMerge(paths []string, fileNames []string, durations []float64, te
 			return "", nil, nil, fmt.Errorf("write concat_list.txt: %w", err)
 		}
 		if _, err := runner(
+			ctx,
 			"ffmpeg",
 			"-y",
 			"-hide_banner",
@@ -175,7 +193,7 @@ func ProcessAndMerge(paths []string, fileNames []string, durations []float64, te
 		"-ar", "48000",
 		mergedPath,
 	)
-	if _, err := runner("ffmpeg", args...); err != nil {
+	if _, err := runner(ctx, "ffmpeg", args...); err != nil {
 		return "", nil, nil, fmt.Errorf("acrossfade merge audio: %w", err)
 	}
 	return mergedPath, workingPaths, workingDurations, nil
