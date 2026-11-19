@@ -82,6 +82,28 @@ func stubPipelineRunner(t *testing.T, probeDurations map[string]string) func(con
 			return []byte(`{"format":{"duration":"` + dur + `","tags":{}}}`), nil
 		}
 		if name == "ffmpeg" {
+			joined := strings.Join(args, " ")
+			if strings.Contains(joined, "-filters") {
+				return []byte(`Filters:
+ .. color |->V Color
+ .. showwaves A->V Wave
+ TS gblur V->V Blur
+ .. scale V->V Scale
+ .. pad V->V Pad
+ .. showfreqs A->V Freqs
+ .S avectorscope A->V Scope
+ .. showcqt A->V CQT
+ .S showspectrum A->V Spectrum
+ .. a3dscope A->V 3D
+ .. ahistogram A->V Histogram
+ .. aphasemeter A->N Phase
+ .. anullsink A->| Sink
+ .. showvolume A->V Volume
+ TS blend VV->V Blend
+ TS colorchannelmixer V->V Mixer
+ TS fade V->V Fade
+`), nil
+			}
 			// Write dummy output file for final render commands so /output download succeeds.
 			if len(args) > 0 {
 				last := args[len(args)-1]
@@ -138,9 +160,9 @@ func TestStaticAssetsAndHealth(t *testing.T) {
 		wantType string
 		wantSub  []string
 	}{
-		{"/", "text/html", []string{"Editorial Mix Studio", "out-dir-input", "browse-out-dir-btn", "browse-audio-dir-btn", "fs-modal", "save-lan-folder-btn", "fs-modal-out-name", "fs-modal-ts-name"}},
-		{"/styles.css", "text/css", []string{"[hidden]", ".modal-backdrop", ".fs-root-chip"}},
-		{"/app.js", "javascript", []string{"/api/render", "/api/fs/list", "/api/fs/mkdir", "showDirectoryPicker"}},
+		{"/", "text/html", []string{"Editorial Mix Studio", "out-dir-input", "browse-out-dir-btn", "browse-audio-dir-btn", "fs-modal", "save-lan-folder-btn", "fs-modal-out-name", "fs-modal-ts-name", "bg-mode-visualizer", "viz-pager", "audition-btn", "darkness-box", "stage-canvas"}},
+		{"/styles.css", "text/css", []string{"[hidden]", ".modal-backdrop", ".fs-root-chip", ".preset-grid", ".preset-pager", ".darkness-box", ".audition-bar"}},
+		{"/app.js", "javascript", []string{"/api/render", "/api/fs/list", "/api/fs/mkdir", "showDirectoryPicker", "/api/sessions/", "VIZ_PAGE_SIZE", "visualizerBrightness", "fadeToBlackMinutes"}},
 	} {
 		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
 		rec := httptest.NewRecorder()
@@ -180,18 +202,34 @@ func TestStaticAssetsAndHealth(t *testing.T) {
 	if !reflect.DeepEqual(health.SupportedBackgroundExts, wantExts) {
 		t.Fatalf("SupportedBackgroundExts = %+v, want %+v", health.SupportedBackgroundExts, wantExts)
 	}
+	if len(health.Visualizers) != 14 {
+		t.Fatalf("expected 14 visualizers in /api/health, got %d", len(health.Visualizers))
+	}
+	if len(health.VisualizerThemes) != 7 {
+		t.Fatalf("expected 7 visualizerThemes in /api/health, got %d", len(health.VisualizerThemes))
+	}
+	for _, v := range health.Visualizers {
+		if !v.Available {
+			t.Fatalf("expected visualizer %q available under full mock filters", v.ID)
+		}
+	}
 }
 
 func TestHealthCachesEncoderProbe(t *testing.T) {
-	var probeCalls atomic.Int32
+	var encoderProbes atomic.Int32
+	var filterProbes atomic.Int32
 	srv, err := NewServer(Config{
 		Host:     "127.0.0.1",
 		Port:     8080,
 		LookPath: okLookPath,
 		GOOS:     "linux",
-		Runner: func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		Runner: func(_ context.Context, name string, args ...string) ([]byte, error) {
 			if name == "ffmpeg" {
-				probeCalls.Add(1)
+				if strings.Contains(strings.Join(args, " "), "-filters") {
+					filterProbes.Add(1)
+					return []byte(" .. color |->V c\n .. showfreqs A->V f\n"), nil
+				}
+				encoderProbes.Add(1)
 			}
 			return nil, nil
 		},
@@ -222,8 +260,11 @@ func TestHealthCachesEncoderProbe(t *testing.T) {
 	}
 	wg.Wait()
 
-	if got := probeCalls.Load(); got != 1 {
+	if got := encoderProbes.Load(); got != 1 {
 		t.Fatalf("expected ffmpeg encoder probe once across %d health checks, got %d", requests, got)
+	}
+	if got := filterProbes.Load(); got != 1 {
+		t.Fatalf("expected ffmpeg filter probe once across %d health checks, got %d", requests, got)
 	}
 	for i := 0; i < requests; i++ {
 		if codes[i] != http.StatusOK || encoders[i] != "h264_nvenc" {
@@ -1163,6 +1204,211 @@ func TestAllowedRootsAndOutputLocationAPIs(t *testing.T) {
 		srv.Handler().ServeHTTP(listRec, listReq)
 		if listRec.Code != http.StatusOK || !strings.Contains(listRec.Body.String(), `"music"`) {
 			t.Fatalf("expected 200 and music directory for fs/list?path=~, got %d: %s", listRec.Code, listRec.Body.String())
+		}
+	})
+}
+
+func TestPathDServerHealthRenderLANAndTrackAudio(t *testing.T) {
+	t.Run("health reports unavailable preset when required filter missing and rejects it before claiming job", func(t *testing.T) {
+		baseRunner := stubPipelineRunner(t, nil)
+		runnerNo3D := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			if name == "ffmpeg" && strings.Contains(strings.Join(args, " "), "-filters") {
+				return []byte(" .. color |->V Color\n .. showfreqs A->V Freqs\n"), nil
+			}
+			return baseRunner(ctx, name, args...)
+		}
+		srv, err := NewServer(Config{
+			Host:     "127.0.0.1",
+			Port:     8080,
+			LookPath: okLookPath,
+			Runner:   runnerNo3D,
+			GOOS:     "linux",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer srv.Close()
+
+		hReq := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+		hReq.RemoteAddr = "127.0.0.1:50000"
+		hRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(hRec, hReq)
+		var health healthResponse
+		if err := json.Unmarshal(hRec.Body.Bytes(), &health); err != nil {
+			t.Fatal(err)
+		}
+		var barsOK, scopeOK *bool
+		for i := range health.Visualizers {
+			v := &health.Visualizers[i]
+			switch v.ID {
+			case "bars":
+				val := v.Available
+				barsOK = &val
+			case "3dscope":
+				val := v.Available
+				scopeOK = &val
+			}
+		}
+		if barsOK == nil || !*barsOK || scopeOK == nil || *scopeOK {
+			t.Fatalf("expected bars available=true and 3dscope available=false, got bars=%v 3dscope=%v", barsOK, scopeOK)
+		}
+
+		// Probe one uploaded MP3 so we can test /api/render + /audio.
+		probeReq, _ := newMultipartProbeRequest(t, map[string][]byte{"01_Sleep.mp3": []byte("ID3MP3AUDIO")}, []string{"01_Sleep.mp3"})
+		probeRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(probeRec, probeReq)
+		if probeRec.Code != http.StatusOK {
+			t.Fatalf("probe failed: %d %s", probeRec.Code, probeRec.Body.String())
+		}
+		var probed probeResponse
+		if err := json.Unmarshal(probeRec.Body.Bytes(), &probed); err != nil {
+			t.Fatal(err)
+		}
+
+		// Unavailable 3dscope fails synchronously with 400.
+		badBody, _ := json.Marshal(map[string]any{
+			"sessionId":  probed.SessionID,
+			"trackIds":   []string{probed.Tracks[0].ID},
+			"bgMode":     "visualizer",
+			"visualizer": "3dscope",
+		})
+		badReq := httptest.NewRequest(http.MethodPost, "/api/render", bytes.NewReader(badBody))
+		badReq.Header.Set("Content-Type", "application/json")
+		badReq.RemoteAddr = "127.0.0.1:50000"
+		badRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(badRec, badReq)
+		if badRec.Code != http.StatusBadRequest || !strings.Contains(badRec.Body.String(), "a3dscope") {
+			t.Fatalf("expected 400 mentioning a3dscope, got %d: %s", badRec.Code, badRec.Body.String())
+		}
+
+		// Invalid brightness (explicit 0 and 9 and 101), negative fade, mutual exclusion all fail with 400.
+		for _, badPayload := range []map[string]any{
+			{"sessionId": probed.SessionID, "trackIds": []string{probed.Tracks[0].ID}, "bgMode": "visualizer", "visualizer": "bars", "visualizerBrightness": 0},
+			{"sessionId": probed.SessionID, "trackIds": []string{probed.Tracks[0].ID}, "bgMode": "visualizer", "visualizer": "bars", "visualizerBrightness": 9},
+			{"sessionId": probed.SessionID, "trackIds": []string{probed.Tracks[0].ID}, "bgMode": "visualizer", "visualizer": "bars", "visualizerBrightness": 101},
+			{"sessionId": probed.SessionID, "trackIds": []string{probed.Tracks[0].ID}, "bgMode": "visualizer", "visualizer": "bars", "fadeToBlackMinutes": -1},
+			{"sessionId": probed.SessionID, "trackIds": []string{probed.Tracks[0].ID}, "bgMode": "visualizer", "bgPath": "cover.png", "visualizer": "bars"},
+		} {
+			b, _ := json.Marshal(badPayload)
+			r := httptest.NewRequest(http.MethodPost, "/api/render", bytes.NewReader(b))
+			r.Header.Set("Content-Type", "application/json")
+			r.RemoteAddr = "127.0.0.1:50000"
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, r)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for payload %+v, got %d: %s", badPayload, rec.Code, rec.Body.String())
+			}
+		}
+
+		// Session track audio streaming enforces same-origin, 404 on unknown tokens, and audio headers on valid tokens.
+		audURL := "/api/sessions/" + probed.SessionID + "/tracks/" + probed.Tracks[0].ID + "/audio"
+		audReq := httptest.NewRequest(http.MethodGet, audURL, nil)
+		audReq.Host = "127.0.0.1:8080"
+		audReq.RemoteAddr = "127.0.0.1:50000"
+		audRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(audRec, audReq)
+		if audRec.Code != http.StatusOK ||
+			audRec.Header().Get("Content-Type") != "audio/mpeg" ||
+			audRec.Header().Get("X-Content-Type-Options") != "nosniff" ||
+			audRec.Header().Get("Cache-Control") != "no-store" ||
+			audRec.Body.String() != "ID3MP3AUDIO" {
+			t.Fatalf("unexpected audio stream response: code=%d headers=%v body=%q", audRec.Code, audRec.Header(), audRec.Body.String())
+		}
+
+		crossReq := httptest.NewRequest(http.MethodGet, audURL, nil)
+		crossReq.Host = "127.0.0.1:8080"
+		crossReq.Header.Set("Sec-Fetch-Site", "cross-site")
+		crossRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(crossRec, crossReq)
+		if crossRec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for cross-site audio request, got %d", crossRec.Code)
+		}
+
+		missReq := httptest.NewRequest(http.MethodGet, "/api/sessions/sess_missing/tracks/trk_1/audio", nil)
+		missRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(missRec, missReq)
+		if missRec.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 for missing session audio, got %d", missRec.Code)
+		}
+	})
+
+	t.Run("LAN session allows Path D Auto Visualizer render while blocking local bgPath", func(t *testing.T) {
+		srv, err := NewServer(Config{
+			Host:     "0.0.0.0",
+			Port:     8080,
+			LookPath: okLookPath,
+			Runner:   stubPipelineRunner(t, nil),
+			GOOS:     "linux",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer srv.Close()
+
+		probeReq, _ := newMultipartProbeRequest(t, map[string][]byte{"01_Night.mp3": []byte("MP3")}, []string{"01_Night.mp3"})
+		probeReq.RemoteAddr = "192.168.1.50:54321"
+		probeRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(probeRec, probeReq)
+		if probeRec.Code != http.StatusOK {
+			t.Fatalf("LAN upload probe failed: %d %s", probeRec.Code, probeRec.Body.String())
+		}
+		var probed probeResponse
+		if err := json.Unmarshal(probeRec.Body.Bytes(), &probed); err != nil {
+			t.Fatal(err)
+		}
+
+		// Local bgPath must still be blocked on LAN.
+		localBG, _ := json.Marshal(map[string]any{
+			"sessionId": probed.SessionID,
+			"trackIds":  []string{probed.Tracks[0].ID},
+			"bgMode":    "local",
+			"bgPath":    "/etc/cover.png",
+		})
+		localReq := httptest.NewRequest(http.MethodPost, "/api/render", bytes.NewReader(localBG))
+		localReq.Header.Set("Content-Type", "application/json")
+		localReq.RemoteAddr = "192.168.1.50:54321"
+		localRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(localRec, localReq)
+		if localRec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for LAN local bgPath, got %d: %s", localRec.Code, localRec.Body.String())
+		}
+
+		// Path D Auto Visualizer must succeed on LAN without uploading any Background Visual.
+		glowFalse := false
+		brightness40 := 40
+		vizBody, _ := json.Marshal(map[string]any{
+			"sessionId":            probed.SessionID,
+			"trackIds":             []string{probed.Tracks[0].ID},
+			"bgMode":               "visualizer",
+			"visualizer":           "black",
+			"visualizerTheme":      "oled-ember",
+			"visualizerGlow":       glowFalse,
+			"visualizerBrightness": brightness40,
+			"fadeToBlackMinutes":   15,
+			"overlayTitles":        true,
+			"dimTitles":            true,
+		})
+		vizReq := httptest.NewRequest(http.MethodPost, "/api/render", bytes.NewReader(vizBody))
+		vizReq.Header.Set("Content-Type", "application/json")
+		vizReq.RemoteAddr = "192.168.1.50:54321"
+		vizRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(vizRec, vizReq)
+		if vizRec.Code != http.StatusAccepted {
+			t.Fatalf("expected 202 for LAN Path D render, got %d: %s", vizRec.Code, vizRec.Body.String())
+		}
+		var started renderStartResponse
+		if err := json.Unmarshal(vizRec.Body.Bytes(), &started); err != nil {
+			t.Fatal(err)
+		}
+		if started.RenderingPath != "Path D" {
+			t.Fatalf("RenderingPath = %q, want Path D", started.RenderingPath)
+		}
+
+		sseReq := httptest.NewRequest(http.MethodGet, started.EventsURL, nil)
+		sseRec := newSSERecorder()
+		srv.Handler().ServeHTTP(sseRec, sseReq)
+		if !strings.Contains(sseRec.String(), "event: complete") {
+			t.Fatalf("expected LAN Path D render complete event, got:\n%s", sseRec.String())
 		}
 	})
 }

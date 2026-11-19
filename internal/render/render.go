@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-// Path identifies one of the three FFmpeg video Rendering Paths.
+// Path identifies one of the four FFmpeg video Rendering Paths.
 type Path string
 
 const (
@@ -21,6 +21,8 @@ const (
 	PathB Path = "Path B"
 	// PathC encodes a static image Background Visual with -loop 1 -tune stillimage.
 	PathC Path = "Path C"
+	// PathD generates a 1080p Auto Visualizer (or pure black sleep screen) directly via FFmpeg without a Background Visual file.
+	PathD Path = "Path D"
 
 	// PathANormWeight allocates 20%-35% of overall pipeline progress (15 of 79 Step-5 percentage points)
 	// to Path A's norm_loop pre-normalization, leaving 35%-99% for the full-duration mux.
@@ -156,8 +158,12 @@ func ClassifyBackground(bgPath string) (BackgroundKind, string, error) {
 	}
 }
 
-// SelectPath chooses the Rendering Path from the Background Visual file extension and overlayTitles flag.
+// SelectPath chooses the Rendering Path from the Background Visual path and overlayTitles flag.
+// When bgPath is empty or whitespace-only, Path D (Auto Visualizer) is selected.
 func SelectPath(bgPath string, overlayTitles bool) (Path, error) {
+	if strings.TrimSpace(bgPath) == "" {
+		return PathD, nil
+	}
 	kind, _, err := ClassifyBackground(bgPath)
 	if err != nil {
 		return "", err
@@ -396,6 +402,22 @@ func runFFmpegRender(
 	}, "ffmpeg", progressArgs...)
 }
 
+// RenderOptions configures Step 5 FFmpeg Mix rendering across Paths A, B, C, and D.
+type RenderOptions struct {
+	BGPath          string
+	MergedAudioPath string
+	ASSPath         string
+	TempDir         string
+	OutPath         string
+	OverlayTitles   bool
+	TotalDuration   float64
+	GOOS            string
+	Visualizer      VisualizerConfig
+	Runner          func(ctx context.Context, name string, args ...string) ([]byte, error)
+	StreamRunner    StreamRunner
+	OnProgress      ProgressFunc
+}
+
 // Render selects the Rendering Path and executes FFmpeg to produce the final Mix video at outPath.
 func Render(
 	ctx context.Context,
@@ -407,6 +429,24 @@ func Render(
 	streamRunner StreamRunner,
 	onProgress ProgressFunc,
 ) (Path, error) {
+	return RenderWithOptions(ctx, RenderOptions{
+		BGPath:          bgPath,
+		MergedAudioPath: mergedAudioPath,
+		ASSPath:         assPath,
+		TempDir:         tempDir,
+		OutPath:         outPath,
+		OverlayTitles:   overlayTitles,
+		TotalDuration:   totalDuration,
+		GOOS:            goos,
+		Visualizer:      DefaultVisualizerConfig(),
+		Runner:          runner,
+		StreamRunner:    streamRunner,
+		OnProgress:      onProgress,
+	})
+}
+
+// RenderWithOptions selects the Rendering Path and executes FFmpeg using explicit Visualizer options for Path D.
+func RenderWithOptions(ctx context.Context, opts RenderOptions) (Path, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -414,39 +454,59 @@ func Render(
 		return "", err
 	}
 
-	pathKind, err := SelectPath(bgPath, overlayTitles)
+	pathKind, err := SelectPath(opts.BGPath, opts.OverlayTitles)
 	if err != nil {
 		return "", err
 	}
-	if overlayTitles && strings.TrimSpace(assPath) == "" {
+	if opts.OverlayTitles && strings.TrimSpace(opts.ASSPath) == "" {
 		return "", fmt.Errorf("titles.ass path is required when --overlay-titles is enabled")
 	}
 	// #nosec G301 -- user-facing output directory uses standard 0755 permissions.
-	if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
-		return "", fmt.Errorf("create output directory for %q: %w", outPath, err)
+	if err := os.MkdirAll(filepath.Dir(opts.OutPath), 0755); err != nil {
+		return "", fmt.Errorf("create output directory for %q: %w", opts.OutPath, err)
 	}
 
 	switch pathKind {
 	case PathA:
 		var bgDuration float64
-		if streamRunner != nil {
-			bgDuration = probeMediaDuration(ctx, bgPath, runner)
+		if opts.StreamRunner != nil {
+			bgDuration = probeMediaDuration(ctx, opts.BGPath, opts.Runner)
 		}
-		normLoopPath := filepath.Join(tempDir, "norm_loop.mp4")
-		if err := runFFmpegRender(ctx, "norm_loop", BuildPathANormalizeArgs(bgPath, normLoopPath), bgDuration, 0, PathANormWeight, runner, streamRunner, onProgress); err != nil {
+		normLoopPath := filepath.Join(opts.TempDir, "norm_loop.mp4")
+		if err := runFFmpegRender(ctx, "norm_loop", BuildPathANormalizeArgs(opts.BGPath, normLoopPath), bgDuration, 0, PathANormWeight, opts.Runner, opts.StreamRunner, opts.OnProgress); err != nil {
 			return "", fmt.Errorf("normalize background loop (%s): %w", PathA, err)
 		}
-		if err := runFFmpegRender(ctx, "mux", BuildPathAMuxArgs(normLoopPath, mergedAudioPath, outPath), totalDuration, PathANormWeight, 1.0, runner, streamRunner, onProgress); err != nil {
+		if err := runFFmpegRender(ctx, "mux", BuildPathAMuxArgs(normLoopPath, opts.MergedAudioPath, opts.OutPath), opts.TotalDuration, PathANormWeight, 1.0, opts.Runner, opts.StreamRunner, opts.OnProgress); err != nil {
 			return "", fmt.Errorf("mux background loop (%s): %w", PathA, err)
 		}
 	case PathB:
-		encoder := DetectEncoder(ctx, goos, runner)
-		if err := runFFmpegRender(ctx, "render", BuildPathBArgs(bgPath, mergedAudioPath, assPath, outPath, encoder.Args), totalDuration, 0, 1.0, runner, streamRunner, onProgress); err != nil {
+		encoder := DetectEncoder(ctx, opts.GOOS, opts.Runner)
+		if err := runFFmpegRender(ctx, "render", BuildPathBArgs(opts.BGPath, opts.MergedAudioPath, opts.ASSPath, opts.OutPath, encoder.Args), opts.TotalDuration, 0, 1.0, opts.Runner, opts.StreamRunner, opts.OnProgress); err != nil {
 			return "", fmt.Errorf("render overlay loop (%s): %w", PathB, err)
 		}
 	case PathC:
-		if err := runFFmpegRender(ctx, "render", BuildPathCArgs(bgPath, mergedAudioPath, assPath, outPath, overlayTitles), totalDuration, 0, 1.0, runner, streamRunner, onProgress); err != nil {
+		if err := runFFmpegRender(ctx, "render", BuildPathCArgs(opts.BGPath, opts.MergedAudioPath, opts.ASSPath, opts.OutPath, opts.OverlayTitles), opts.TotalDuration, 0, 1.0, opts.Runner, opts.StreamRunner, opts.OnProgress); err != nil {
 			return "", fmt.Errorf("render still image (%s): %w", PathC, err)
+		}
+	case PathD:
+		vizCfg, err := ValidateVisualizerConfig(opts.Visualizer)
+		if err != nil {
+			return "", err
+		}
+		if vizCfg.Preset == "black" {
+			args := BuildPathDBlackArgs(opts.MergedAudioPath, opts.ASSPath, opts.OutPath, opts.OverlayTitles, opts.TotalDuration, vizCfg)
+			if err := runFFmpegRender(ctx, "render", args, opts.TotalDuration, 0, 1.0, opts.Runner, opts.StreamRunner, opts.OnProgress); err != nil {
+				return "", fmt.Errorf("render blackout screen (%s): %w", PathD, err)
+			}
+		} else {
+			encoder := DetectEncoder(ctx, opts.GOOS, opts.Runner)
+			args, err := BuildPathDArgs(opts.MergedAudioPath, opts.ASSPath, opts.OutPath, opts.OverlayTitles, opts.TotalDuration, vizCfg, encoder.Args)
+			if err != nil {
+				return "", err
+			}
+			if err := runFFmpegRender(ctx, "render", args, opts.TotalDuration, 0, 1.0, opts.Runner, opts.StreamRunner, opts.OnProgress); err != nil {
+				return "", fmt.Errorf("render auto visualizer %q (%s): %w", vizCfg.Preset, PathD, err)
+			}
 		}
 	}
 

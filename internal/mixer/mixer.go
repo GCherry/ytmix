@@ -32,17 +32,34 @@ type Track struct {
 
 // Config holds the parsed CLI flags for a ytmix Mix build.
 type Config struct {
-	AudioDir      string
-	BG            string
-	OutDir        string
-	Out           string
-	Timestamps    string
-	Crossfade     float64
-	Normalize     bool
-	OverlayTitles bool
-	TitleDuration int
-	FontName      string
-	Shuffle       bool
+	AudioDir             string
+	BG                   string
+	OutDir               string
+	Out                  string
+	Timestamps           string
+	Crossfade            float64
+	Normalize            bool
+	OverlayTitles        bool
+	TitleDuration        int
+	FontName             string
+	Shuffle              bool
+	Visualizer           string
+	VisualizerTheme      string
+	VisualizerGlow       bool
+	VisualizerBrightness int
+	FadeToBlack          time.Duration
+	DimTitles            bool
+}
+
+// VisualizerConfig constructs the Path D Auto Visualizer configuration implied by c.
+func (c Config) VisualizerConfig() render.VisualizerConfig {
+	return render.VisualizerConfig{
+		Preset:      c.Visualizer,
+		Theme:       c.VisualizerTheme,
+		Glow:        c.VisualizerGlow,
+		Brightness:  c.VisualizerBrightness,
+		FadeToBlack: c.FadeToBlack,
+	}
 }
 
 // CommandRunner executes an external binary and returns stdout or an error containing stderr.
@@ -188,11 +205,19 @@ func ExecStreamRunner(ctx context.Context, onStdoutLine func(string), name strin
 
 // ValidateConfig validates CLI configuration and checks ffmpeg/ffprobe availability.
 func ValidateConfig(cfg Config, lookPath func(string) (string, error)) error {
-	if strings.TrimSpace(cfg.BG) == "" {
-		return errors.New("--bg is required (supported: .jpg, .jpeg, .png, .webp, .mp4, .mov, .gif)")
-	}
-	if _, _, err := render.ClassifyBackground(cfg.BG); err != nil {
-		return err
+	bg := strings.TrimSpace(cfg.BG)
+	viz := strings.TrimSpace(cfg.Visualizer)
+	if bg != "" {
+		if viz != "" {
+			return errors.New("--bg and --visualizer cannot be used together (omit --bg for Path D Auto Visualizer, or omit --visualizer to use a Background Visual file)")
+		}
+		if _, _, err := render.ClassifyBackground(bg); err != nil {
+			return err
+		}
+	} else {
+		if _, err := render.ValidateVisualizerConfig(cfg.VisualizerConfig()); err != nil {
+			return err
+		}
 	}
 	if math.IsNaN(cfg.Crossfade) || math.IsInf(cfg.Crossfade, 0) || cfg.Crossfade < 0 {
 		return fmt.Errorf("--crossfade must be >= 0 (got %v)", cfg.Crossfade)
@@ -221,14 +246,16 @@ func ValidateBackgroundFile(bgPath string) error {
 	return nil
 }
 
-// PreflightConfig validates cfg, checks Background Visual file accessibility, selects the Rendering Path,
+// PreflightConfig validates cfg, checks Background Visual file accessibility when provided, selects the Rendering Path,
 // and optionally prepares output directories and writability checks.
 func PreflightConfig(cfg Config, lookPath func(string) (string, error), prepareOutputs bool) (Config, render.Path, error) {
 	if err := ValidateConfig(cfg, lookPath); err != nil {
 		return cfg, "", err
 	}
-	if err := ValidateBackgroundFile(cfg.BG); err != nil {
-		return cfg, "", err
+	if strings.TrimSpace(cfg.BG) != "" {
+		if err := ValidateBackgroundFile(cfg.BG); err != nil {
+			return cfg, "", err
+		}
 	}
 	pathKind, err := render.SelectPath(cfg.BG, cfg.OverlayTitles)
 	if err != nil {
@@ -242,6 +269,29 @@ func PreflightConfig(cfg Config, lookPath func(string) (string, error), prepareO
 		cfg = preparedCfg
 	}
 	return cfg, pathKind, nil
+}
+
+// ValidateVisualizerFilters verifies that all FFmpeg filters required for cfg's Path D preset exist.
+// When cachedFilters is nil, it probes `ffmpeg -hide_banner -filters` via runner.
+func ValidateVisualizerFilters(ctx context.Context, cfg Config, runner CommandRunner, cachedFilters map[string]bool) error {
+	vizCfg, err := render.ValidateVisualizerConfig(cfg.VisualizerConfig())
+	if err != nil {
+		return err
+	}
+	filters := cachedFilters
+	if filters == nil {
+		if runner == nil {
+			return errors.New("command runner is required to probe FFmpeg visualizer filters")
+		}
+		filters, err = render.DetectFilters(ctx, runner)
+		if err != nil {
+			return err
+		}
+	}
+	if ok, missing := render.PresetAvailable(vizCfg.Preset, filters); !ok {
+		return fmt.Errorf("auto visualizer %q requires FFmpeg filter %q which is not available in this ffmpeg build (run --list-visualizers to inspect available presets)", vizCfg.Preset, missing)
+	}
+	return nil
 }
 
 // ProbeTracks discovers .mp3 files in audioDir and probes each Track's duration and Display Title.
@@ -435,7 +485,7 @@ func ensureOutputTarget(flagName, targetPath string) error {
 	return nil
 }
 
-func prepareRun(ctx context.Context, cfg Config, lookPath func(string) (string, error)) (context.Context, Config, time.Time, error) {
+func prepareRun(ctx context.Context, cfg Config, lookPath func(string) (string, error), runner CommandRunner) (context.Context, Config, time.Time, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -444,9 +494,14 @@ func prepareRun(ctx context.Context, cfg Config, lookPath func(string) (string, 
 	}
 
 	start := time.Now()
-	preparedCfg, _, err := PreflightConfig(cfg, lookPath, true)
+	preparedCfg, pathKind, err := PreflightConfig(cfg, lookPath, true)
 	if err != nil {
 		return ctx, cfg, start, err
+	}
+	if pathKind == render.PathD && runner != nil {
+		if err := ValidateVisualizerFilters(ctx, preparedCfg, runner, nil); err != nil {
+			return ctx, cfg, start, err
+		}
 	}
 	return ctx, preparedCfg, start, nil
 }
@@ -464,7 +519,7 @@ func emitStep(sink TelemetrySink, step, total, progress int, detail string) {
 
 // Run executes the full 5-step ytmix Mix pipeline from cfg.AudioDir.
 func Run(ctx context.Context, cfg Config, sink TelemetrySink, lookPath func(string) (string, error), runner CommandRunner, streamRunner StreamRunner) error {
-	ctx, cfg, start, err := prepareRun(ctx, cfg, lookPath)
+	ctx, cfg, start, err := prepareRun(ctx, cfg, lookPath, runner)
 	if err != nil {
 		return err
 	}
@@ -479,7 +534,7 @@ func Run(ctx context.Context, cfg Config, sink TelemetrySink, lookPath func(stri
 
 // RunWithTracks executes the 5-step ytmix Mix pipeline using an explicit, caller-ordered Track slice.
 func RunWithTracks(ctx context.Context, cfg Config, tracks []Track, sink TelemetrySink, lookPath func(string) (string, error), runner CommandRunner, streamRunner StreamRunner) error {
-	ctx, cfg, start, err := prepareRun(ctx, cfg, lookPath)
+	ctx, cfg, start, err := prepareRun(ctx, cfg, lookPath, runner)
 	if err != nil {
 		return err
 	}
@@ -549,7 +604,11 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, sink Telemetry
 	if cfg.OverlayTitles {
 		assPath = filepath.Join(tempDir, "titles.ass")
 		emitStep(sink, 4, 5, 20, fmt.Sprintf("Generating Title Overlays (.ass) at %s...", assPath))
-		if err := subtitle.WriteASS(assPath, titles, sched.Starts, sched.TotalDuration, cfg.TitleDuration, cfg.FontName); err != nil {
+		if err := subtitle.WriteASSWithOptions(assPath, titles, sched.Starts, sched.TotalDuration, subtitle.ASSOptions{
+			TitleDuration: cfg.TitleDuration,
+			FontName:      cfg.FontName,
+			DimTitles:     cfg.DimTitles,
+		}); err != nil {
 			return err
 		}
 	} else {
@@ -583,7 +642,20 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, sink Telemetry
 			})
 		}
 	}
-	pathKind, err := render.Render(ctx, cfg.BG, mergedAudioPath, assPath, tempDir, cfg.Out, cfg.OverlayTitles, sched.TotalDuration, runtime.GOOS, runner, renderStream, onRenderProgress)
+	pathKind, err := render.RenderWithOptions(ctx, render.RenderOptions{
+		BGPath:          cfg.BG,
+		MergedAudioPath: mergedAudioPath,
+		ASSPath:         assPath,
+		TempDir:         tempDir,
+		OutPath:         cfg.Out,
+		OverlayTitles:   cfg.OverlayTitles,
+		TotalDuration:   sched.TotalDuration,
+		GOOS:            runtime.GOOS,
+		Visualizer:      cfg.VisualizerConfig(),
+		Runner:          runner,
+		StreamRunner:    renderStream,
+		OnProgress:      onRenderProgress,
+	})
 	if err != nil {
 		return err
 	}

@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestIsCharDevice(t *testing.T) {
@@ -21,7 +25,7 @@ func TestIsCharDevice(t *testing.T) {
 }
 
 func TestParseFlags(t *testing.T) {
-	t.Run("parses defaults and all 11 flags", func(t *testing.T) {
+	t.Run("parses defaults and all flags including Path D controls", func(t *testing.T) {
 		cfg, err := ParseFlags([]string{
 			"--audio-dir", "my_tracks",
 			"--bg", "loop.MP4",
@@ -44,17 +48,75 @@ func TestParseFlags(t *testing.T) {
 			t.Fatalf("unexpected parsed config: %+v", cfg)
 		}
 
-		defCfg, err := ParseFlags([]string{"--bg", "cover.png"})
+		defCfg, err := ParseFlags(nil)
 		if err != nil {
-			t.Fatalf("unexpected error for defaults: %v", err)
+			t.Fatalf("unexpected error for omitted --bg defaults: %v", err)
 		}
-		if defCfg.AudioDir != "./tracks" || defCfg.OutDir != "" || defCfg.Out != "output.mp4" ||
+		if defCfg.AudioDir != "./tracks" || defCfg.BG != "" || defCfg.OutDir != "" || defCfg.Out != "output.mp4" ||
 			defCfg.Timestamps != "timestamps.txt" || defCfg.Crossfade != 0 ||
 			defCfg.Normalize || defCfg.OverlayTitles || defCfg.TitleDuration != 0 ||
-			defCfg.FontName != "Arial" || defCfg.Shuffle {
+			defCfg.FontName != "Arial" || defCfg.Shuffle ||
+			defCfg.Visualizer != "" || defCfg.VisualizerTheme != "studio-mint" ||
+			!defCfg.VisualizerGlow || defCfg.VisualizerBrightness != 100 ||
+			defCfg.FadeToBlack != 0 || defCfg.DimTitles {
 			t.Fatalf("unexpected default config: %+v", defCfg)
 		}
+
+		vizCfg, listViz, err := ParseCLIFlags([]string{
+			"--visualizer", "ember",
+			"--visualizer-theme", "oled-ember",
+			"--visualizer-glow=false",
+			"--visualizer-brightness", "45",
+			"--fade-to-black", "15m",
+			"--overlay-titles",
+			"--dim-titles",
+		})
+		if err != nil || listViz {
+			t.Fatalf("ParseCLIFlags Path D unexpected err=%v listViz=%v", err, listViz)
+		}
+		if vizCfg.Visualizer != "ember" || vizCfg.VisualizerTheme != "oled-ember" ||
+			vizCfg.VisualizerGlow || vizCfg.VisualizerBrightness != 45 ||
+			vizCfg.FadeToBlack != 15*time.Minute || !vizCfg.DimTitles {
+			t.Fatalf("unexpected Path D config: %+v", vizCfg)
+		}
+
+		for _, badArgs := range [][]string{
+			{"--visualizer-brightness", "0"},
+			{"--visualizer-brightness", "9"},
+			{"--visualizer-brightness", "101"},
+			{"--fade-to-black", "-5s"},
+		} {
+			if _, _, err := ParseCLIFlags(badArgs); err == nil {
+				t.Fatalf("expected error for %v", badArgs)
+			}
+		}
+
+		_, listOnly, err := ParseCLIFlags([]string{"--list-visualizers"})
+		if err != nil || !listOnly {
+			t.Fatalf("expected listOnly=true for --list-visualizers, got (%v, %v)", listOnly, err)
+		}
 	})
+}
+
+func TestPrintVisualizers(t *testing.T) {
+	var out bytes.Buffer
+	err := PrintVisualizers(
+		context.Background(),
+		&out,
+		func(name string) (string, error) { return "/usr/bin/" + name, nil },
+		func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+			return []byte(" .. color |->V c\n .. showwaves A->V w\n TS gblur V->V b\n .. scale V->V s\n .. pad V->V p\n .. showfreqs A->V f\n"), nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("PrintVisualizers error: %v", err)
+	}
+	text := out.String()
+	for _, want := range []string{"black", "ember", "bars", "3dscope", "studio-mint", "oled-ember", "ready", "unavailable (missing a3dscope)"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("PrintVisualizers missing %q:\n%s", want, text)
+		}
+	}
 }
 
 func TestParseUIFlags(t *testing.T) {

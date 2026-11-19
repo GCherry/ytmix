@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -65,6 +66,8 @@ type Server struct {
 	assetsFS      fs.FS
 	encoderOnce   sync.Once
 	cachedEncoder render.EncoderInfo
+	filtersOnce   sync.Once
+	cachedFilters map[string]bool
 }
 
 type fsRootDTO struct {
@@ -89,6 +92,16 @@ type fsMkdirRequest struct {
 	Name      string `json:"name"`
 }
 
+type visualizerDTO struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Filter      string `json:"filter"`
+	Category    string `json:"category"`
+	Description string `json:"description"`
+	IsDark      bool   `json:"isDark"`
+	Available   bool   `json:"available"`
+}
+
 type healthResponse struct {
 	Status                  string                `json:"status"`
 	FFmpeg                  bool                  `json:"ffmpeg"`
@@ -98,6 +111,8 @@ type healthResponse struct {
 	BindHost                string                `json:"bindHost"`
 	LocalPathsAllowed       bool                  `json:"localPathsAllowed"`
 	SupportedBackgroundExts render.BackgroundExts `json:"supportedBackgroundExts"`
+	Visualizers             []visualizerDTO       `json:"visualizers"`
+	VisualizerThemes        []render.ThemeSpec    `json:"visualizerThemes"`
 	Defaults                healthDefaults        `json:"defaults"`
 	Roots                   []fsRootDTO           `json:"roots,omitempty"`
 }
@@ -129,19 +144,26 @@ type localProbeRequest struct {
 }
 
 type renderConfigRequest struct {
-	SessionID     string   `json:"sessionId"`
-	TrackIDs      []string `json:"trackIds"`
-	AudioDir      string   `json:"audioDir"`
-	BGPath        string   `json:"bgPath"`
-	OutDir        string   `json:"outDir"`
-	Out           string   `json:"out"`
-	Timestamps    string   `json:"timestamps"`
-	Crossfade     float64  `json:"crossfade"`
-	Normalize     bool     `json:"normalize"`
-	OverlayTitles bool     `json:"overlayTitles"`
-	TitleDuration int      `json:"titleDuration"`
-	FontName      string   `json:"fontName"`
-	Shuffle       bool     `json:"shuffle"`
+	SessionID            string   `json:"sessionId"`
+	TrackIDs             []string `json:"trackIds"`
+	AudioDir             string   `json:"audioDir"`
+	BGMode               string   `json:"bgMode"`
+	BGPath               string   `json:"bgPath"`
+	OutDir               string   `json:"outDir"`
+	Out                  string   `json:"out"`
+	Timestamps           string   `json:"timestamps"`
+	Crossfade            float64  `json:"crossfade"`
+	Normalize            bool     `json:"normalize"`
+	OverlayTitles        bool     `json:"overlayTitles"`
+	TitleDuration        int      `json:"titleDuration"`
+	FontName             string   `json:"fontName"`
+	Shuffle              bool     `json:"shuffle"`
+	Visualizer           string   `json:"visualizer"`
+	VisualizerTheme      string   `json:"visualizerTheme"`
+	VisualizerGlow       *bool    `json:"visualizerGlow"`
+	VisualizerBrightness *int     `json:"visualizerBrightness"`
+	FadeToBlackMinutes   float64  `json:"fadeToBlackMinutes"`
+	DimTitles            bool     `json:"dimTitles"`
 }
 
 type renderStartResponse struct {
@@ -278,6 +300,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/fs/list", s.handleFSList)
 	s.mux.HandleFunc("POST /api/fs/mkdir", s.handleFSMkdir)
 	s.mux.HandleFunc("POST /api/probe", s.handleProbe)
+	s.mux.HandleFunc("GET /api/sessions/{sessionId}/tracks/{trackId}/audio", s.handleSessionTrackAudio)
 	s.mux.HandleFunc("POST /api/render", s.handleRender)
 	s.mux.HandleFunc("GET /api/render/{id}/events", s.handleRenderEvents)
 	s.mux.HandleFunc("GET /api/render/{id}/output", s.handleRenderOutput)
@@ -308,7 +331,29 @@ func (s *Server) detectEncoder(ctx context.Context) render.EncoderInfo {
 		}
 		s.cachedEncoder = render.DetectEncoder(probeCtx, s.cfg.GOOS, s.cfg.Runner)
 	})
-	return s.cachedEncoder
+	return render.EncoderInfo{
+		Name: s.cachedEncoder.Name,
+		Args: append([]string(nil), s.cachedEncoder.Args...),
+	}
+}
+
+func (s *Server) detectFilters(ctx context.Context) map[string]bool {
+	s.filtersOnce.Do(func() {
+		probeCtx := s.baseCtx
+		if probeCtx == nil {
+			probeCtx = ctx
+		}
+		filters, err := render.DetectFilters(probeCtx, s.cfg.Runner)
+		if err != nil {
+			return
+		}
+		s.cachedFilters = filters
+	})
+	cloned := make(map[string]bool, len(s.cachedFilters))
+	for k, v := range s.cachedFilters {
+		cloned[k] = v
+	}
+	return cloned
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -319,13 +364,33 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	status := "ok"
 	encoder := "unavailable"
+	var availFilters map[string]bool
 	if hasFFmpeg {
 		encoder = s.detectEncoder(r.Context()).Name
+		availFilters = s.detectFilters(r.Context())
 	} else {
 		status = "degraded"
 	}
 	if !hasFFprobe {
 		status = "degraded"
+	}
+
+	specs := render.ListVisualizers()
+	vizDTOs := make([]visualizerDTO, len(specs))
+	for i, spec := range specs {
+		ok := false
+		if hasFFmpeg {
+			ok, _ = render.PresetAvailable(spec.ID, availFilters)
+		}
+		vizDTOs[i] = visualizerDTO{
+			ID:          spec.ID,
+			Name:        spec.Name,
+			Filter:      spec.Filter,
+			Category:    spec.Category,
+			Description: spec.Description,
+			IsDark:      spec.IsDark,
+			Available:   ok,
+		}
 	}
 
 	localAllowed := s.localPathsAllowed(r)
@@ -347,6 +412,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		BindHost:                s.cfg.Host,
 		LocalPathsAllowed:       localAllowed,
 		SupportedBackgroundExts: render.SupportedBackgroundExts(),
+		Visualizers:             vizDTOs,
+		VisualizerThemes:        render.ListThemes(),
 		Defaults: healthDefaults{
 			AudioDir:   audioDirDefault,
 			BG:         bgDefault,
@@ -356,6 +423,40 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		},
 		Roots: roots,
 	})
+}
+
+func (s *Server) handleSessionTrackAudio(w http.ResponseWriter, r *http.Request) {
+	if err := requireSameOrigin(r); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	tr, err := s.store.resolveTrack(r.PathValue("sessionId"), r.PathValue("trackId"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if !strings.EqualFold(filepath.Ext(tr.Path), ".mp3") {
+		writeError(w, http.StatusBadRequest, "unsupported Track extension")
+		return
+	}
+	// #nosec G304 G703 -- tr.Path is resolved strictly from server-owned session state via opaque sessionId/trackId tokens.
+	f, err := os.Open(tr.Path)
+	if err != nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("cannot open Track audio: %v", err))
+		return
+	}
+	defer func() { _ = f.Close() }()
+
+	info, err := f.Stat()
+	if err != nil || info.IsDir() {
+		writeError(w, http.StatusNotFound, "track audio unavailable")
+		return
+	}
+
+	w.Header().Set("Content-Type", "audio/mpeg")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	http.ServeContent(w, r, sanitizeBaseName(tr.FileName, "track.mp3"), info.ModTime(), f)
 }
 
 func (s *Server) handlePreviewBG(w http.ResponseWriter, r *http.Request) {
@@ -615,28 +716,72 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 	}
 
 	localAllowed := s.localPathsAllowed(r)
-	bgPath := uploadedBGPath
-	if bgPath == "" {
-		if !localAllowed {
-			writeError(w, http.StatusForbidden, "local Background Visual paths are disabled on non-loopback or --host 0.0.0.0 sessions; upload a Background Visual file instead")
-			return
-		}
-		rawBG := strings.TrimSpace(req.BGPath)
-		if rawBG == "" {
-			writeError(w, http.StatusBadRequest, "--bg is required (supported: .jpg, .jpeg, .png, .webp, .mp4, .mov, .gif)")
-			return
-		}
-		if _, ok := render.CanonicalBackgroundExt(filepath.Ext(rawBG)); !ok {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported Background Visual extension %q", filepath.Ext(rawBG)))
-			return
-		}
-		safeBG, err := s.resolveAllowedPath(rawBG, true)
-		if err != nil {
-			writeError(w, http.StatusForbidden, err.Error())
-			return
-		}
-		bgPath = safeBG
+	bgMode := strings.ToLower(strings.TrimSpace(req.BGMode))
+	switch bgMode {
+	case "", "upload", "local", "visualizer":
+	default:
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported bgMode %q (expected upload, local, or visualizer)", req.BGMode))
+		return
 	}
+
+	isVisualizerMode := bgMode == "visualizer" || (bgMode == "" && uploadedBGPath == "" && strings.TrimSpace(req.BGPath) == "" && strings.TrimSpace(req.Visualizer) != "")
+
+	bgPath := uploadedBGPath
+	if isVisualizerMode {
+		if bgPath != "" || strings.TrimSpace(req.BGPath) != "" {
+			writeError(w, http.StatusBadRequest, "--bg and --visualizer cannot be used together")
+			return
+		}
+		bgPath = ""
+	} else {
+		if strings.TrimSpace(req.Visualizer) != "" {
+			writeError(w, http.StatusBadRequest, "--bg and --visualizer cannot be used together")
+			return
+		}
+		if bgPath == "" {
+			if bgMode == "upload" {
+				writeError(w, http.StatusBadRequest, "upload a Background Visual file or switch to Auto Visualizer")
+				return
+			}
+			if !localAllowed {
+				writeError(w, http.StatusForbidden, "local Background Visual paths are disabled on non-loopback or --host 0.0.0.0 sessions; upload a Background Visual file or use Auto Visualizer")
+				return
+			}
+			rawBG := strings.TrimSpace(req.BGPath)
+			if rawBG == "" {
+				writeError(w, http.StatusBadRequest, "Background Visual path (--bg) is required in Local Path mode")
+				return
+			}
+			if _, ok := render.CanonicalBackgroundExt(filepath.Ext(rawBG)); !ok {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported Background Visual extension %q", filepath.Ext(rawBG)))
+				return
+			}
+			safeBG, err := s.resolveAllowedPath(rawBG, true)
+			if err != nil {
+				writeError(w, http.StatusForbidden, err.Error())
+				return
+			}
+			bgPath = safeBG
+		}
+	}
+
+	if math.IsNaN(req.FadeToBlackMinutes) || math.IsInf(req.FadeToBlackMinutes, 0) || req.FadeToBlackMinutes < 0 {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("fadeToBlackMinutes must be >= 0 (got %v)", req.FadeToBlackMinutes))
+		return
+	}
+	vizGlow := true
+	if req.VisualizerGlow != nil {
+		vizGlow = *req.VisualizerGlow
+	}
+	vizBrightness := render.DefaultVisualizerBrightness
+	if req.VisualizerBrightness != nil {
+		vizBrightness = *req.VisualizerBrightness
+		if vizBrightness < render.MinVisualizerBrightness || vizBrightness > render.MaxVisualizerBrightness {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("visualizerBrightness must be between %d and %d (got %d)", render.MinVisualizerBrightness, render.MaxVisualizerBrightness, vizBrightness))
+			return
+		}
+	}
+	fadeToBlack := time.Duration(math.Round(req.FadeToBlackMinutes * float64(time.Minute)))
 
 	var safeAudioDir string
 	if localAllowed && strings.TrimSpace(req.AudioDir) != "" {
@@ -702,16 +847,22 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mixCfg := mixer.Config{
-		AudioDir:      safeAudioDir,
-		BG:            bgPath,
-		Out:           outPath,
-		Timestamps:    tsPath,
-		Crossfade:     req.Crossfade,
-		Normalize:     req.Normalize,
-		OverlayTitles: req.OverlayTitles,
-		TitleDuration: req.TitleDuration,
-		FontName:      fontName,
-		Shuffle:       req.Shuffle,
+		AudioDir:             safeAudioDir,
+		BG:                   bgPath,
+		Out:                  outPath,
+		Timestamps:           tsPath,
+		Crossfade:            req.Crossfade,
+		Normalize:            req.Normalize,
+		OverlayTitles:        req.OverlayTitles,
+		TitleDuration:        req.TitleDuration,
+		FontName:             fontName,
+		Shuffle:              req.Shuffle,
+		Visualizer:           req.Visualizer,
+		VisualizerTheme:      req.VisualizerTheme,
+		VisualizerGlow:       vizGlow,
+		VisualizerBrightness: vizBrightness,
+		FadeToBlack:          fadeToBlack,
+		DimTitles:            req.DimTitles,
 	}
 
 	preparedCfg, pathKind, err := mixer.PreflightConfig(mixCfg, s.cfg.LookPath, localAllowed)
@@ -722,6 +873,12 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 	mixCfg = preparedCfg
 	outPath = preparedCfg.Out
 	tsPath = preparedCfg.Timestamps
+	if pathKind == render.PathD {
+		if err := mixer.ValidateVisualizerFilters(r.Context(), mixCfg, s.cfg.Runner, s.detectFilters(r.Context())); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 
 	jobID, err := newOpaqueID("job")
 	if err != nil {
