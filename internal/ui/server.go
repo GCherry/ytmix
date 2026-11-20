@@ -1352,31 +1352,22 @@ func (s *Server) resolvePickerInitialDir(raw string) string {
 	if trimmed == "" {
 		return s.defaultBrowseDir()
 	}
-	expanded, err := s.expandHomePrefix(trimmed)
-	if err != nil {
-		return s.defaultBrowseDir()
-	}
-	if !filepath.IsAbs(expanded) {
-		expanded = filepath.Join(s.workspaceRoot, expanded)
-	}
-	cur := filepath.Clean(expanded)
-	for {
-		// #nosec G703 -- resolvePickerInitialDir only probes local directories to seed YTMIX_PICK_INIT without authorizing access.
-		if info, err := os.Stat(cur); err == nil {
+	if resolved, err := s.resolveAllowedPath(trimmed, true); err == nil {
+		// #nosec G304 G703 -- resolved is confined to s.allowedRoots via resolveAllowedPath.
+		if info, statErr := os.Stat(resolved); statErr == nil {
 			if info.IsDir() {
-				return cur
+				return resolved
 			}
-			parent := filepath.Dir(cur)
-			if parent != cur {
-				return parent
-			}
+			return filepath.Dir(resolved)
 		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			return s.defaultBrowseDir()
-		}
-		cur = parent
 	}
+	if resolvedParent, err := s.resolveAllowedPath(filepath.Dir(trimmed), true); err == nil {
+		// #nosec G304 G703 -- resolvedParent is confined to s.allowedRoots via resolveAllowedPath.
+		if info, statErr := os.Stat(resolvedParent); statErr == nil && info.IsDir() {
+			return resolvedParent
+		}
+	}
+	return s.defaultBrowseDir()
 }
 
 func friendlyRootLabel(dir string) string {
