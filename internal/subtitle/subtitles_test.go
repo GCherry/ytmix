@@ -118,3 +118,130 @@ func TestBuildAndWriteASS(t *testing.T) {
 		}
 	})
 }
+
+func TestBuildAndWriteASSWithOptions(t *testing.T) {
+	cases := []struct {
+		name          string
+		titles        []string
+		starts        []float64
+		totalDuration float64
+		opts          ASSOptions
+		wantStyle     string
+		wantPrimary   string
+		forbidPrimary string
+		wantExtraSubs []string
+		wantDialogues []string
+	}{
+		{
+			name:          "dim false keeps default bright style",
+			titles:        []string{"Dawn {Intro}", `Night \ Horizon`},
+			starts:        []float64{0.0, 120.5},
+			totalDuration: 200.25,
+			opts: ASSOptions{
+				TitleDuration: 0,
+				FontName:      "Inter, Bold\n",
+				DimTitles:     false,
+			},
+			wantStyle:     "Style: Default,Inter Bold,42,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,1,1,60,60,55,1",
+			wantPrimary:   "&H00FFFFFF",
+			forbidPrimary: "&H789EB2AF",
+			wantDialogues: []string{
+				`Dialogue: 0,0:00:00.00,0:02:00.50,Default,,0,0,0,,{\fad(500,500)}♪ Dawn \{Intro\}`,
+				`Dialogue: 0,0:02:00.50,0:03:20.25,Default,,0,0,0,,{\fad(500,500)}♪ Night \\ Horizon`,
+			},
+		},
+		{
+			name:          "dim true emits low-luminance style with font sanitization and escaping",
+			titles:        []string{"Sleep {Drift}\r\nPhase", `Deep \ Rain`},
+			starts:        []float64{0.0, 30.0},
+			totalDuration: 90.0,
+			opts: ASSOptions{
+				TitleDuration: 15,
+				FontName:      "Inter, Light\r\n",
+				DimTitles:     true,
+			},
+			wantStyle:     "Style: Default,Inter Light,42,&H789EB2AF,&H000000FF,&H90000000,&HB0000000,0,0,0,0,100,100,0,0,1,1,0,1,60,60,55,1",
+			wantPrimary:   "&H789EB2AF",
+			forbidPrimary: "&H00FFFFFF",
+			wantExtraSubs: []string{"&H90000000", "&HB0000000", `{\fad(500,500)}`},
+			wantDialogues: []string{
+				`Dialogue: 0,0:00:00.00,0:00:15.00,Default,,0,0,0,,{\fad(500,500)}♪ Sleep \{Drift\} Phase`,
+				`Dialogue: 0,0:00:30.00,0:00:45.00,Default,,0,0,0,,{\fad(500,500)}♪ Deep \\ Rain`,
+			},
+		},
+		{
+			name:          "dim true with blank font falls back to Arial",
+			titles:        []string{"Quiet Meadow"},
+			starts:        []float64{0.0},
+			totalDuration: 12.0,
+			opts: ASSOptions{
+				TitleDuration: 8,
+				FontName:      "  \n\t ",
+				DimTitles:     true,
+			},
+			wantStyle:     "Style: Default,Arial,42,&H789EB2AF,&H000000FF,&H90000000,&HB0000000,0,0,0,0,100,100,0,0,1,1,0,1,60,60,55,1",
+			wantPrimary:   "&H789EB2AF",
+			forbidPrimary: "&H00FFFFFF",
+			wantExtraSubs: []string{"&H90000000", `{\fad(500,500)}`},
+			wantDialogues: []string{
+				`Dialogue: 0,0:00:00.00,0:00:08.00,Default,,0,0,0,,{\fad(500,500)}♪ Quiet Meadow`,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run("BuildASSWithOptions/"+tc.name, func(t *testing.T) {
+			ass := BuildASSWithOptions(tc.titles, tc.starts, tc.totalDuration, tc.opts)
+
+			if !strings.Contains(ass, tc.wantStyle) {
+				t.Errorf("ASS missing expected style %q\nfull ASS:\n%s", tc.wantStyle, ass)
+			}
+			if !strings.Contains(ass, tc.wantPrimary) {
+				t.Errorf("ASS missing primary colour %q\nfull ASS:\n%s", tc.wantPrimary, ass)
+			}
+			if strings.Contains(ass, tc.forbidPrimary) {
+				t.Errorf("ASS unexpectedly contained %q\nfull ASS:\n%s", tc.forbidPrimary, ass)
+			}
+			for _, sub := range tc.wantExtraSubs {
+				if !strings.Contains(ass, sub) {
+					t.Errorf("ASS missing %q\nfull ASS:\n%s", sub, ass)
+				}
+			}
+			for _, dlg := range tc.wantDialogues {
+				if !strings.Contains(ass, dlg) {
+					t.Errorf("ASS missing dialogue %q\nfull ASS:\n%s", dlg, ass)
+				}
+			}
+		})
+
+		t.Run("WriteASSWithOptions/"+tc.name, func(t *testing.T) {
+			outPath := filepath.Join(t.TempDir(), "titles.ass")
+			if err := WriteASSWithOptions(outPath, tc.titles, tc.starts, tc.totalDuration, tc.opts); err != nil {
+				t.Fatalf("WriteASSWithOptions failed: %v", err)
+			}
+			data, err := os.ReadFile(outPath)
+			if err != nil {
+				t.Fatalf("read written ASS: %v", err)
+			}
+			got := string(data)
+			want := BuildASSWithOptions(tc.titles, tc.starts, tc.totalDuration, tc.opts)
+			if got != want {
+				t.Fatalf("written ASS differs from BuildASSWithOptions\ngot:\n%s\nwant:\n%s", got, want)
+			}
+		})
+	}
+
+	t.Run("BuildASS delegates identically to BuildASSWithOptions with DimTitles false", func(t *testing.T) {
+		titles := []string{"First {Song}", `Second \ Song`}
+		starts := []float64{0.0, 42.5}
+		got := BuildASS(titles, starts, 100.0, 12, "Roboto")
+		want := BuildASSWithOptions(titles, starts, 100.0, ASSOptions{
+			TitleDuration: 12,
+			FontName:      "Roboto",
+			DimTitles:     false,
+		})
+		if got != want {
+			t.Fatalf("BuildASS != BuildASSWithOptions\ngot:\n%s\nwant:\n%s", got, want)
+		}
+	})
+}

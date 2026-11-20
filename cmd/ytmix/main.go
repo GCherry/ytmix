@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/GCherry/ytmix/internal/mixer"
+	"github.com/GCherry/ytmix/internal/render"
 	"github.com/GCherry/ytmix/internal/ui"
 )
 
@@ -89,11 +90,16 @@ func ParseUIFlags(args []string) (UIConfig, error) {
 
 // NewFlagSet configures the CLI flag definitions for ytmix.
 func NewFlagSet(cfg *mixer.Config, output io.Writer) *flag.FlagSet {
+	return NewCLIFlagSet(cfg, nil, output)
+}
+
+// NewCLIFlagSet configures the CLI flag definitions for ytmix, including --list-visualizers.
+func NewCLIFlagSet(cfg *mixer.Config, listVisualizers *bool, output io.Writer) *flag.FlagSet {
 	fs := flag.NewFlagSet("ytmix", flag.ContinueOnError)
 	fs.SetOutput(output)
 
 	fs.StringVar(&cfg.AudioDir, "audio-dir", "./tracks", "Directory containing input .mp3 files.")
-	fs.StringVar(&cfg.BG, "bg", "", "Path to Background Visual (.jpg, .jpeg, .png, .webp, .mp4, .mov, .gif).")
+	fs.StringVar(&cfg.BG, "bg", "", "Optional path to Background Visual (.jpg, .jpeg, .png, .webp, .mp4, .mov, .gif). Omit to use Path D Auto Visualizer.")
 	fs.StringVar(&cfg.OutDir, "out-dir", "", "Directory where relative --out and --timestamps paths are written.")
 	fs.StringVar(&cfg.Out, "out", "output.mp4", "Output .mp4 video path (relative paths resolve inside --out-dir when set).")
 	fs.StringVar(&cfg.Timestamps, "timestamps", "timestamps.txt", "Output file path for YouTube Chapter Timestamps (relative paths resolve inside --out-dir when set).")
@@ -103,17 +109,84 @@ func NewFlagSet(cfg *mixer.Config, output io.Writer) *flag.FlagSet {
 	fs.IntVar(&cfg.TitleDuration, "title-duration", 0, "Seconds to display each Display Title (0 = full Track).")
 	fs.StringVar(&cfg.FontName, "font-name", "Arial", "Font family name used in the .ass subtitle script.")
 	fs.BoolVar(&cfg.Shuffle, "shuffle", false, "Randomize Track order instead of sorting alphabetically.")
+	fs.StringVar(&cfg.Visualizer, "visualizer", "", "Path D Auto Visualizer preset when --bg is omitted (default bars; see --list-visualizers).")
+	fs.StringVar(&cfg.VisualizerTheme, "visualizer-theme", render.DefaultVisualizerTheme, "Path D Color Theme (studio-mint, midnight-cyan, sunset-amber, neon-violet, monochrome, oled-ember, night-indigo).")
+	fs.BoolVar(&cfg.VisualizerGlow, "visualizer-glow", true, "Apply subtle glow blur on Path D Auto Visualizer presets.")
+	fs.IntVar(&cfg.VisualizerBrightness, "visualizer-brightness", render.DefaultVisualizerBrightness, "Global Path D visualizer brightness percentage in 10..100.")
+	fs.DurationVar(&cfg.FadeToBlack, "fade-to-black", 0, "Fade Path D video and burned Title Overlays to #000000 black after this duration (e.g. 15m; 0 disables).")
+	fs.BoolVar(&cfg.DimTitles, "dim-titles", false, "Use low-luminance translucent warm-gray ASS styling for Title Overlays.")
+
+	var dummyList bool
+	listTarget := &dummyList
+	if listVisualizers != nil {
+		listTarget = listVisualizers
+	}
+	fs.BoolVar(listTarget, "list-visualizers", false, "List all built-in Path D Auto Visualizer presets and Color Themes and exit.")
 	return fs
 }
 
 // ParseFlags parses CLI arguments into a mixer.Config.
 func ParseFlags(args []string) (mixer.Config, error) {
+	cfg, _, err := ParseCLIFlags(args)
+	return cfg, err
+}
+
+// ParseCLIFlags parses CLI arguments into a mixer.Config and reports whether --list-visualizers was requested.
+func ParseCLIFlags(args []string) (mixer.Config, bool, error) {
 	var cfg mixer.Config
-	fs := NewFlagSet(&cfg, io.Discard)
+	var listVisualizers bool
+	fs := NewCLIFlagSet(&cfg, &listVisualizers, io.Discard)
 	if err := fs.Parse(args); err != nil {
-		return mixer.Config{}, err
+		return mixer.Config{}, false, err
 	}
-	return cfg, nil
+	if cfg.VisualizerBrightness < render.MinVisualizerBrightness || cfg.VisualizerBrightness > render.MaxVisualizerBrightness {
+		return mixer.Config{}, false, fmt.Errorf("--visualizer-brightness must be between %d and %d (got %d)", render.MinVisualizerBrightness, render.MaxVisualizerBrightness, cfg.VisualizerBrightness)
+	}
+	if cfg.FadeToBlack < 0 {
+		return mixer.Config{}, false, fmt.Errorf("--fade-to-black must be >= 0 (got %s)", cfg.FadeToBlack)
+	}
+	return cfg, listVisualizers, nil
+}
+
+// PrintVisualizers prints all built-in Path D Auto Visualizer presets (with live FFmpeg filter availability) and Color Themes.
+func PrintVisualizers(ctx context.Context, w io.Writer, lookPath func(string) (string, error), runner mixer.CommandRunner) error {
+	var avail map[string]bool
+	hasFFmpeg := false
+	if lookPath != nil && runner != nil {
+		if _, err := lookPath("ffmpeg"); err == nil {
+			if detected, err := render.DetectFilters(ctx, runner); err == nil {
+				avail = detected
+				hasFFmpeg = true
+			}
+		}
+	}
+
+	if _, err := fmt.Fprintln(w, "Path D Auto Visualizer Presets (--visualizer):"); err != nil {
+		return err
+	}
+	for _, spec := range render.ListVisualizers() {
+		status := "unknown (ffmpeg not on PATH)"
+		if hasFFmpeg {
+			if ok, missing := render.PresetAvailable(spec.ID, avail); ok {
+				status = "ready"
+			} else {
+				status = fmt.Sprintf("unavailable (missing %s)", missing)
+			}
+		}
+		if _, err := fmt.Fprintf(w, "  %-12s  %-8s  %-18s  %-14s  %s\n", spec.ID, spec.Category, spec.Filter, status, spec.Description); err != nil {
+			return err
+		}
+	}
+
+	if _, err := fmt.Fprintln(w, "\nPath D Color Themes (--visualizer-theme):"); err != nil {
+		return err
+	}
+	for _, th := range render.ListThemes() {
+		if _, err := fmt.Fprintf(w, "  %-14s  %-24s  primary=%s secondary=%s bg=%s\n", th.ID, th.Name, th.Primary, th.Secondary, th.BG); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func main() {
@@ -138,15 +211,22 @@ func main() {
 		return
 	}
 
-	cfg, err := ParseFlags(os.Args[1:])
+	cfg, listVisualizers, err := ParseCLIFlags(os.Args[1:])
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fs := NewFlagSet(&mixer.Config{}, os.Stderr)
+			fs := NewCLIFlagSet(&mixer.Config{}, nil, os.Stderr)
 			fs.Usage()
 			os.Exit(0)
 		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(2)
+	}
+	if listVisualizers {
+		if err := PrintVisualizers(ctx, os.Stdout, exec.LookPath, mixer.ExecCommandRunner); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	isTTY := isCharDevice(os.Stdout)

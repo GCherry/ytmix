@@ -11,6 +11,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/GCherry/ytmix/internal/render"
 )
 
 type ffprobeMediaInfo struct {
@@ -193,6 +196,102 @@ func TestE2EPipeline(t *testing.T) {
 		}, NewCLITelemetry(&stdout, false), exec.LookPath, ExecCommandRunner, ExecStreamRunner)
 		if err != nil {
 			t.Fatalf("Path C Run failed: %v\nstdout:\n%s", err, stdout.String())
+		}
+		assertOutputMP4AndTimestamps(t, outMP4, tsPath, 8.0, "00:00 Sine_One\n00:04 Sine_Two\n")
+	})
+
+	t.Run("Test 4 Path D default Auto Visualizer bars with omitted BG", func(t *testing.T) {
+		outMP4 := filepath.Join(workDir, "out_path_d_bars.mp4")
+		tsPath := filepath.Join(workDir, "timestamps_d_bars.txt")
+		var stdout bytes.Buffer
+		var sawProgress bool
+		cliSink := NewCLITelemetry(&stdout, false)
+		err := Run(ctx, Config{
+			AudioDir:       audioDir,
+			Out:            outMP4,
+			Timestamps:     tsPath,
+			VisualizerGlow: true,
+		}, func(ev TelemetryEvent) {
+			if ev.Kind == EventProgress {
+				sawProgress = true
+			}
+			cliSink(ev)
+		}, exec.LookPath, ExecCommandRunner, ExecStreamRunner)
+		if err != nil {
+			t.Fatalf("Path D default bars Run failed: %v\nstdout:\n%s", err, stdout.String())
+		}
+		if !sawProgress {
+			t.Errorf("expected live EventProgress telemetry during Path D render")
+		}
+		if !strings.Contains(stdout.String(), "Path D") {
+			t.Errorf("expected Path D in CLI output:\n%s", stdout.String())
+		}
+		assertOutputMP4AndTimestamps(t, outMP4, tsPath, 8.0, "00:00 Sine_One\n00:04 Sine_Two\n")
+	})
+
+	t.Run("Test 5 Path D black 2fps stillimage screen emits pure dark frames", func(t *testing.T) {
+		outMP4 := filepath.Join(workDir, "out_path_d_black.mp4")
+		tsPath := filepath.Join(workDir, "timestamps_d_black.txt")
+		var stdout bytes.Buffer
+		err := Run(ctx, Config{
+			AudioDir:   audioDir,
+			Out:        outMP4,
+			Timestamps: tsPath,
+			Visualizer: "black",
+		}, NewCLITelemetry(&stdout, false), exec.LookPath, ExecCommandRunner, ExecStreamRunner)
+		if err != nil {
+			t.Fatalf("Path D black Run failed: %v\nstdout:\n%s", err, stdout.String())
+		}
+		assertOutputMP4AndTimestamps(t, outMP4, tsPath, 8.0, "00:00 Sine_One\n00:04 Sine_Two\n")
+
+		// Verify blackout frames remain near-zero luma (BT.601 limited-range black Y=16).
+		sigOut, err := ExecCommandRunner(
+			ctx,
+			"ffprobe",
+			"-v", "error",
+			"-f", "lavfi",
+			"-i", "movie='"+render.EscapeFFmpegFilterPath(outMP4)+"',signalstats",
+			"-show_entries", "frame_tags=lavfi.signalstats.YAVG",
+			"-read_intervals", "%+#2",
+			"-of", "default=noprint_wrappers=1:nokey=1",
+		)
+		if err != nil {
+			t.Fatalf("ffprobe signalstats for blackout video failed: %v", err)
+		}
+		lines := strings.Fields(string(sigOut))
+		if len(lines) == 0 {
+			t.Fatalf("expected signalstats YAVG readings for %s", outMP4)
+		}
+		for _, valStr := range lines {
+			yavg, err := strconv.ParseFloat(valStr, 64)
+			if err != nil {
+				t.Fatalf("parse YAVG %q: %v", valStr, err)
+			}
+			if yavg > 17.0 {
+				t.Fatalf("expected blackout YAVG <= 17.0, got %.2f (all=%v)", yavg, lines)
+			}
+		}
+	})
+
+	t.Run("Test 6 Path D ember with brightness dimmer, short-duration fade omission, overlay, and dim titles", func(t *testing.T) {
+		outMP4 := filepath.Join(workDir, "out_path_d_ember.mp4")
+		tsPath := filepath.Join(workDir, "timestamps_d_ember.txt")
+		var stdout bytes.Buffer
+		err := Run(ctx, Config{
+			AudioDir:             audioDir,
+			Out:                  outMP4,
+			Timestamps:           tsPath,
+			Visualizer:           "ember",
+			VisualizerTheme:      "oled-ember",
+			VisualizerGlow:       true,
+			VisualizerBrightness: 40,
+			FadeToBlack:          1 * time.Minute,
+			OverlayTitles:        true,
+			DimTitles:            true,
+			FontName:             "Arial",
+		}, NewCLITelemetry(&stdout, false), exec.LookPath, ExecCommandRunner, ExecStreamRunner)
+		if err != nil {
+			t.Fatalf("Path D ember Run failed: %v\nstdout:\n%s", err, stdout.String())
 		}
 		assertOutputMP4AndTimestamps(t, outMP4, tsPath, 8.0, "00:00 Sine_One\n00:04 Sine_Two\n")
 	})

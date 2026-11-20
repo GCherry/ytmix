@@ -71,6 +71,15 @@
             <span class="mono summary-stat" id="tracks-summary">0 Tracks · 00:00</span>
           </div>
 
+          <div class="well audition-bar">
+            <div class="audition-actions">
+              <button type="button" class="btn btn-mint btn-sm" id="audition-btn" disabled>&#9654; Audition Selected Track</button>
+              <span class="audition-track-name mono" id="audition-track-name"></span>
+            </div>
+            <span class="source-badge mono" id="audio-source-badge">Ambient Sim</span>
+          </div>
+          <audio id="audition-audio" preload="none" hidden></audio>
+
           <div class="well table-well">
             <table class="track-table" aria-label="Selected Tracks">
               <thead>
@@ -99,6 +108,7 @@
             <div class="segmented" role="tablist" aria-label="Background Visual Source">
               <button type="button" class="seg-btn is-active" id="bg-mode-upload" role="tab" aria-selected="true">Upload File</button>
               <button type="button" class="seg-btn" id="bg-mode-local" role="tab" aria-selected="false">Local Path</button>
+              <button type="button" class="seg-btn" id="bg-mode-visualizer" role="tab" aria-selected="false">Auto Visualizer</button>
             </div>
           </div>
 
@@ -116,6 +126,78 @@
               <input id="bg-path-input" type="text" class="input mono" placeholder="cover_art.png or loop_visual.mp4">
             </div>
             <p class="field-hint">Previewed directly on the 16:9 stage when running locally.</p>
+          </div>
+
+          <div id="bg-visualizer-pane" class="source-pane" hidden>
+            <div class="cat-chips" id="viz-cat-chips" role="group" aria-label="Auto Visualizer categories"></div>
+
+            <div class="preset-grid" id="viz-preset-grid"></div>
+
+            <div class="preset-pager" id="viz-pager" hidden>
+              <button type="button" class="btn btn-secondary btn-sm mono" id="viz-page-prev" aria-label="Previous preset page">&#9664;</button>
+              <div class="preset-pager-center">
+                <span class="preset-page-info mono tabular-nums" id="viz-page-info">1 / 3</span>
+                <div class="preset-page-dots" id="viz-page-dots" role="tablist" aria-label="Preset pages"></div>
+              </div>
+              <button type="button" class="btn btn-secondary btn-sm mono" id="viz-page-next" aria-label="Next preset page">&#9654;</button>
+            </div>
+
+            <div class="style-controls-bar">
+              <div class="control-block">
+                <label class="control-label" for="viz-theme-select">Color Theme <code class="mono">--visualizer-theme</code></label>
+                <select id="viz-theme-select" class="select"></select>
+              </div>
+              <label class="toggle-card">
+                <input type="checkbox" id="viz-glow-toggle" checked>
+                <span class="toggle-title">Subtle Glow <code class="mono">gblur</code></span>
+              </label>
+            </div>
+
+            <div class="darkness-box" id="darkness-box">
+              <div class="darkness-head">
+                <span class="darkness-title">&#9790; Darkness &amp; Sleep Controls</span>
+                <span class="darkness-note mono" id="darkness-mode-note">Applies across any visualizer preset</span>
+              </div>
+
+              <div class="control-block">
+                <div class="control-label-row">
+                  <label class="control-label" for="viz-brightness-slider">Brightness / Dimmer <code class="mono">--visualizer-brightness</code></label>
+                  <span class="mono tabular-nums" id="viz-brightness-val">100%</span>
+                </div>
+                <div class="brightness-row">
+                  <div class="brightness-slider-wrap">
+                    <input id="viz-brightness-slider" type="range" min="10" max="100" step="5" value="100" class="slider">
+                  </div>
+                  <div class="quick-pills" role="group" aria-label="Brightness presets">
+                    <button type="button" class="quick-pill is-active" data-dim="100">100% Full</button>
+                    <button type="button" class="quick-pill" data-dim="45">45% Dim</button>
+                    <button type="button" class="quick-pill" data-dim="20">20% Sleep</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="sleep-bottom-grid">
+                <div class="control-block">
+                  <label class="control-label" for="viz-fade-select">Sleep Fade-to-Black <code class="mono">--fade-to-black</code></label>
+                  <div class="fade-control-row">
+                    <select id="viz-fade-select" class="select">
+                      <option value="0" selected>Off</option>
+                      <option value="1">After 1 min</option>
+                      <option value="5">After 5 min</option>
+                      <option value="15">After 15 min</option>
+                      <option value="30">After 30 min</option>
+                    </select>
+                    <button type="button" class="btn btn-secondary btn-sm" id="test-fade-btn">Test 3s Fade</button>
+                  </div>
+                  <span class="field-hint" id="blackout-fade-hint" hidden>Already pure black from 00:00.</span>
+                </div>
+
+                <label class="toggle-card" title="Dims burned-in bottom-left Track Title Overlays for sleep Mixes">
+                  <input type="checkbox" id="dim-titles-toggle">
+                  <span class="toggle-title">Dim Titles <code class="mono">--dim-titles</code></span>
+                </label>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -198,6 +280,9 @@
 
             <img id="stage-img" class="stage-media" alt="Background Visual preview" hidden>
             <video id="stage-video" class="stage-media" autoplay loop muted playsinline hidden></video>
+            <canvas id="stage-canvas" class="stage-media" width="960" height="540" hidden></canvas>
+
+            <div class="stage-fade-pill mono" id="stage-fade-pill" hidden></div>
 
             <div class="stage-overlay" id="stage-overlay" hidden>
               <span id="stage-overlay-text">♪ Display Title</span>

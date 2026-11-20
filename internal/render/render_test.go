@@ -28,6 +28,8 @@ func TestSelectPath(t *testing.T) {
 		{"cover.JPEG", true, PathC, false},
 		{"cover.png", false, PathC, false},
 		{"cover.webp", true, PathC, false},
+		{"", false, PathD, false},
+		{"   ", true, PathD, false},
 		{"cover.bmp", false, "", true},
 		{"noext", true, "", true},
 	}

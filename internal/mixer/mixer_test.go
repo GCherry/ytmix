@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GCherry/ytmix/internal/render"
 )
@@ -16,11 +17,29 @@ import (
 func TestValidateConfig(t *testing.T) {
 	okLookPath := func(name string) (string, error) { return "/usr/bin/" + name, nil }
 
-	t.Run("rejects missing bg", func(t *testing.T) {
+	t.Run("accepts omitted bg for Path D Auto Visualizer and validates visualizer bounds", func(t *testing.T) {
 		cfg := Config{AudioDir: "./tracks", Out: "output.mp4", Timestamps: "timestamps.txt"}
-		err := ValidateConfig(cfg, okLookPath)
-		if err == nil || !strings.Contains(err.Error(), "--bg") {
-			t.Fatalf("expected --bg error, got: %v", err)
+		if err := ValidateConfig(cfg, okLookPath); err != nil {
+			t.Fatalf("expected omitted --bg to enter Path D cleanly, got: %v", err)
+		}
+
+		for _, bad := range []Config{
+			{Visualizer: "unknown-preset"},
+			{VisualizerTheme: "unknown-theme"},
+			{VisualizerBrightness: 9},
+			{VisualizerBrightness: 101},
+			{FadeToBlack: -1 * time.Second},
+		} {
+			if err := ValidateConfig(bad, okLookPath); err == nil {
+				t.Fatalf("expected error for invalid Path D config %+v", bad)
+			}
+		}
+	})
+
+	t.Run("rejects simultaneous bg and explicit visualizer", func(t *testing.T) {
+		err := ValidateConfig(Config{BG: "cover.png", Visualizer: "bars"}, okLookPath)
+		if err == nil || !strings.Contains(err.Error(), "cannot be used together") {
+			t.Fatalf("expected mutual exclusion error, got: %v", err)
 		}
 	})
 
@@ -402,6 +421,99 @@ func TestRunPipelineSteps1To5(t *testing.T) {
 		}
 		if err := Run(ctx, cfg, nil, okLookPath, runner, nil); !errors.Is(err, context.Canceled) {
 			t.Fatalf("expected context.Canceled, got: %v", err)
+		}
+	})
+
+	t.Run("Path D omitted --bg wires DimTitles ASS, VisualizerConfig, and filter preflight", func(t *testing.T) {
+		workDir, audioDir, _ := setupStubMixWorkspace(t, "unused.png")
+		tsPath := filepath.Join(workDir, "timestamps_d.txt")
+		cfg := Config{
+			AudioDir:             audioDir,
+			Out:                  filepath.Join(workDir, "out_d.mp4"),
+			Timestamps:           tsPath,
+			OverlayTitles:        true,
+			DimTitles:            true,
+			Visualizer:           "ember",
+			VisualizerTheme:      "oled-ember",
+			VisualizerGlow:       true,
+			VisualizerBrightness: 45,
+			FadeToBlack:          15 * time.Minute,
+		}
+
+		var capturedASS string
+		var renderArgs []string
+		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "ffprobe" {
+				return []byte(`{"format":{"duration":"4.000000","tags":{}}}`), nil
+			}
+			joined := strings.Join(args, " ")
+			if strings.Contains(joined, "-filters") {
+				return []byte(" .. showwaves A->V Wave\n TS gblur V->V Blur\n .. scale V->V Scale\n .. color |->V Color\n"), nil
+			}
+			if strings.Contains(joined, "-filter_complex") {
+				renderArgs = args
+				for _, a := range args {
+					if idx := strings.Index(a, "subtitles='"); idx >= 0 {
+						rest := a[idx+len("subtitles='"):]
+						if end := strings.Index(rest, "'"); end >= 0 {
+							assPath := strings.ReplaceAll(rest[:end], `\:`, `:`)
+							assPath = strings.ReplaceAll(assPath, `\'`, `'`)
+							data, err := os.ReadFile(assPath)
+							if err != nil {
+								t.Fatalf("read titles.ass at %q: %v", assPath, err)
+							}
+							capturedASS = string(data)
+						}
+					}
+				}
+			}
+			return nil, nil
+		}
+
+		var stdout bytes.Buffer
+		if err := Run(context.Background(), cfg, NewCLITelemetry(&stdout, false), okLookPath, runner, nil); err != nil {
+			t.Fatalf("Run Path D error: %v", err)
+		}
+		if len(renderArgs) == 0 {
+			t.Fatal("expected Path D render command with -filter_complex")
+		}
+		if !strings.Contains(capturedASS, "&H789EB2AF") || !strings.Contains(capturedASS, "&H90000000") {
+			t.Fatalf("expected dimmed ASS style, got:\n%s", capturedASS)
+		}
+		joinedRender := strings.Join(renderArgs, " ")
+		if !strings.Contains(joinedRender, "colorchannelmixer=rr=0.45:gg=0.45:bb=0.45") || !strings.Contains(joinedRender, "gblur=sigma=18") {
+			t.Fatalf("unexpected Path D render args: %s", joinedRender)
+		}
+		if !strings.Contains(stdout.String(), "Path D") {
+			t.Fatalf("expected Path D in stdout:\n%s", stdout.String())
+		}
+	})
+
+	t.Run("Path D fails upfront before ffprobe when required FFmpeg filter is missing", func(t *testing.T) {
+		workDir, audioDir, _ := setupStubMixWorkspace(t, "unused.png")
+		cfg := Config{
+			AudioDir:   audioDir,
+			Out:        filepath.Join(workDir, "out_3d.mp4"),
+			Timestamps: filepath.Join(workDir, "timestamps_3d.txt"),
+			Visualizer: "3dscope",
+		}
+		probedTrack := false
+		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "ffprobe" {
+				probedTrack = true
+				return []byte(`{"format":{"duration":"4.000000","tags":{}}}`), nil
+			}
+			if strings.Contains(strings.Join(args, " "), "-filters") {
+				return []byte(" .. showfreqs A->V Freqs\n"), nil
+			}
+			return nil, nil
+		}
+		err := Run(context.Background(), cfg, nil, okLookPath, runner, nil)
+		if err == nil || !strings.Contains(err.Error(), "a3dscope") {
+			t.Fatalf("expected missing a3dscope error, got: %v", err)
+		}
+		if probedTrack {
+			t.Fatal("expected missing visualizer filter check to fail upfront before probing tracks")
 		}
 	})
 }

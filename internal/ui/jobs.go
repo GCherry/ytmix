@@ -263,6 +263,20 @@ func (st *jobStore) resolveTracks(sessionID string, trackIDs []string) ([]mixer.
 	return tracks, nil
 }
 
+func (st *jobStore) resolveTrack(sessionID, trackID string) (mixer.Track, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	sess, ok := st.sessions[sessionID]
+	if !ok {
+		return mixer.Track{}, errors.New("unknown or expired sessionId; re-probe Tracks first")
+	}
+	tr, exists := sess.tracks[trackID]
+	if !exists {
+		return mixer.Track{}, fmt.Errorf("unknown trackId %q in session", trackID)
+	}
+	return tr, nil
+}
+
 func (st *jobStore) claimRenderSlot(job *renderJob, sessionID string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()

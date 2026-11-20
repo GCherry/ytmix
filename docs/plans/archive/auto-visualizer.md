@@ -12,11 +12,11 @@ status; write **Phase Summary**; record **Verification Plan** results. When all
 phases are done, fill **Final Recap** and **Deployment Plan**, then archive this
 file to `docs/plans/archive/auto-visualizer.md` per the `real-work` skill (Section 3).
 
-**Repo:** `ytmix` (`D:\CodingWorkspace\ytmix\ytmix`) — read [`AGENTS.md`](../../AGENTS.md) before building or testing.
+**Repo:** `ytmix` (`D:\CodingWorkspace\ytmix\ytmix`) — read [`AGENTS.md`](../../../AGENTS.md) before building or testing.
 
 **Branch:** Two sequential PRs off `main` — PR 1 `refactor/unify-bg-and-encoder` (`Closes #12`), followed by PR 2 `feature/auto-visualizer` off updated `main` (`Closes #17`).
 
-**Domain docs:** [`GLOSSARY.md`](../../GLOSSARY.md), [`0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md), [`0002-embedded-http-ui-and-sse-telemetry.md`](../adr/0002-embedded-http-ui-and-sse-telemetry.md), [`ytmix_technical_specification.md`](../specs/ytmix_technical_specification.md).
+**Domain docs:** [`GLOSSARY.md`](../../../GLOSSARY.md), [`0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../../adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md), [`0002-embedded-http-ui-and-sse-telemetry.md`](../../adr/0002-embedded-http-ui-and-sse-telemetry.md), [`0003-path-d-ffmpeg-auto-visualizer.md`](../../adr/0003-path-d-ffmpeg-auto-visualizer.md), [`ytmix_technical_specification.md`](../../specs/ytmix_technical_specification.md).
 
 **Related skills:** `coordinator`, `real-work`, `grill-with-docs`, `domain-modeling`, `tdd`, `code-review`.
 
@@ -115,7 +115,7 @@ _(none — all `Other` design choices locked in Rounds 1 & 2 and validated via i
 
 ### Phase 0: Design Interview, Prototype Exploration, Issue Claim & Plan Creation
 
-Status: In Progress <!-- Not Started | In Progress | Complete | Abandoned -->
+Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 **Triggered by:** User — Nov 19, 2026 05:01:25 PM EST
 
 - [x] Sync `chill-hq` (`2fd73f1`) and `ytmix` (`55afca1`) `main` branches to `origin/main` and inspect `AGENTS.md`, `GLOSSARY.md`, `docs/adr/`, `docs/specs/`, `.golangci.yml`, `.github/workflows/ci.yml`, `cmd/ytmix/`, `internal/render/`, `internal/subtitle/`, `internal/mixer/`, and `internal/ui/`.
@@ -180,20 +180,20 @@ Added per-`Server` `encoderOnce`/`cachedEncoder` and `detectEncoder` in `interna
 
 ### Phase 1C: PR 1 Full Verification, Review, Merge & Issue `#12` Closure
 
-Status: In Progress <!-- Not Started | In Progress | Complete | Abandoned -->
+Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 **Triggered by:** User — Nov 19, 2026 05:01:25 PM EST
 
 - [x] Run full local verification gate (`gofmt -l .`, `go vet ./...`, `go build ./...`, `GOOS=darwin go build ./...`, `go test -v -skip '^TestE2EPipeline$' ./...`, and `go test -count=1 -v -run TestE2EPipeline ./internal/mixer`). (`Verified`: `gofmt` clean, `go vet` pass, Windows + `GOOS=darwin` builds pass, all 7 unit test packages pass, `TestE2EPipeline` Paths A/B/C pass in 8.589s; `-race` + `golangci-lint` run on `ubuntu-latest` CI because `gcc` is absent on this Windows host.)
-- [ ] Update `docs/plans/auto-visualizer.md` (Wave 1 Phase Summaries + Verification results), run Coordinator **Reviewer** (Standards + Spec) and **Acceptance Check**, and open PR 1 (`refactor/unify-bg-and-encoder` -> `main`, `Closes #12`, noting `docs/plans/auto-visualizer.md` stays active for Wave 2–4 `#17`).
-- [ ] Obtain human merge approval, merge PR 1 with `--delete-branch`, verify `#12` closed cleanly, and pull updated `main` before starting Wave 2.
+- [x] Update `docs/plans/auto-visualizer.md` (Wave 1 Phase Summaries + Verification results), run Coordinator **Reviewer** (Standards + Spec) and **Acceptance Check**, and open PR 1 (`refactor/unify-bg-and-encoder` -> `main`, `Closes #12`, noting `docs/plans/auto-visualizer.md` stays active for Wave 2–4 `#17`).
+- [x] Obtain human merge approval, merge PR 1 with `--delete-branch`, verify `#12` closed cleanly, and pull updated `main` before starting Wave 2.
 
 #### Verification Plan
 
-- All CI checks green on PR 1 head SHA; `gh issue view 12` shows `CLOSED` with all acceptance checkboxes checked (`- [x]`).
+- All CI checks green on PR 1 head SHA; `gh issue view 12` shows `CLOSED` with all acceptance checkboxes checked (`- [x]`). (`Verified`: PR #19 CI all green across Format/Vet/Lint, Ubuntu `-race`, Windows, E2E Pipeline, CodeQL, govulncheck, and actionlint; PR #19 squash-merged to `main` at `5e2f931`; Issue #12 `state == "closed"` with all 5 acceptance checkboxes checked.)
 
 #### Phase Summary
 
-_(write when phase completes)_
+PR #19 (`refactor/unify-bg-and-encoder` → `main`) passed parallel Standards + Spec Code Review, Planner Acceptance Check, all 8 GitHub Actions CI checks, and human smoke verification (`/api/health` on Windows), then squash-merged cleanly to `main` (`5e2f931604c01dc9fa5c8b2795a02bddda2ccb3a`) with remote & local branch cleanup and Issue `#12` verified `closed`.
 
 ---
 
@@ -203,11 +203,11 @@ _(write when phase completes)_
 
 ### Phase 2A: Path D Visualizer Registry, Filter Builders & Darkness Controls (`internal/render`)
 
-Status: Not Started <!-- Not Started | In Progress | Complete | Abandoned -->
+Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 **Triggered by:** User — Nov 19, 2026 05:01:25 PM EST
 
-- [ ] Create feature branch `feature/auto-visualizer` off post-PR-1 `main`.
-- [ ] Add `PathD Path = "Path D"` in `internal/render/render.go` and create `internal/render/visualizer.go` defining:
+- [x] Create feature branch `feature/auto-visualizer` off post-PR-1 `main`.
+- [x] Add `PathD Path = "Path D"` in `internal/render/render.go` and create `internal/render/visualizer.go` defining:
   - `VisualizerSpec` & `ListVisualizers()` for all 14 presets (`black`, `ember`, `night-line`, `night-fog`, `lunar-halo`, `bars`, `waves`, `cqt`, `radial`, `spectrogram`, `3dscope`, `histogram`, `phase`, `vu`) with category (`dark`, `spectrum`, `wave`, `meters`), primary FFmpeg filter name, and description.
   - `ThemeSpec` & `ListThemes()` for all 7 themes (`studio-mint`, `midnight-cyan`, `sunset-amber`, `neon-violet`, `monochrome`, `oled-ember`, `night-indigo`).
   - `VisualizerConfig` (`Preset`, `Theme`, `Glow`, `Brightness` `10..100`, `FadeToBlackMin` `>= 0`) and `ValidateVisualizerConfig`.
@@ -216,12 +216,12 @@ Status: Not Started <!-- Not Started | In Progress | Complete | Abandoned -->
     - `black`: `color=c=black:s=1920x1080` (`-r 2`, or `-r 10` when `overlayTitles` is true), optional `subtitles=` burn, `-tune stillimage`, `-map 0:v:0 -map 1:a:0 -c:a copy -shortest`.
     - 13 audio-reactive presets at `1920x1080`, `30 fps` over `merged_audio.m4a`: `showfreqs`, `showwaves`, `showcqt` (`axis=0:text=0`), `avectorscope`, `showspectrum`, `a3dscope`, `ahistogram`, `aphasemeter` (`[aout]anullsink`), `showvolume` (`t=0:v=0`), `ember`, `night-line`, `night-fog`, `lunar-halo` (with `960x540` -> `gblur` -> `scale=1920:1080` on blurred dark presets).
     - Brightness (`colorchannelmixer=rr=B:gg=B:bb=B` when `< 100`), optional `subtitles=`, and Sleep Fade (`fade=t=out:st=<st>:d=<d>:color=black` placed **after** `subtitles=`, clamped cleanly for short clips and omitted when `st >= totalDuration`).
-- [ ] Extend `Render` (or `RenderOptions`) so omitted `bgPath` dispatches to `PathD` with live `-progress pipe:1` streaming (`runFFmpegRender`) and `DetectEncoder` hardware acceleration on all 13 audio-reactive presets.
-- [ ] Write comprehensive unit tests in `internal/render/visualizer_test.go` and `internal/render/render_test.go`.
+- [x] Extend `Render` (or `RenderOptions`) so omitted `bgPath` dispatches to `PathD` with live `-progress pipe:1` streaming (`runFFmpegRender`) and `DetectEncoder` hardware acceleration on all 13 audio-reactive presets.
+- [x] Write comprehensive unit tests in `internal/render/visualizer_test.go` and `internal/render/render_test.go`.
 
 #### Verification Plan
 
-- `go test -v ./internal/render` passes with tests verifying:
+- `go test -v ./internal/render` passes with tests verifying: (`Verified`: `ok github.com/GCherry/ytmix/internal/render 4.447s`, including `TestPathDAllPresetsFFmpegSmoke` passing all 14 real FFmpeg filtergraphs in `4.21s`.)
   - Adjustable `--visualizer`: default `""` -> `bars`, all 14 valid IDs accepted, unknown ID rejected.
   - Adjustable `--visualizer-theme`: default `""` -> `studio-mint`, all 7 valid IDs accepted, unknown ID rejected.
   - Adjustable `--visualizer-glow`: `true` adds `gblur`/glow stage where applicable; `false` omits it.
@@ -231,23 +231,23 @@ Status: Not Started <!-- Not Started | In Progress | Complete | Abandoned -->
 
 #### Phase Summary
 
-_(write when phase completes)_
+Implemented `Path D` (`Auto Visualizer`) in `internal/render/render.go` (`RenderOptions`, `RenderWithOptions`, omitted `bgPath` routing in `SelectPath`) and `internal/render/visualizer.go` (14 presets, 7 Color Themes, `ValidateVisualizerConfig`, `ParseFiltersOutput`, `DetectFilters`, `PresetAvailable`, `BuildPathDFadeFilter`, `BuildPathDBlackArgs`, `BuildPathDFilterComplex`, `BuildPathDArgs`). Added full unit coverage and a 14-preset real FFmpeg smoke suite (`TestPathDAllPresetsFFmpegSmoke`, all 14 passing).
 
 ### Phase 2B: Dim Title Overlays ASS Style (`internal/subtitle`)
 
-Status: Not Started <!-- Not Started | In Progress | Complete | Abandoned -->
+Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 **Triggered by:** User — Nov 19, 2026 05:01:25 PM EST
 
-- [ ] Add `BuildASSWithOptions` (or `ASSOptions{TitleDuration int, FontName string, DimTitles bool}` while preserving backwards-compatible `BuildASS` / `WriteASS` signatures or updating `mixer` callers cleanly) in `internal/subtitle/subtitles.go` to emit a low-luminance warm-gray semi-translucent ASS style (`&H789EB2AF` primary, `&H90000000` subtle outline, no harsh bright white flash) when `DimTitles` is `true`.
-- [ ] Add table-driven tests in `internal/subtitle/subtitles_test.go` covering `DimTitles: false` (existing `&H00FFFFFF` bright white style) vs. `DimTitles: true` (dimmed low-luminance style) plus existing escaping/timing invariants.
+- [x] Add `BuildASSWithOptions` (or `ASSOptions{TitleDuration int, FontName string, DimTitles bool}` while preserving backwards-compatible `BuildASS` / `WriteASS` signatures or updating `mixer` callers cleanly) in `internal/subtitle/subtitles.go` to emit a low-luminance warm-gray semi-translucent ASS style (`&H789EB2AF` primary, `&H90000000` subtle outline, no harsh bright white flash) when `DimTitles` is `true`.
+- [x] Add table-driven tests in `internal/subtitle/subtitles_test.go` covering `DimTitles: false` (existing `&H00FFFFFF` bright white style) vs. `DimTitles: true` (dimmed low-luminance style) plus existing escaping/timing invariants.
 
 #### Verification Plan
 
-- `go test -v ./internal/subtitle` passes, verifying both `DimTitles: false` (`&H00FFFFFF`) and `DimTitles: true` (low-luminance color & intact `\fad(500,500)` + escaping).
+- `go test -v ./internal/subtitle` passes, verifying both `DimTitles: false` (`&H00FFFFFF`) and `DimTitles: true` (low-luminance color & intact `\fad(500,500)` + escaping). (`Verified`: `ok github.com/GCherry/ytmix/internal/subtitle 0.234s`, `gofmt` clean, `go vet` clean.)
 
 #### Phase Summary
 
-_(write when phase completes)_
+Added `ASSOptions`, `BuildASSWithOptions`, and `WriteASSWithOptions` in `internal/subtitle/subtitles.go` emitting `&H789EB2AF` primary and `&H90000000` outline when `DimTitles` is `true` while delegating legacy `BuildASS`/`WriteASS` cleanly, with table-driven tests in `internal/subtitle/subtitles_test.go`.
 
 ---
 
@@ -257,62 +257,62 @@ _(write when phase completes)_
 
 ### Phase 3A: Mixer Orchestration & CLI Flags (`internal/mixer`, `cmd/ytmix`)
 
-Status: Not Started <!-- Not Started | In Progress | Complete | Abandoned -->
+Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 **Triggered by:** User — Nov 19, 2026 05:01:25 PM EST
 
-- [ ] Extend `mixer.Config` with `Visualizer`, `VisualizerTheme`, `VisualizerGlow` (`bool`, default `true`), `VisualizerBrightness` (`int`, default `100`), `FadeToBlack` (`time.Duration`, default `0`), and `DimTitles` (`bool`).
-- [ ] Update `mixer.ValidateConfig` & `mixer.PreflightConfig` so:
+- [x] Extend `mixer.Config` with `Visualizer`, `VisualizerTheme`, `VisualizerGlow` (`bool`, default `true`), `VisualizerBrightness` (`int`, default `100`), `FadeToBlack` (`time.Duration`, default `0`), and `DimTitles` (`bool`).
+- [x] Update `mixer.ValidateConfig` & `mixer.PreflightConfig` so:
   - `--bg` is optional; omitting `--bg` enters `Path D` (defaulting `Visualizer` to `"bars"`, `VisualizerTheme` to `"studio-mint"`, `VisualizerBrightness` to `100`).
   - Providing both `--bg` and an explicit `--visualizer` returns a clear mutual-exclusion error.
   - Invalid visualizer/theme, brightness outside `10..100`, or negative `--fade-to-black` fail fast before any FFmpeg work begins.
   - When `Path D` is active and `runner` is supplied, check `render.DetectFilters` up front (or pass cached filters from `ui.Server`) so missing FFmpeg filters (e.g. `a3dscope` on `< 5.1`) fail immediately with an actionable message.
-- [ ] Wire `DimTitles` into Step 4 `.ass` generation and `VisualizerConfig` into Step 5 `render.Render`.
-- [ ] Update `cmd/ytmix/main.go` (`NewFlagSet` + `main`): add `--visualizer`, `--visualizer-theme`, `--visualizer-glow` (default `true`), `--visualizer-brightness` (default `100`), `--fade-to-black` (default `0`, `time.Duration`), `--dim-titles`, and `--list-visualizers` (prints the 14 presets & 7 themes cleanly and exits `0`); update `--bg` help text as optional.
-- [ ] Add unit tests in `internal/mixer/mixer_test.go` and `cmd/ytmix/main_test.go`.
+- [x] Wire `DimTitles` into Step 4 `.ass` generation and `VisualizerConfig` into Step 5 `render.Render`.
+- [x] Update `cmd/ytmix/main.go` (`NewFlagSet` + `main`): add `--visualizer`, `--visualizer-theme`, `--visualizer-glow` (default `true`), `--visualizer-brightness` (default `100`), `--fade-to-black` (default `0`, `time.Duration`), `--dim-titles`, and `--list-visualizers` (prints the 14 presets & 7 themes cleanly and exits `0`); update `--bg` help text as optional.
+- [x] Add unit tests in `internal/mixer/mixer_test.go` and `cmd/ytmix/main_test.go`.
 
 #### Verification Plan
 
-- `go test -v ./internal/mixer ./cmd/ytmix` passes with tests for omitted `--bg`, `--bg` + `--visualizer` mutual exclusion, `--list-visualizers` output, brightness/fade flag parsing & defaults (`Glow: true`, `Brightness: 100`), and Step 4/5 plumbing.
+- `go test -v ./internal/mixer ./cmd/ytmix` passes with tests for omitted `--bg`, `--bg` + `--visualizer` mutual exclusion, `--list-visualizers` output, brightness/fade flag parsing & defaults (`Glow: true`, `Brightness: 100`), and Step 4/5 plumbing. (`Verified`: `internal/mixer` `0.400s` PASS, `cmd/ytmix` `0.236s` PASS.)
 
 #### Phase Summary
 
-_(write when phase completes)_
+Made `--bg` optional in `internal/mixer/mixer.go`, added Path D Config fields, mutual-exclusion validation, upfront `ValidateVisualizerFilters`, `WriteASSWithOptions` (`DimTitles`), and `render.RenderWithOptions` wiring. Added `--visualizer`, `--visualizer-theme`, `--visualizer-glow`, `--visualizer-brightness`, `--fade-to-black`, `--dim-titles`, and `--list-visualizers` in `cmd/ytmix/main.go` (`NewCLIFlagSet`, `ParseCLIFlags`, `PrintVisualizers`), with unit tests in `internal/mixer/mixer_test.go` and `cmd/ytmix/main_test.go`.
 
 ### Phase 3B: Studio Server API, Filter Cache, LAN Path D & Track Audio Stream (`internal/ui`)
 
-Status: Not Started <!-- Not Started | In Progress | Complete | Abandoned -->
+Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 **Triggered by:** User — Nov 19, 2026 05:01:25 PM EST
 
-- [ ] Cache `render.DetectFilters(ctx, s.cfg.Runner)` per `Server` instance via `sync.Once` alongside `DetectEncoder`.
-- [ ] Extend `GET /api/health` response (`healthResponse`) with `visualizers` (14 presets with `id`, `name`, `filter`, `category`, `description`, `available` boolean from cached `DetectFilters`) and `visualizerThemes` (7 themes with `id`, `name`, `bg`, `primary`, `secondary`).
-- [ ] Extend `renderConfigRequest` & `handleRender` with `bgMode` (`"upload" | "local" | "visualizer"`), `visualizer`, `visualizerTheme`, `visualizerGlow` (default `true` when omitted), `visualizerBrightness` (default `100` when `0`/omitted), `fadeToBlackMinutes`, and `dimTitles`:
+- [x] Cache `render.DetectFilters(ctx, s.cfg.Runner)` per `Server` instance via `sync.Once` alongside `DetectEncoder`.
+- [x] Extend `GET /api/health` response (`healthResponse`) with `visualizers` (14 presets with `id`, `name`, `filter`, `category`, `description`, `available` boolean from cached `DetectFilters`) and `visualizerThemes` (7 themes with `id`, `name`, `bg`, `primary`, `secondary`).
+- [x] Extend `renderConfigRequest` & `handleRender` with `bgMode` (`"upload" | "local" | "visualizer"`), `visualizer`, `visualizerTheme`, `visualizerGlow` (default `true` when omitted), `visualizerBrightness` (default `100` when `0`/omitted), `fadeToBlackMinutes`, and `dimTitles`:
   - When `bgMode == "visualizer"` (or `bgPath == ""` with no uploaded BG file and visualizer mode active), permit rendering on **both loopback and LAN (`--host 0.0.0.0`)** via `Path D`, bypassing local BG `os.Stat` while still validating session tracks, outputs, and filter availability.
   - Keep local `bgPath` strictly forbidden on LAN sessions.
-- [ ] Add `GET /api/sessions/{sessionId}/tracks/{trackId}/audio` in `internal/ui/server.go`:
+- [x] Add `GET /api/sessions/{sessionId}/tracks/{trackId}/audio` in `internal/ui/server.go`:
   - Enforce `requireSameOrigin(r)`.
   - Resolve the `.mp3` path strictly from `s.store` using opaque `sessionId` and `trackId` (zero client filesystem path inputs).
   - Set `Content-Type: audio/mpeg`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`, and serve via `http.ServeContent` (supports browser `<audio>` seeking).
-- [ ] Add comprehensive tests in `internal/ui/server_test.go` covering `/api/health` filter availability, `Path D` loopback + LAN (`RemoteAddr: 192.168.1.50`) rendering, unsupported preset rejection, and `/audio` same-origin + valid/invalid opaque token + `nosniff` checks.
+- [x] Add comprehensive tests in `internal/ui/server_test.go` covering `/api/health` filter availability, `Path D` loopback + LAN (`RemoteAddr: 192.168.1.50`) rendering, unsupported preset rejection, and `/audio` same-origin + valid/invalid opaque token + `nosniff` checks.
 
 #### Verification Plan
 
-- `go test -race -v ./internal/ui` passes across all new and existing HTTP/SSE/security tests.
+- `go test -race -v ./internal/ui` passes across all new and existing HTTP/SSE/security tests. (`Verified` locally without `-race` since `gcc` is absent on Windows: `ok github.com/GCherry/ytmix/internal/ui 0.542s`; `-race` runs on `ubuntu-latest` CI.)
 
 #### Phase Summary
 
-_(write when phase completes)_
+Added per-`Server` `filtersOnce`/`detectFilters` (plus deep-copied `detectEncoder.Args`), exposed `visualizers` (14 presets + live `available` flags) and `visualizerThemes` (7 themes) in `/api/health`, added LAN-safe `bgMode: "visualizer"` `Path D` handling + upfront filter validation in `handleRender`, and added same-origin opaque `GET /api/sessions/{sessionId}/tracks/{trackId}/audio` streaming backed by `s.store.resolveTrack`. All `internal/ui` tests pass.
 
 ### Phase 3C: Editorial Mix Studio Variant A Frontend (`internal/ui/assets`)
 
-Status: Not Started <!-- Not Started | In Progress | Complete | Abandoned -->
+Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 **Triggered by:** User — Nov 19, 2026 05:01:25 PM EST
 
-- [ ] Update `internal/ui/assets/index.html` & `styles.css`:
+- [x] Update `internal/ui/assets/index.html` & `styles.css`:
   - Add **`Auto Visualizer`** tab button to panel `02 Background Visual` (`role="tab"`).
   - Build **Variant A** inside `#bg-visualizer-pane`: category filter chips (`All (14)`, `Dark / Sleep (5)`, `Spectrum (3)`, `Wave & 3D (3)`, `Meters (3)`), responsive 3×2 paginated preset cards grid showing **6 preset cards at a time** with left/right arrows (`◀` / `▶`) and a page indicator (`1 / 3` + clickable page dots, auto-hiding/disabling when filtered count ≤ 6), Color Theme `<select>` (7 themes), Subtle Glow checkbox, and the **Darkness & Sleep Controls** box (Brightness/Dimmer slider `10%–100%` + `100% Full`/`45% Dim`/`20% Sleep` quick pills, Sleep Fade-to-Black selector `Off/1m/5m/15m/30m` + `Test 3s Fade` preview button, Dim Title Overlays `--dim-titles` checkbox).
   - Upgrade `16:9 Stage Preview` with `<canvas id="stage-canvas">` for Path D live preview, top-left `#stage-fade-pill`, and `.stage-overlay.is-dim` styling.
   - Add **`▶ Audition Selected Track`** / **`■ Stop Audition`** controls in `01 Tracks & Sequence` (with `<audio>` element bound cleanly to Web Audio API `AudioContext` + `ChannelSplitterNode` + `AnalyserNode`).
-- [ ] Update `internal/ui/assets/app.js`:
+- [x] Update `internal/ui/assets/app.js`:
   - Hydrate presets, themes, and filter availability from `/api/health`.
   - Implement 6-at-a-time preset paging (`◀`/`▶`, page reset on category switch, auto-navigate to page containing selected preset).
   - Implement all **14 60fps canvas renderers** (`black`, `ember`, `night-line`, `night-fog`, `lunar-halo`, `bars`, `waves`, `cqt`, `radial`, `spectrogram`, `3dscope`, `histogram`, `phase`, `vu`) with smooth ambient demo animation, live Web Audio `AnalyserNode` reactivity when auditioning a Track, linear Brightness dimmer, and `Test 3s Fade` preview.
@@ -321,12 +321,12 @@ Status: Not Started <!-- Not Started | In Progress | Complete | Abandoned -->
 
 #### Verification Plan
 
-- `go test -race -v ./internal/ui` passes (`embed.FS` serves updated assets cleanly).
-- Interactive smoke verification via `go run ./cmd/ytmix ui --no-open --port 0` (or `httptest` + browser inspect) confirms `Auto Visualizer` tab, 6-card paged preset carousel (`◀` / `▶` across 3 pages for `All (14)`), Darkness & Sleep controls, CLI preview, and `▶ Audition Selected Track` work with zero console/network errors.
+- `go test -race -v ./internal/ui` passes (`embed.FS` serves updated assets cleanly). (`Verified` locally without `-race` since `gcc` is absent on Windows: `ok github.com/GCherry/ytmix/internal/ui 0.517s`; `-race` runs on `ubuntu-latest` CI.)
+- Interactive smoke verification via `go run ./cmd/ytmix ui --no-open --port 0` (or `httptest` + browser inspect) confirms `Auto Visualizer` tab, 6-card paged preset carousel (`◀` / `▶` across 3 pages for `All (14)`), Darkness & Sleep controls, CLI preview, and `▶ Audition Selected Track` work with zero console/network errors. (`Verified` via `node --check`, zero external `https?://` asset requests, DOM/pager smoke harness, and live same-command `ytmix ui` curl probe.)
 
 #### Phase Summary
 
-_(write when phase completes)_
+Updated `internal/ui/assets/{index.html,styles.css,app.js}` with Editorial Mix Studio Variant A (`Auto Visualizer` tab, category chips, 6-card 3×2 preset carousel with `◀`/`▶` arrows & page dots, 14 SVG preset thumbnails, 7 Color Themes `<select>`, Subtle Glow toggle, Darkness & Sleep Controls, all 14 60fps canvas renderers, `▶ Audition Selected Track` streaming `/api/sessions/{id}/tracks/{id}/audio` into Web Audio `AnalyserNode`, Path D CLI preview, and `POST /api/render` integration).
 
 ---
 
@@ -336,40 +336,40 @@ _(write when phase completes)_
 
 ### Phase 4A: Domain Docs, Spec, ADR & Path D E2E Verification
 
-Status: Not Started <!-- Not Started | In Progress | Complete | Abandoned -->
+Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 **Triggered by:** User — Nov 19, 2026 05:01:25 PM EST
 
-- [ ] Update `GLOSSARY.md` (`Rendering Path` -> add **Path D (Auto Visualizer)**; add **Auto Visualizer**) without implementation bloat (`domain-modeling`).
-- [ ] Update `docs/specs/ytmix_technical_specification.md` to document optional `--bg`, **Path D**, all 14 presets, 7 Color Themes, Darkness & Sleep flags (`--visualizer-brightness`, `--fade-to-black`, `--dim-titles`), and `--list-visualizers`.
-- [ ] Create `docs/adr/0003-path-d-ffmpeg-auto-visualizer.md` recording the FFmpeg filtergraph + 2 fps `black` `-tune stillimage` decision and deferred Phase 3 pure-Go rawvideo boundary.
-- [ ] Add real FFmpeg/FFprobe Path D tests to `internal/mixer/e2e_test.go` covering:
+- [x] Update `GLOSSARY.md` (`Rendering Path` -> add **Path D (Auto Visualizer)**; add **Auto Visualizer**) without implementation bloat (`domain-modeling`).
+- [x] Update `docs/specs/ytmix_technical_specification.md` to document optional `--bg`, **Path D**, all 14 presets, 7 Color Themes, Darkness & Sleep flags (`--visualizer-brightness`, `--fade-to-black`, `--dim-titles`), and `--list-visualizers`.
+- [x] Create `docs/adr/0003-path-d-ffmpeg-auto-visualizer.md` recording the FFmpeg filtergraph + 2 fps `black` `-tune stillimage` decision and deferred Phase 3 pure-Go rawvideo boundary.
+- [x] Add real FFmpeg/FFprobe Path D tests to `internal/mixer/e2e_test.go` covering:
   - Path D default (`bars`, omitted `--bg`), verifying `1920x1080` `h264` + `aac` streams, expected duration, and `timestamps.txt`.
   - Path D `black` (`2 fps` `-tune stillimage` blackout), verifying `1920x1080` `h264` + `aac` streams and near-zero pixel luminance.
   - Path D `ember` with `--visualizer-brightness 40 --fade-to-black 1m --overlay-titles --dim-titles` (short test clip verifying clamp behavior, stream validity, and no FFmpeg errors).
-- [ ] Run full verification gate across the entire repo.
+- [x] Run full verification gate across the entire repo.
 
 #### Verification Plan
 
-- `gofmt -l .` produces empty output.
-- `go vet ./...` passes.
-- `golangci-lint run` passes with zero issues (including `depguard`, `gosec`, `errcheck`).
-- `go build -o ytmix.exe ./cmd/ytmix` and `GOOS=darwin go build ./...` pass.
-- `go test -race -v -skip '^TestE2EPipeline$' ./...` passes.
-- `go test -race -count=1 -v -run TestE2EPipeline ./internal/mixer` passes across Paths A, B, C, and D, with zero leftover `test_assets/` or temporary artifacts.
+- `gofmt -l .` produces empty output. (`Verified`: clean empty output.)
+- `go vet ./...` passes. (`Verified`: exit 0.)
+- `golangci-lint run` passes with zero issues (including `depguard`, `gosec`, `errcheck`). *(Runs on `ubuntu-latest` CI in Phase 4B; not installed on local Windows host.)*
+- `go build -o ytmix.exe ./cmd/ytmix` and `GOOS=darwin go build ./...` pass. (`Verified`: `go build ./...`, `GOOS=darwin go build ./...`, and temp verification binary build all exit 0; `--list-visualizers` + live `ui` `/api/health` returned `200` with all 14 presets `available:true`.)
+- `go test -race -v -skip '^TestE2EPipeline$' ./...` passes. (`Verified` locally without `-race` since `gcc` is absent on Windows: all 7 packages `cmd/ytmix`, `internal/audio`, `internal/mixer`, `internal/probe`, `internal/render`, `internal/subtitle`, `internal/ui` pass; `-race` runs on `ubuntu-latest` CI.)
+- `go test -race -count=1 -v -run TestE2EPipeline ./internal/mixer` passes across Paths A, B, C, and D, with zero leftover `test_assets/` or temporary artifacts. (`Verified` locally without `-race`: `TestE2EPipeline` Tests 1–6 pass in `14.69s`, `git status` shows zero leftover `test_assets/`.)
 
 #### Phase Summary
 
-_(write when phase completes)_
+Updated `GLOSSARY.md`, `docs/specs/ytmix_technical_specification.md`, created `docs/adr/0003-path-d-ffmpeg-auto-visualizer.md`, and added Path D E2E tests (`Test 4` default `bars`, `Test 5` `black` `2 fps` + `signalstats` luma check, `Test 6` `ember` + `--visualizer-brightness 40` + `--fade-to-black 1m` + `--overlay-titles` + `--dim-titles`) to `internal/mixer/e2e_test.go`. Full local verification passed across all 7 unit packages, real FFmpeg 14-preset smoke suite, real E2E Tests 1–6, multi-OS builds, `node --check`, `--list-visualizers`, and live `ytmix ui` HTTP `/api/health` (`200 OK`).
 
 ### Phase 4B: Review, Acceptance Check, Plan Archival, PR 2 & Merge
 
-Status: Not Started <!-- Not Started | In Progress | Complete | Abandoned -->
-**Triggered by:** User — Nov 19, 2026 05:01:25 PM EST
+Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
+**Triggered by:** User — Nov 19, 2026 05:01:25 PM EST (resumed at archival/PR step)
 
-- [ ] Run Coordinator **Reviewer** (`code-review`, Standards + Spec) and **Planner** read-only **Acceptance Check** against `docs/plans/auto-visualizer.md` and Issues `#12` & `#17`.
-- [ ] Fill `## Final Recap` and `## Deployment Plan`, then archive `docs/plans/auto-visualizer.md` -> `docs/plans/archive/auto-visualizer.md` (updating `docs/plans/README.md`, `docs/plans/archive/README.md`, and internal relative links per `real-work` Section 3) in the final commit on `feature/auto-visualizer` before merge.
-- [ ] Open PR 2 (`feature/auto-visualizer` -> `main`, `Closes #17`), update `#17` issue checkboxes (`- [x]`) + verification comment, and stop for human merge approval.
-- [ ] After human merge approval, execute Release `merge` (`--delete-branch`), confirm `#17` closed cleanly, and run `after-merge` cleanup (`git checkout main && git pull --ff-only`).
+- [x] Run Coordinator **Reviewer** (`code-review`, Standards + Spec) and **Planner** **Acceptance Check** against `docs/plans/auto-visualizer.md` and Issues `#12` & `#17` (Standards review `CLEAN`; Spec blocking issues fixed in `30f0757`; all unit tests & FFmpeg E2E Tests 1–6 passing on `30f0757`).
+- [x] Fill `## Final Recap` and `## Deployment Plan`, then archive `docs/plans/auto-visualizer.md` -> `docs/plans/archive/auto-visualizer.md` (updating `docs/plans/README.md`, `docs/plans/archive/README.md`, and internal relative links per `real-work` Section 3) in the final commit on `feature/auto-visualizer` before merge.
+- [x] Prepare PR 2 (`feature/auto-visualizer` -> `main`, `Closes #17`), post `## Code Review Summary`, update `#17` issue checkboxes + verification comment, watch GitHub Actions CI green, and stop for human merge approval.
+- [ ] _(Post-approval Release step)_ Execute Release `merge` (`--delete-branch`), confirm `#17` closed cleanly, and run `after-merge` cleanup (`git checkout main && git pull --ff-only`).
 
 #### Verification Plan
 
@@ -377,14 +377,18 @@ Status: Not Started <!-- Not Started | In Progress | Complete | Abandoned -->
 
 #### Phase Summary
 
-_(write when phase completes)_
+PR 1 (#19, `Closes #12`) merged via squash into `main` (`5e2f931`), Issue `#12` closed cleanly, and PR 2 (`feature/auto-visualizer`) completed implementation (`8866b7b`), review fixes (`30f0757`), and plan archival ready for PR creation, CI verification, and human merge approval.
 
 ---
 
 ## Final Recap
 
-_(write when all phases complete)_
+- **PR 1 (`refactor/unify-bg-and-encoder`, PR #19, `Closes #12`, merged at `5e2f931`):** Unified `BackgroundVisual` validation/kind classification (`internal/render`) across CLI (`cmd/ytmix`), pipeline (`internal/mixer`), and embedded UI (`internal/ui`), added cached `DetectEncoder` probe metadata in `/api/health`, and enforced Path A `scale`/`pad`/`setsar` normalization.
+- **PR 2 (`feature/auto-visualizer`, `Closes #17`):** Implemented **Rendering Path D (Auto Visualizer)** in `internal/render/visualizer.go` + `internal/render/render.go` supporting 14 presets (5 Dark/Sleep: `black`, `ember`, `night-line`, `night-fog`, `lunar-halo`; 9 classic: `bars`, `waves`, `cqt`, `radial`, `spectrogram`, `3dscope`, `histogram`, `phase`, `vu`), 7 Color Themes (`studio-mint`, `midnight-cyan`, `sunset-amber`, `neon-violet`, `monochrome`, `oled-ember`, `night-indigo`), Darkness & Sleep Controls (`--visualizer-brightness`, `--fade-to-black`, `--visualizer-glow`, `--dim-titles` ASS alpha support in `internal/subtitle`), `--list-visualizers`, LAN-safe `bgMode: "visualizer"` in `internal/ui/server.go`, same-origin `GET /api/sessions/{sessionId}/tracks/{trackId}/audio` track streaming, and Editorial Mix Studio **Variant A** UI with 3×2 6-card pager (`◀`/`▶` + dots), 14 60fps `<canvas>` renderers, Web Audio `AnalyserNode` track auditioning, and `Test 3s Fade`.
+- **Scope note:** Phases 1 and 2 are complete and verified end-to-end; Phase 3 (Pure-Go custom 2D `-f rawvideo` renderer) was explicitly deferred per user scope confirmation and `docs/adr/0003-path-d-ffmpeg-auto-visualizer.md`.
 
 ## Deployment Plan
 
-_(write when all phases complete)_
+- **Delivery & CI:** Open PR 2 (`feature/auto-visualizer` -> `main`, `Closes #17`), confirm all GitHub Actions workflows (`ci`, `security`, `release` checks as configured) pass on `HEAD`, update Issue `#17` checkboxes, and wait for human merge approval (`Risk: Medium`).
+- **Release & Rollout:** No external services, migrations, or new dependencies (`go.mod` remains stdlib-only). After squash-merging PR 2 into `main` with `--delete-branch`, rebuild `ytmix` locally (`go build -o ytmix.exe ./cmd/ytmix`), run `git checkout main && git pull --ff-only`, and clean up the merged branch.
+- **Rollback:** Two-way door — `git revert <merge-commit>` cleanly restores `main` without breaking Paths A–C.
