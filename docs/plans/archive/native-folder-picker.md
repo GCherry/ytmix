@@ -12,11 +12,11 @@ status; write **Phase Summary**; record **Verification Plan** results. When all
 phases are done, fill **Final Recap** and **Deployment Plan**, then archive this
 file to `docs/plans/archive/native-folder-picker.md` per the `real-work` skill (Section 3).
 
-**Repo:** `ytmix` (`D:\CodingWorkspace\ytmix\ytmix`) — read [`AGENTS.md`](../../AGENTS.md) before building or testing.
+**Repo:** `ytmix` (`D:\CodingWorkspace\ytmix\ytmix`) — read [`AGENTS.md`](../../../AGENTS.md) before building or testing.
 
 **Branch:** `fix/native-folder-picker` off `main` (`Closes #21`).
 
-**Domain docs:** [`GLOSSARY.md`](../../GLOSSARY.md), [`docs/adr/0002-embedded-http-ui-and-sse-telemetry.md`](../adr/0002-embedded-http-ui-and-sse-telemetry.md), [`docs/specs/ytmix_technical_specification.md`](../specs/ytmix_technical_specification.md).
+**Domain docs:** [`GLOSSARY.md`](../../../GLOSSARY.md), [`docs/adr/0002-embedded-http-ui-and-sse-telemetry.md`](../../adr/0002-embedded-http-ui-and-sse-telemetry.md), [`docs/specs/ytmix_technical_specification.md`](../../specs/ytmix_technical_specification.md).
 
 **Related skills:** `coordinator`, `real-work`, `tdd`, `code-review`, `domain-modeling`.
 
@@ -169,7 +169,7 @@ Added `#browse-bg-path-btn` to `internal/ui/assets/index.html`, implemented `pic
 Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 **Triggered by:** Agent — Nov 19, 2026 10:30:00 PM EST
 
-- [x] Update [`docs/adr/0002-embedded-http-ui-and-sse-telemetry.md`](../adr/0002-embedded-http-ui-and-sse-telemetry.md) Consequences to document loopback `POST /api/fs/pick` and session-scoped `allowedRoots` authorization for user-picked OS paths.
+- [x] Update [`docs/adr/0002-embedded-http-ui-and-sse-telemetry.md`](../../adr/0002-embedded-http-ui-and-sse-telemetry.md) Consequences to document loopback `POST /api/fs/pick` and session-scoped `allowedRoots` authorization for user-picked OS paths.
 - [x] Run full verification suite: `gofmt -l .`, `go vet ./...`, `go test ./...` (including `internal/mixer` E2E), cross-OS builds (`windows`/`darwin`/`linux`), and `node --check internal/ui/assets/app.js`. (`golangci-lint` is not installed locally; CI runs it on PR.)
 - [x] Verify Windows `IFileOpenDialog` (`COM`) and `System.Windows.Forms.OpenFileDialog` filter/type initialization via `powershell.exe -NoProfile -NonInteractive -STA`. (Note: live socket bind to `127.0.0.1` is blocked inside the agent sandbox; HTTP routes are verified via `httptest` in `server_test.go`.)
 - [x] Update [Issue #21](https://github.com/GCherry/ytmix/issues/21) checkboxes (`- [x]`), complete `Final Recap` + `Deployment Plan`, and hand off to independent `Reviewer` (`code-review`) → `Planner` `Acceptance Check` → `Release`.
