@@ -12,11 +12,11 @@ status; write **Phase Summary**; record **Verification Plan** results. When all
 phases are done, fill **Final Recap** and **Deployment Plan**, then archive this
 file to `docs/plans/archive/visualizer-quality.md` per the `real-work` skill (Section 3).
 
-**Repo:** `ytmix` (`/home/antigravity/GCherry/ytmix`) — read [`AGENTS.md`](../../AGENTS.md) before building or testing.
+**Repo:** `ytmix` (`/home/antigravity/GCherry/ytmix`) — read [`AGENTS.md`](../../../AGENTS.md) before building or testing.
 
 **Branch:** `fix/visualizer-quality` off `main` (create worktree `.worktrees/fix-visualizer-quality` if parallel work is active).
 
-**Domain docs:** [`GLOSSARY.md`](../../GLOSSARY.md), [`0003-path-d-ffmpeg-auto-visualizer.md`](../adr/0003-path-d-ffmpeg-auto-visualizer.md), [`ytmix_technical_specification.md`](../specs/ytmix_technical_specification.md).
+**Domain docs:** [`GLOSSARY.md`](../../../GLOSSARY.md), [`0003-path-d-ffmpeg-auto-visualizer.md`](../../adr/0003-path-d-ffmpeg-auto-visualizer.md), [`ytmix_technical_specification.md`](../../specs/ytmix_technical_specification.md).
 
 **Related skills:** `coordinator`, `real-work`, `grill-with-docs`, `domain-modeling`, `tdd`, `code-review`.
 
@@ -171,7 +171,7 @@ Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 - [x] Update `internal/mixer/e2e_test.go` (`TestE2EPipeline`) to verify Path D `bars` with `Glow: true` has true-black background chroma (`YAVG` 14..17, `UAVG`/`VAVG` 126..130), `bt709` color space, and `Test 7` `1440p` (`2560x1440`) `waves` render with glow and title overlays
 - [x] Update `docs/specs/ytmix_technical_specification.md` and amend `docs/adr/0003-path-d-ffmpeg-auto-visualizer.md` with `gbrp`, `--visualizer-resolution`, upgraded presets, and BT.709/encoder behavior
 - [x] Run full verification suite: `gofmt -l .`, `go vet ./...`, `GOOS=darwin go build ./...`, `GOOS=windows go build ./...`, `go test -race` across unit + Path D E2E tests
-- [ ] Sync [GCherry/ytmix#23](https://github.com/GCherry/ytmix/issues/23) checkboxes and post wave verification comment; prepare PR targeting `main` (`Closes #23`) and archive plan on final PR commit per `real-work` Section 3
+- [x] Sync [GCherry/ytmix#23](https://github.com/GCherry/ytmix/issues/23) checkboxes and post wave verification comment; prepare PR targeting `main` (`Closes #23`) and archive plan on final PR commit per `real-work` Section 3
 
 #### Verification Plan
 
