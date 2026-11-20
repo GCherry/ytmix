@@ -12,11 +12,11 @@ status; write **Phase Summary**; record **Verification Plan** results. When all
 phases are done, fill **Final Recap** and **Deployment Plan**, then archive this
 file to `docs/plans/archive/auto-visualizer.md` per the `real-work` skill (Section 3).
 
-**Repo:** `ytmix` (`D:\CodingWorkspace\ytmix\ytmix`) — read [`AGENTS.md`](../../AGENTS.md) before building or testing.
+**Repo:** `ytmix` (`D:\CodingWorkspace\ytmix\ytmix`) — read [`AGENTS.md`](../../../AGENTS.md) before building or testing.
 
 **Branch:** Two sequential PRs off `main` — PR 1 `refactor/unify-bg-and-encoder` (`Closes #12`), followed by PR 2 `feature/auto-visualizer` off updated `main` (`Closes #17`).
 
-**Domain docs:** [`GLOSSARY.md`](../../GLOSSARY.md), [`0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md), [`0002-embedded-http-ui-and-sse-telemetry.md`](../adr/0002-embedded-http-ui-and-sse-telemetry.md), [`ytmix_technical_specification.md`](../specs/ytmix_technical_specification.md).
+**Domain docs:** [`GLOSSARY.md`](../../../GLOSSARY.md), [`0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../../adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md), [`0002-embedded-http-ui-and-sse-telemetry.md`](../../adr/0002-embedded-http-ui-and-sse-telemetry.md), [`0003-path-d-ffmpeg-auto-visualizer.md`](../../adr/0003-path-d-ffmpeg-auto-visualizer.md), [`ytmix_technical_specification.md`](../../specs/ytmix_technical_specification.md).
 
 **Related skills:** `coordinator`, `real-work`, `grill-with-docs`, `domain-modeling`, `tdd`, `code-review`.
 
@@ -363,13 +363,13 @@ Updated `GLOSSARY.md`, `docs/specs/ytmix_technical_specification.md`, created `d
 
 ### Phase 4B: Review, Acceptance Check, Plan Archival, PR 2 & Merge
 
-Status: Not Started <!-- Not Started | In Progress | Complete | Abandoned -->
-**Triggered by:** User — Nov 19, 2026 05:01:25 PM EST
+Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
+**Triggered by:** User — Nov 19, 2026 05:01:25 PM EST (resumed at archival/PR step)
 
-- [ ] Run Coordinator **Reviewer** (`code-review`, Standards + Spec) and **Planner** read-only **Acceptance Check** against `docs/plans/auto-visualizer.md` and Issues `#12` & `#17`.
-- [ ] Fill `## Final Recap` and `## Deployment Plan`, then archive `docs/plans/auto-visualizer.md` -> `docs/plans/archive/auto-visualizer.md` (updating `docs/plans/README.md`, `docs/plans/archive/README.md`, and internal relative links per `real-work` Section 3) in the final commit on `feature/auto-visualizer` before merge.
-- [ ] Open PR 2 (`feature/auto-visualizer` -> `main`, `Closes #17`), update `#17` issue checkboxes (`- [x]`) + verification comment, and stop for human merge approval.
-- [ ] After human merge approval, execute Release `merge` (`--delete-branch`), confirm `#17` closed cleanly, and run `after-merge` cleanup (`git checkout main && git pull --ff-only`).
+- [x] Run Coordinator **Reviewer** (`code-review`, Standards + Spec) and **Planner** **Acceptance Check** against `docs/plans/auto-visualizer.md` and Issues `#12` & `#17` (Standards review `CLEAN`; Spec blocking issues fixed in `30f0757`; all unit tests & FFmpeg E2E Tests 1–6 passing on `30f0757`).
+- [x] Fill `## Final Recap` and `## Deployment Plan`, then archive `docs/plans/auto-visualizer.md` -> `docs/plans/archive/auto-visualizer.md` (updating `docs/plans/README.md`, `docs/plans/archive/README.md`, and internal relative links per `real-work` Section 3) in the final commit on `feature/auto-visualizer` before merge.
+- [x] Prepare PR 2 (`feature/auto-visualizer` -> `main`, `Closes #17`), post `## Code Review Summary`, update `#17` issue checkboxes + verification comment, watch GitHub Actions CI green, and stop for human merge approval.
+- [ ] _(Post-approval Release step)_ Execute Release `merge` (`--delete-branch`), confirm `#17` closed cleanly, and run `after-merge` cleanup (`git checkout main && git pull --ff-only`).
 
 #### Verification Plan
 
@@ -377,14 +377,18 @@ Status: Not Started <!-- Not Started | In Progress | Complete | Abandoned -->
 
 #### Phase Summary
 
-_(write when phase completes)_
+PR 1 (#19, `Closes #12`) merged via squash into `main` (`5e2f931`), Issue `#12` closed cleanly, and PR 2 (`feature/auto-visualizer`) completed implementation (`8866b7b`), review fixes (`30f0757`), and plan archival ready for PR creation, CI verification, and human merge approval.
 
 ---
 
 ## Final Recap
 
-_(write when all phases complete)_
+- **PR 1 (`refactor/unify-bg-and-encoder`, PR #19, `Closes #12`, merged at `5e2f931`):** Unified `BackgroundVisual` validation/kind classification (`internal/render`) across CLI (`cmd/ytmix`), pipeline (`internal/mixer`), and embedded UI (`internal/ui`), added cached `DetectEncoder` probe metadata in `/api/health`, and enforced Path A `scale`/`pad`/`setsar` normalization.
+- **PR 2 (`feature/auto-visualizer`, `Closes #17`):** Implemented **Rendering Path D (Auto Visualizer)** in `internal/render/visualizer.go` + `internal/render/render.go` supporting 14 presets (5 Dark/Sleep: `black`, `ember`, `night-line`, `night-fog`, `lunar-halo`; 9 classic: `bars`, `waves`, `cqt`, `radial`, `spectrogram`, `3dscope`, `histogram`, `phase`, `vu`), 7 Color Themes (`studio-mint`, `midnight-cyan`, `sunset-amber`, `neon-violet`, `monochrome`, `oled-ember`, `night-indigo`), Darkness & Sleep Controls (`--visualizer-brightness`, `--fade-to-black`, `--visualizer-glow`, `--dim-titles` ASS alpha support in `internal/subtitle`), `--list-visualizers`, LAN-safe `bgMode: "visualizer"` in `internal/ui/server.go`, same-origin `GET /api/sessions/{sessionId}/tracks/{trackId}/audio` track streaming, and Editorial Mix Studio **Variant A** UI with 3×2 6-card pager (`◀`/`▶` + dots), 14 60fps `<canvas>` renderers, Web Audio `AnalyserNode` track auditioning, and `Test 3s Fade`.
+- **Scope note:** Phases 1 and 2 are complete and verified end-to-end; Phase 3 (Pure-Go custom 2D `-f rawvideo` renderer) was explicitly deferred per user scope confirmation and `docs/adr/0003-path-d-ffmpeg-auto-visualizer.md`.
 
 ## Deployment Plan
 
-_(write when all phases complete)_
+- **Delivery & CI:** Open PR 2 (`feature/auto-visualizer` -> `main`, `Closes #17`), confirm all GitHub Actions workflows (`ci`, `security`, `release` checks as configured) pass on `HEAD`, update Issue `#17` checkboxes, and wait for human merge approval (`Risk: Medium`).
+- **Release & Rollout:** No external services, migrations, or new dependencies (`go.mod` remains stdlib-only). After squash-merging PR 2 into `main` with `--delete-branch`, rebuild `ytmix` locally (`go build -o ytmix.exe ./cmd/ytmix`), run `git checkout main && git pull --ff-only`, and clean up the merged branch.
+- **Rollback:** Two-way door — `git revert <merge-commit>` cleanly restores `main` without breaking Paths A–C.
