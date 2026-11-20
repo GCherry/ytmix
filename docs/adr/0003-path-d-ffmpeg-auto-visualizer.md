@@ -14,6 +14,11 @@ When `--bg` is omitted (`Path D`), `ytmix` generates 1080p H.264 video directly 
 
 - `internal/render` remains a zero-dependency leaf package owning all 14 presets (5 Dark/Sleep + 9 classic), all 7 Color Themes, `DetectFilters`, `VisualizerConfig` validation, and `BuildPathDFilterComplex` / `BuildPathDBlackArgs`.
 - Headless Linux compatibility is enforced by sinking `aphasemeter`'s auxiliary audio pad (`[aout]anullsink`) and disabling font-dependent axis text (`axis=0:text=0` on `showcqt`; `t=0:v=0` on `showvolume`).
-- Blurred dark presets (`ember`, `night-fog`) render at `960x540` -> `gblur` -> `scale=1920:1080` to keep software encoding fast and bloom smooth.
+- Blurred dark presets (`ember`, `night-fog`) render natively at target resolution up to `1080p` (`1920x1080` pre-blur cap for `4k` + `flags=bicubic`) rather than `960x540` bilinear upscaling, preserving sharpness while bounding CPU/thermal load on laptops.
 - `--fade-to-black` (`fade=t=out`) is placed after `subtitles=` so sleep blackouts fade both visuals and Title Overlays to `#000000`, clamping duration on short mixes and omitting cleanly when the fade start exceeds total Mix duration.
 - Editorial Mix Studio (`ytmix ui`) pairs the 14 presets with an offline HTML5 `<canvas>` 60fps preview (and optional same-origin `/api/sessions/{sessionId}/tracks/{trackId}/audio` Web Audio `AnalyserNode` streaming) and permits `Path D` rendering on both loopback and LAN sessions without exposing server filesystem paths.
+
+## Amendment (Issue #23 — Quality, Planar RGB & Resolution)
+
+- All Path D audio-reactive filtergraphs emit planar RGB (`format=gbrp`) before `gblur`, `blend=all_mode=screen`, and `colorchannelmixer`, converting to `format=yuv420p` once at the filtergraph tail. Using `format=rgb24` caused FFmpeg to auto-insert `yuv420p` before `blend=all_mode=screen`, shifting `#000000` black to muddy dark purple and blurring chroma at 4:2:0 half-resolution.
+- `--visualizer-resolution` (`1080p` default, `1440p`, `4k`) scales Path D output and proportional filter dimensions cleanly, and `DetectPathDEncoder` probes `h264_videotoolbox -q:v 65 -profile:v high` on Apple Silicon (with resolution-scaled `-b:v` fallback for Intel Macs) and emits explicit BT.709 color metadata + `-movflags +faststart`.

@@ -17,6 +17,14 @@ const (
 	DefaultVisualizerPreset = "bars"
 	// DefaultVisualizerTheme is the default Path D Color Theme.
 	DefaultVisualizerTheme = "studio-mint"
+	// DefaultVisualizerResolution is the default Path D output resolution preset.
+	DefaultVisualizerResolution = "1080p"
+	// Resolution1080p targets 1920x1080 Full HD output.
+	Resolution1080p = "1080p"
+	// Resolution1440p targets 2560x1440 QHD output.
+	Resolution1440p = "1440p"
+	// Resolution4K targets 3840x2160 4K UHD output.
+	Resolution4K = "4k"
 	// DefaultVisualizerBrightness is the default 100% full luminance multiplier.
 	DefaultVisualizerBrightness = 100
 	// MinVisualizerBrightness is the minimum permitted global brightness percentage.
@@ -24,6 +32,15 @@ const (
 	// MaxVisualizerBrightness is the maximum permitted global brightness percentage.
 	MaxVisualizerBrightness = 100
 )
+
+// ResolutionSpec describes one supported Path D Auto Visualizer output resolution.
+type ResolutionSpec struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Width       int    `json:"width"`
+	Height      int    `json:"height"`
+	Description string `json:"description"`
+}
 
 // VisualizerSpec describes one built-in Path D Auto Visualizer preset.
 type VisualizerSpec struct {
@@ -56,16 +73,18 @@ type ThemeSpec struct {
 type VisualizerConfig struct {
 	Preset      string
 	Theme       string
+	Resolution  string
 	Glow        bool
 	Brightness  int
 	FadeToBlack time.Duration
 }
 
-// DefaultVisualizerConfig returns the default Path D Auto Visualizer configuration (bars, studio-mint, glow on, 100% brightness).
+// DefaultVisualizerConfig returns the default Path D Auto Visualizer configuration (bars, studio-mint, 1080p, glow on, 100% brightness).
 func DefaultVisualizerConfig() VisualizerConfig {
 	return VisualizerConfig{
 		Preset:     DefaultVisualizerPreset,
 		Theme:      DefaultVisualizerTheme,
+		Resolution: DefaultVisualizerResolution,
 		Glow:       true,
 		Brightness: DefaultVisualizerBrightness,
 	}
@@ -292,6 +311,48 @@ var themeCatalog = []ThemeSpec{
 	},
 }
 
+var resolutionCatalog = []ResolutionSpec{
+	{
+		ID:          Resolution1080p,
+		Name:        "1080p Full HD",
+		Width:       1920,
+		Height:      1080,
+		Description: "1920x1080 · Fast export (~300 MB RAM, default)",
+	},
+	{
+		ID:          Resolution1440p,
+		Name:        "1440p QHD",
+		Width:       2560,
+		Height:      1440,
+		Description: "2560x1440 · Sharper fullscreen & YouTube VP9 (~490 MB RAM)",
+	},
+	{
+		ID:          Resolution4K,
+		Name:        "4K UHD",
+		Width:       3840,
+		Height:      2160,
+		Description: "3840x2160 · Max sharpness (~4x slower CPU filter load, large file)",
+	},
+}
+
+// ListResolutions returns a fresh copy of all supported Path D output resolutions.
+func ListResolutions() []ResolutionSpec {
+	out := make([]ResolutionSpec, len(resolutionCatalog))
+	copy(out, resolutionCatalog)
+	return out
+}
+
+// LookupResolution looks up a Path D output resolution preset by ID (case-insensitive).
+func LookupResolution(id string) (ResolutionSpec, bool) {
+	key := strings.ToLower(strings.TrimSpace(id))
+	for _, spec := range resolutionCatalog {
+		if spec.ID == key {
+			return spec, true
+		}
+	}
+	return ResolutionSpec{}, false
+}
+
 // ListVisualizers returns a fresh copy of all 14 built-in Path D Auto Visualizer presets.
 func ListVisualizers() []VisualizerSpec {
 	out := make([]VisualizerSpec, len(visualizerCatalog))
@@ -348,6 +409,14 @@ func validThemeIDs() string {
 	return strings.Join(ids, ", ")
 }
 
+func validResolutionIDs() string {
+	ids := make([]string, len(resolutionCatalog))
+	for i, res := range resolutionCatalog {
+		ids[i] = res.ID
+	}
+	return strings.Join(ids, ", ")
+}
+
 // ValidateVisualizerConfig normalizes defaults and validates a VisualizerConfig.
 func ValidateVisualizerConfig(cfg VisualizerConfig) (VisualizerConfig, error) {
 	preset := strings.ToLower(strings.TrimSpace(cfg.Preset))
@@ -366,6 +435,14 @@ func ValidateVisualizerConfig(cfg VisualizerConfig) (VisualizerConfig, error) {
 		return VisualizerConfig{}, fmt.Errorf("unknown --visualizer-theme %q (supported: %s)", cfg.Theme, validThemeIDs())
 	}
 
+	resolution := strings.ToLower(strings.TrimSpace(cfg.Resolution))
+	if resolution == "" {
+		resolution = DefaultVisualizerResolution
+	}
+	if _, ok := LookupResolution(resolution); !ok {
+		return VisualizerConfig{}, fmt.Errorf("unknown --visualizer-resolution %q (supported: %s)", cfg.Resolution, validResolutionIDs())
+	}
+
 	brightness := cfg.Brightness
 	if brightness == 0 {
 		brightness = DefaultVisualizerBrightness
@@ -381,6 +458,7 @@ func ValidateVisualizerConfig(cfg VisualizerConfig) (VisualizerConfig, error) {
 	return VisualizerConfig{
 		Preset:      preset,
 		Theme:       theme,
+		Resolution:  resolution,
 		Glow:        cfg.Glow,
 		Brightness:  brightness,
 		FadeToBlack: cfg.FadeToBlack,
@@ -480,8 +558,39 @@ func BuildPathDFadeFilter(fadeToBlack time.Duration, totalDuration float64) stri
 	return fmt.Sprintf("fade=t=out:st=%s:d=%s:color=black", formatFFmpegSeconds(st), formatFFmpegSeconds(d))
 }
 
+func evenDim(v int) int {
+	if v < 2 {
+		return 2
+	}
+	return (v / 2) * 2
+}
+
+func scaleSigma(base int, height int) int {
+	s := int(math.Round(float64(base) * float64(height) / 1080.0))
+	if s < 1 {
+		return 1
+	}
+	return s
+}
+
+func resolveResolutionOrDefault(id string) ResolutionSpec {
+	if spec, ok := LookupResolution(id); ok {
+		return spec
+	}
+	spec, _ := LookupResolution(DefaultVisualizerResolution)
+	return spec
+}
+
+var bt709ColorArgs = []string{
+	"-colorspace", "bt709",
+	"-color_primaries", "bt709",
+	"-color_trc", "bt709",
+	"-color_range", "tv",
+}
+
 // BuildPathDBlackArgs constructs the FFmpeg arguments for Path D's pure #000000 blackout screen preset.
 func BuildPathDBlackArgs(mergedAudioPath, assPath, outPath string, overlayTitles bool, totalDuration float64, cfg VisualizerConfig) []string {
+	res := resolveResolutionOrDefault(cfg.Resolution)
 	fps := "2"
 	if overlayTitles {
 		fps = "10"
@@ -495,69 +604,106 @@ func BuildPathDBlackArgs(mergedAudioPath, assPath, outPath string, overlayTitles
 	}
 	vfParts = append(vfParts, "format=yuv420p")
 
-	return []string{
+	args := []string{
 		"-y", "-hide_banner", "-loglevel", "error",
 		"-f", "lavfi",
-		"-i", fmt.Sprintf("color=c=black:s=1920x1080:r=%s", fps),
+		"-i", fmt.Sprintf("color=c=black:s=%dx%d:r=%s", res.Width, res.Height, fps),
 		"-i", mergedAudioPath,
 		"-vf", strings.Join(vfParts, ","),
 		"-map", "0:v:0",
 		"-map", "1:a:0",
 		"-c:v", "libx264", "-tune", "stillimage", "-preset", "veryfast", "-crf", "18",
-		"-c:a", "copy",
-		"-shortest",
-		outPath,
 	}
+	args = append(args, bt709ColorArgs...)
+	args = append(args, "-movflags", "+faststart", "-c:a", "copy", "-shortest")
+	if totalDuration > 0 {
+		args = append(args, "-t", formatFFmpegSeconds(totalDuration))
+	}
+	args = append(args, outPath)
+	return args
 }
 
-func buildPrimaryPresetChain(spec VisualizerSpec, theme ThemeSpec, glow bool) (chain string, hasBuiltInBlur bool) {
+func buildPrimaryPresetChain(spec VisualizerSpec, theme ThemeSpec, res ResolutionSpec, glow bool) (chain string, hasBuiltInBlur bool) {
+	w, h := res.Width, res.Height
 	switch spec.ID {
 	case "ember":
+		baseW, baseH := w, h
+		if baseW > 1920 || baseH > 1080 {
+			baseW, baseH = 1920, 1080
+		}
 		blurPart := ""
 		if glow {
-			blurPart = ",gblur=sigma=18"
+			blurPart = fmt.Sprintf(",gblur=sigma=%d", scaleSigma(18, baseH))
 		}
-		return fmt.Sprintf("[0:a]showwaves=s=960x540:r=30:mode=cline:colors=0x9A3412|0x5C1E09:scale=sqrt,format=rgb24%s,scale=1920:1080:flags=bilinear,setsar=1[vbase]", blurPart), true
+		scalePart := ""
+		if baseW != w || baseH != h {
+			scalePart = fmt.Sprintf(",scale=%d:%d:flags=bicubic,setsar=1", w, h)
+		}
+		return fmt.Sprintf("[0:a]showwaves=s=%dx%d:r=30:mode=cline:colors=0x9A3412|0x5C1E09:scale=cbrt:draw=full,setsar=1,format=gbrp%s%s[vbase]", baseW, baseH, blurPart, scalePart), true
 	case "night-line":
 		lineColor := "0x476082"
 		if theme.ID == "oled-ember" {
 			lineColor = "0x9A3412"
 		}
-		return fmt.Sprintf("[0:a]showwaves=s=1920x220:r=30:mode=line:colors=%s:scale=sqrt,pad=1920:1080:0:640:black,setsar=1,format=rgb24[vbase]", lineColor), false
+		lineH := evenDim(h * 35 / 100)
+		return fmt.Sprintf("[0:a]showwaves=s=%dx%d:r=30:mode=line:colors=%s:scale=cbrt:draw=full,pad=%d:%d:0:(oh-ih)/2:black,setsar=1,format=gbrp[vbase]", w, lineH, lineColor, w, h), false
 	case "night-fog":
+		baseW, baseH := w, h
+		if baseW > 1920 || baseH > 1080 {
+			baseW, baseH = 1920, 1080
+		}
 		blurPart := ""
 		if glow {
-			blurPart = ",gblur=sigma=28"
+			blurPart = fmt.Sprintf(",gblur=sigma=%d", scaleSigma(28, baseH))
 		}
-		return fmt.Sprintf("[0:a]showfreqs=s=960x540:r=30:mode=bar:fscale=log:ascale=sqrt:colors=0x7C2D12|0x312E81,format=rgb24%s,scale=1920:1080:flags=bilinear,setsar=1[vbase]", blurPart), true
+		scalePart := ""
+		if baseW != w || baseH != h {
+			scalePart = fmt.Sprintf(",scale=%d:%d:flags=bicubic,setsar=1", w, h)
+		}
+		return fmt.Sprintf("[0:a]showfreqs=s=%dx%d:r=30:mode=bar:fscale=log:ascale=cbrt:win_size=8192:averaging=2:colors=0x7C2D12|0x312E81,setsar=1,format=gbrp%s%s[vbase]", baseW, baseH, blurPart, scalePart), true
 	case "lunar-halo":
 		rc, gc, bc := 120, 90, 55
 		if theme.ID == "night-indigo" {
 			rc, gc, bc = 65, 85, 125
 		}
+		targetSize := evenDim(h * 72 / 100)
+		baseSize := targetSize
+		if h > 1440 {
+			baseSize = evenDim(1440 * 72 / 100)
+		}
 		blurPart := ""
 		if glow {
-			blurPart = ",gblur=sigma=10"
+			blurPart = fmt.Sprintf(",gblur=sigma=%d", scaleSigma(10, baseSize*1080/778))
 		}
-		return fmt.Sprintf("[0:a]avectorscope=s=540x540:r=30:mode=polar:draw=line:scale=sqrt:rc=%d:gc=%d:bc=%d:rf=12:gf=10:bf=8,format=rgb24%s,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,setsar=1[vbase]", rc, gc, bc, blurPart), true
+		scalePart := ""
+		if baseSize != targetSize {
+			scalePart = fmt.Sprintf(",scale=%d:%d:flags=bicubic", targetSize, targetSize)
+		}
+		return fmt.Sprintf("[0:a]avectorscope=s=%dx%d:r=30:mode=polar:draw=line:scale=cbrt:rc=%d:gc=%d:bc=%d:rf=10:gf=10:bf=10,format=gbrp%s%s,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black,setsar=1[vbase]", baseSize, baseSize, rc, gc, bc, blurPart, scalePart, w, h), true
 	case "bars":
-		return fmt.Sprintf("[0:a]showfreqs=s=1920x1080:r=30:mode=bar:fscale=log:ascale=sqrt:colors=%s|%s,setsar=1,format=rgb24[vbase]", theme.primaryHex, theme.secondaryHex), false
+		return fmt.Sprintf("[0:a]showfreqs=s=%dx%d:r=30:mode=bar:fscale=log:ascale=log:win_size=8192:averaging=2:colors=%s|%s,setsar=1,format=gbrp[vbase]", w, h, theme.primaryHex, theme.secondaryHex), false
 	case "waves":
-		return fmt.Sprintf("[0:a]showwaves=s=1920x1080:r=30:mode=cline:scale=sqrt:colors=%s|%s,setsar=1,format=rgb24[vbase]", theme.primaryHex, theme.secondaryHex), false
+		return fmt.Sprintf("[0:a]showwaves=s=%dx%d:r=30:mode=cline:scale=cbrt:draw=full:colors=%s|%s,setsar=1,format=gbrp[vbase]", w, h, theme.primaryHex, theme.secondaryHex), false
 	case "cqt":
-		return "[0:a]showcqt=s=1920x1080:r=30:axis=0:text=0:bar_g=2:sono_g=4:bar_v=9:sono_v=17,setsar=1,format=rgb24[vbase]", false
+		return fmt.Sprintf("[0:a]showcqt=s=%dx%d:r=30:axis=0:text=0:bar_g=2:sono_g=4:bar_v=9:sono_v=17:csp=bt709,setsar=1,format=gbrp[vbase]", w, h), false
 	case "radial":
-		return fmt.Sprintf("[0:a]avectorscope=s=1080x1080:r=30:mode=polar:draw=line:scale=sqrt:rc=%d:gc=%d:bc=%d:rf=18:gf=18:bf=18,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=rgb24[vbase]", theme.r, theme.g, theme.b), false
+		return fmt.Sprintf("[0:a]avectorscope=s=%dx%d:r=30:mode=polar:draw=line:scale=cbrt:rc=%d:gc=%d:bc=%d:rf=10:gf=10:bf=10,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=gbrp[vbase]", h, h, theme.r, theme.g, theme.b, w, h), false
 	case "spectrogram":
-		return fmt.Sprintf("[0:a]showspectrum=s=1920x1080:mode=combined:color=%s:scale=log:slide=scroll:fps=30,setsar=1,format=rgb24[vbase]", theme.spectrumColor), false
+		return fmt.Sprintf("[0:a]showspectrum=s=%dx%d:mode=combined:color=%s:scale=log:slide=scroll:fps=30,setsar=1,format=gbrp[vbase]", w, h, theme.spectrumColor), false
 	case "3dscope":
-		return "[0:a]a3dscope=s=1920x1080:r=30,setsar=1,format=rgb24[vbase]", false
+		return fmt.Sprintf("[0:a]a3dscope=s=%dx%d:r=30,setsar=1,format=gbrp[vbase]", w, h), false
 	case "histogram":
-		return "[0:a]ahistogram=s=1920x1080:r=30:dmode=separate:scale=log,setsar=1,format=rgb24[vbase]", false
+		return fmt.Sprintf("[0:a]ahistogram=s=%dx%d:r=30:dmode=separate:scale=log,setsar=1,format=gbrp[vbase]", w, h), false
 	case "phase":
-		return fmt.Sprintf("[0:a]aphasemeter=s=1920x1080:r=30:video=1:mpc=%s[aout][vraw];[aout]anullsink;[vraw]setsar=1,format=rgb24[vbase]", theme.secondaryHex), false
+		return fmt.Sprintf("[0:a]aphasemeter=s=%dx%d:r=30:video=1:mpc=%s[aout][vraw];[aout]anullsink;[vraw]setsar=1,format=gbrp[vbase]", w, h, theme.secondaryHex), false
 	case "vu":
-		return fmt.Sprintf("[0:a]showvolume=w=1600:h=140:r=30:t=0:v=0:b=4:dm=1.5:dmc=%s,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=rgb24[vbase]", theme.secondaryHex), false
+		vuW := evenDim(w * 85 / 100)
+		vuH := evenDim(h * 16 / 100)
+		border := h / 240
+		if border < 4 {
+			border = 4
+		}
+		return fmt.Sprintf("[0:a]showvolume=w=%d:h=%d:r=30:t=0:v=0:b=%d:dm=1.5:dmc=%s,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=gbrp[vbase]", vuW, vuH, border, theme.secondaryHex, w, h), false
 	default:
 		return "", false
 	}
@@ -574,13 +720,15 @@ func BuildPathDFilterComplex(assPath string, overlayTitles bool, totalDuration f
 	}
 	spec, _ := LookupVisualizer(normCfg.Preset)
 	theme, _ := LookupTheme(normCfg.Theme)
+	res := resolveResolutionOrDefault(normCfg.Resolution)
 
-	primary, hasBuiltInBlur := buildPrimaryPresetChain(spec, theme, normCfg.Glow)
+	primary, hasBuiltInBlur := buildPrimaryPresetChain(spec, theme, res, normCfg.Glow)
 	parts := []string{primary}
 	curLabel := "[vbase]"
 
 	if normCfg.Glow && !hasBuiltInBlur {
-		parts = append(parts, fmt.Sprintf("%ssplit[vmain][vglow];[vglow]gblur=sigma=12[vblur];[vmain][vblur]blend=all_mode=screen:all_opacity=0.45[vpost]", curLabel))
+		glowSigma := scaleSigma(12, res.Height)
+		parts = append(parts, fmt.Sprintf("%ssplit[vmain][vglow];[vglow]gblur=sigma=%d[vblur];[vmain][vblur]blend=all_mode=screen:all_opacity=0.45[vpost]", curLabel, glowSigma))
 		curLabel = "[vpost]"
 	}
 
@@ -615,7 +763,7 @@ func BuildPathDArgs(mergedAudioPath, assPath, outPath string, overlayTitles bool
 		return nil, err
 	}
 	if len(encoderArgs) == 0 {
-		encoderArgs = []string{"-c:v", "libx264", "-preset", "veryfast", "-crf", "20"}
+		encoderArgs = []string{"-c:v", "libx264", "-preset", "fast", "-crf", "18", "-profile:v", "high"}
 	}
 
 	args := []string{
@@ -626,6 +774,7 @@ func BuildPathDArgs(mergedAudioPath, assPath, outPath string, overlayTitles bool
 		"-map", "0:a:0",
 	}
 	args = append(args, encoderArgs...)
-	args = append(args, "-c:a", "copy", "-shortest", outPath)
+	args = append(args, bt709ColorArgs...)
+	args = append(args, "-movflags", "+faststart", "-c:a", "copy", "-shortest", outPath)
 	return args, nil
 }

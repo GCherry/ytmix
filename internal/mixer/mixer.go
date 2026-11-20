@@ -45,6 +45,7 @@ type Config struct {
 	Shuffle              bool
 	Visualizer           string
 	VisualizerTheme      string
+	VisualizerResolution string
 	VisualizerGlow       bool
 	VisualizerBrightness int
 	FadeToBlack          time.Duration
@@ -56,6 +57,7 @@ func (c Config) VisualizerConfig() render.VisualizerConfig {
 	return render.VisualizerConfig{
 		Preset:      c.Visualizer,
 		Theme:       c.VisualizerTheme,
+		Resolution:  c.VisualizerResolution,
 		Glow:        c.VisualizerGlow,
 		Brightness:  c.VisualizerBrightness,
 		FadeToBlack: c.FadeToBlack,

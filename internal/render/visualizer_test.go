@@ -59,12 +59,37 @@ func TestVisualizerCatalogAndValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("ValidateVisualizerConfig defaults, accepts all valid presets/themes, and rejects invalid inputs", func(t *testing.T) {
+	t.Run("ListResolutions returns 1080p, 1440p, 4k cleanly", func(t *testing.T) {
+		resList := ListResolutions()
+		if len(resList) != 3 {
+			t.Fatalf("expected 3 resolutions, got %d", len(resList))
+		}
+		for _, tc := range []struct {
+			in    string
+			want  string
+			wantW int
+			wantH int
+		}{
+			{"1080p", "1080p", 1920, 1080},
+			{" 1440P ", "1440p", 2560, 1440},
+			{"4K", "4k", 3840, 2160},
+		} {
+			got, ok := LookupResolution(tc.in)
+			if !ok || got.ID != tc.want || got.Width != tc.wantW || got.Height != tc.wantH {
+				t.Fatalf("LookupResolution(%q) = (%+v, %v)", tc.in, got, ok)
+			}
+		}
+		if _, ok := LookupResolution("720p"); ok {
+			t.Fatal("expected unsupported resolution 720p to return false")
+		}
+	})
+
+	t.Run("ValidateVisualizerConfig defaults, accepts all valid presets/themes/resolutions, and rejects invalid inputs", func(t *testing.T) {
 		defNorm, err := ValidateVisualizerConfig(VisualizerConfig{})
 		if err != nil {
 			t.Fatalf("ValidateVisualizerConfig(empty) error: %v", err)
 		}
-		if defNorm.Preset != "bars" || defNorm.Theme != "studio-mint" || defNorm.Brightness != 100 {
+		if defNorm.Preset != "bars" || defNorm.Theme != "studio-mint" || defNorm.Resolution != "1080p" || defNorm.Brightness != 100 {
 			t.Fatalf("unexpected normalized defaults: %+v", defNorm)
 		}
 
@@ -73,13 +98,14 @@ func TestVisualizerCatalogAndValidation(t *testing.T) {
 				norm, err := ValidateVisualizerConfig(VisualizerConfig{
 					Preset:     v.ID,
 					Theme:      th.ID,
+					Resolution: "1440P",
 					Glow:       true,
 					Brightness: 75,
 				})
 				if err != nil {
 					t.Fatalf("preset=%q theme=%q failed validation: %v", v.ID, th.ID, err)
 				}
-				if norm.Preset != v.ID || norm.Theme != th.ID || norm.Brightness != 75 {
+				if norm.Preset != v.ID || norm.Theme != th.ID || norm.Resolution != "1440p" || norm.Brightness != 75 {
 					t.Fatalf("unexpected normalized config: %+v", norm)
 				}
 			}
@@ -92,6 +118,7 @@ func TestVisualizerCatalogAndValidation(t *testing.T) {
 		}{
 			{"unknown preset", VisualizerConfig{Preset: "lasers"}, "--visualizer"},
 			{"unknown theme", VisualizerConfig{Theme: "rainbow-neon"}, "--visualizer-theme"},
+			{"unknown resolution", VisualizerConfig{Resolution: "720p"}, "--visualizer-resolution"},
 			{"brightness 9 below min", VisualizerConfig{Brightness: 9}, "--visualizer-brightness"},
 			{"brightness 101 above max", VisualizerConfig{Brightness: 101}, "--visualizer-brightness"},
 			{"brightness negative", VisualizerConfig{Brightness: -5}, "--visualizer-brightness"},
@@ -202,7 +229,7 @@ func TestPathDFadeAndFilterBuilders(t *testing.T) {
 		}
 	})
 
-	t.Run("Glow, Brightness, Fade-after-Subtitles, and Preset Invariants", func(t *testing.T) {
+	t.Run("Glow uses planar gbrp, Brightness, Fade-after-Subtitles, and Resolution/Preset Invariants", func(t *testing.T) {
 		fcGlow, err := BuildPathDFilterComplex("", false, 3600, VisualizerConfig{
 			Preset:     "bars",
 			Theme:      "studio-mint",
@@ -211,6 +238,12 @@ func TestPathDFadeAndFilterBuilders(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatal(err)
+		}
+		if !strings.Contains(fcGlow, "format=gbrp") || strings.Contains(fcGlow, "format=rgb24") {
+			t.Fatalf("expected planar format=gbrp (no rgb24) so blend stays in RGB, got:\n%s", fcGlow)
+		}
+		if !strings.Contains(fcGlow, "win_size=8192") || !strings.Contains(fcGlow, "ascale=log") {
+			t.Fatalf("expected sharp bars win_size=8192 and ascale=log, got:\n%s", fcGlow)
 		}
 		if !strings.Contains(fcGlow, "gblur=sigma=12") || !strings.Contains(fcGlow, "blend=all_mode=screen") {
 			t.Fatalf("expected glow stage on bars, got:\n%s", fcGlow)
@@ -222,12 +255,16 @@ func TestPathDFadeAndFilterBuilders(t *testing.T) {
 		fcNoGlow, err := BuildPathDFilterComplex(`C:\tmp\O'Brien\titles.ass`, true, 3600, VisualizerConfig{
 			Preset:      "bars",
 			Theme:       "studio-mint",
+			Resolution:  "1440p",
 			Glow:        false,
 			Brightness:  10,
 			FadeToBlack: 15 * time.Minute,
 		})
 		if err != nil {
 			t.Fatal(err)
+		}
+		if !strings.Contains(fcNoGlow, "s=2560x1440") {
+			t.Fatalf("expected 1440p 2560x1440 canvas, got:\n%s", fcNoGlow)
 		}
 		if strings.Contains(fcNoGlow, "gblur") {
 			t.Fatalf("expected no gblur when Glow=false, got:\n%s", fcNoGlow)
@@ -241,7 +278,7 @@ func TestPathDFadeAndFilterBuilders(t *testing.T) {
 			t.Fatalf("expected fade filter AFTER subtitles= filter (subIdx=%d, fadeIdx=%d):\n%s", subIdx, fadeIdx, fcNoGlow)
 		}
 
-		fcDim45, err := BuildPathDFilterComplex("", false, 600, VisualizerConfig{
+		fcEmber1080, err := BuildPathDFilterComplex("", false, 600, VisualizerConfig{
 			Preset:     "ember",
 			Theme:      "oled-ember",
 			Glow:       true,
@@ -250,8 +287,29 @@ func TestPathDFadeAndFilterBuilders(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(fcDim45, "s=960x540") || !strings.Contains(fcDim45, "scale=1920:1080") || !strings.Contains(fcDim45, "colorchannelmixer=rr=0.45:gg=0.45:bb=0.45") {
-			t.Fatalf("unexpected ember filtergraph:\n%s", fcDim45)
+		if !strings.Contains(fcEmber1080, "s=1920x1080") || strings.Contains(fcEmber1080, "s=960x540") || !strings.Contains(fcEmber1080, "format=gbrp") || !strings.Contains(fcEmber1080, "colorchannelmixer=rr=0.45:gg=0.45:bb=0.45") {
+			t.Fatalf("expected native 1080p gbrp ember filtergraph, got:\n%s", fcEmber1080)
+		}
+
+		fcEmber4K, err := BuildPathDFilterComplex("", false, 600, VisualizerConfig{
+			Preset:     "ember",
+			Resolution: "4k",
+			Glow:       true,
+			Brightness: 100,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(fcEmber4K, "s=1920x1080") || !strings.Contains(fcEmber4K, "scale=3840:2160:flags=bicubic") {
+			t.Fatalf("expected 4K ember to cap pre-blur at 1080p and bicubic-upscale to 4K, got:\n%s", fcEmber4K)
+		}
+
+		fcWaves, err := BuildPathDFilterComplex("", false, 600, VisualizerConfig{Preset: "waves", Brightness: 100})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(fcWaves, "scale=cbrt:draw=full") {
+			t.Fatalf("expected crisp waves draw=full and scale=cbrt:\n%s", fcWaves)
 		}
 
 		fcPhase, err := BuildPathDFilterComplex("", false, 600, VisualizerConfig{Preset: "phase", Brightness: 100})
@@ -261,12 +319,12 @@ func TestPathDFadeAndFilterBuilders(t *testing.T) {
 		if !strings.Contains(fcPhase, "[aout]anullsink") {
 			t.Fatalf("expected [aout]anullsink in phase filtergraph:\n%s", fcPhase)
 		}
-		fcCQT, err := BuildPathDFilterComplex("", false, 600, VisualizerConfig{Preset: "cqt", Brightness: 100})
+		fcCQT, err := BuildPathDFilterComplex("", false, 600, VisualizerConfig{Preset: "cqt", Resolution: "1440p", Brightness: 100})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(fcCQT, "axis=0:text=0") {
-			t.Fatalf("expected axis=0:text=0 in cqt filtergraph:\n%s", fcCQT)
+		if !strings.Contains(fcCQT, "s=2560x1440") || !strings.Contains(fcCQT, "axis=0:text=0") || !strings.Contains(fcCQT, "csp=bt709") {
+			t.Fatalf("expected 1440p axis=0:text=0 csp=bt709 in cqt filtergraph:\n%s", fcCQT)
 		}
 		fcVU, err := BuildPathDFilterComplex("", false, 600, VisualizerConfig{Preset: "vu", Brightness: 100})
 		if err != nil {
@@ -277,10 +335,14 @@ func TestPathDFadeAndFilterBuilders(t *testing.T) {
 		}
 	})
 
-	t.Run("Blackout BuildPathDBlackArgs uses 2 fps without subtitles and 10 fps with subtitles", func(t *testing.T) {
-		noSub := BuildPathDBlackArgs("merged.m4a", "", "out.mp4", false, 600, VisualizerConfig{Preset: "black", Brightness: 100})
+	t.Run("Blackout BuildPathDBlackArgs uses target resolution, BT.709 tags, faststart, and 2/10 fps", func(t *testing.T) {
+		noSub := BuildPathDBlackArgs("merged.m4a", "", "out.mp4", false, 600, VisualizerConfig{Preset: "black", Resolution: "1440p", Brightness: 100})
 		joinedNoSub := strings.Join(noSub, " ")
-		if !strings.Contains(joinedNoSub, "color=c=black:s=1920x1080:r=2") || !strings.Contains(joinedNoSub, "-tune stillimage") || !strings.Contains(joinedNoSub, "-map 0:v:0 -map 1:a:0") {
+		if !strings.Contains(joinedNoSub, "color=c=black:s=2560x1440:r=2") ||
+			!strings.Contains(joinedNoSub, "-tune stillimage") ||
+			!strings.Contains(joinedNoSub, "-colorspace bt709") ||
+			!strings.Contains(joinedNoSub, "-movflags +faststart") ||
+			!strings.Contains(joinedNoSub, "-map 0:v:0 -map 1:a:0") {
 			t.Fatalf("unexpected black no-sub args: %s", joinedNoSub)
 		}
 
@@ -292,6 +354,19 @@ func TestPathDFadeAndFilterBuilders(t *testing.T) {
 		joinedSub := strings.Join(withSub, " ")
 		if !strings.Contains(joinedSub, "color=c=black:s=1920x1080:r=10") || !strings.Contains(joinedSub, "subtitles='C\\:/tmp/titles.ass',fade=t=out:st=900:d=15:color=black") {
 			t.Fatalf("unexpected black overlay args: %s", joinedSub)
+		}
+	})
+
+	t.Run("BuildPathDArgs emits BT.709 color signaling and faststart", func(t *testing.T) {
+		args, err := BuildPathDArgs("merged.m4a", "", "out.mp4", false, 60, VisualizerConfig{Preset: "bars"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		joined := strings.Join(args, " ")
+		for _, want := range []string{"-colorspace bt709", "-color_primaries bt709", "-color_trc bt709", "-color_range tv", "-movflags +faststart"} {
+			if !strings.Contains(joined, want) {
+				t.Fatalf("BuildPathDArgs missing %q in %s", want, joined)
+			}
 		}
 	})
 }

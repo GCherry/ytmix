@@ -238,6 +238,67 @@ func DetectEncoderArgs(ctx context.Context, goos string, runner func(ctx context
 	return DetectEncoder(ctx, goos, runner).Args
 }
 
+func videoToolboxFallbackBitrate(resolution string) string {
+	switch strings.ToLower(strings.TrimSpace(resolution)) {
+	case Resolution4K:
+		return "28000k"
+	case Resolution1440p:
+		return "18000k"
+	default:
+		return "12000k"
+	}
+}
+
+// DetectPathDEncoder probes hardware H.264 encoder usability with high-quality Path D settings
+// (Apple Silicon VideoToolbox constant quality -q:v 65 with resolution-scaled bitrate fallback for Intel Macs,
+// NVENC -cq 18, and libx264 -preset fast -crf 18 -profile:v high fallback).
+func DetectPathDEncoder(ctx context.Context, goos, resolution string, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) EncoderInfo {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	probeWithArgs := func(extraArgs ...string) bool {
+		if runner == nil || ctx.Err() != nil {
+			return false
+		}
+		args := []string{
+			"-v", "error",
+			"-f", "lavfi",
+			"-i", "color=c=black:s=64x64:d=0.1",
+		}
+		args = append(args, extraArgs...)
+		args = append(args, "-f", "null", "-")
+		_, err := runner(ctx, "ffmpeg", args...)
+		return err == nil
+	}
+
+	switch goos {
+	case "darwin":
+		if probeWithArgs("-c:v", "h264_videotoolbox", "-q:v", "65", "-profile:v", "high") {
+			return EncoderInfo{
+				Name: "h264_videotoolbox",
+				Args: []string{"-c:v", "h264_videotoolbox", "-q:v", "65", "-profile:v", "high"},
+			}
+		}
+		if probeWithArgs("-c:v", "h264_videotoolbox") {
+			return EncoderInfo{
+				Name: "h264_videotoolbox",
+				Args: []string{"-c:v", "h264_videotoolbox", "-b:v", videoToolboxFallbackBitrate(resolution), "-profile:v", "high"},
+			}
+		}
+	case "windows", "linux":
+		if probeWithArgs("-c:v", "h264_nvenc") {
+			return EncoderInfo{
+				Name: "h264_nvenc",
+				Args: []string{"-c:v", "h264_nvenc", "-preset", "p4", "-cq", "18"},
+			}
+		}
+	}
+	return EncoderInfo{
+		Name: "libx264",
+		Args: []string{"-c:v", "libx264", "-preset", "fast", "-crf", "18", "-profile:v", "high"},
+	}
+}
+
 func buildVideoFilter(assPath string, overlayTitles bool, extraFilters ...string) string {
 	parts := []string{scalePadFilter}
 	parts = append(parts, extraFilters...)
@@ -499,7 +560,7 @@ func RenderWithOptions(ctx context.Context, opts RenderOptions) (Path, error) {
 				return "", fmt.Errorf("render blackout screen (%s): %w", PathD, err)
 			}
 		} else {
-			encoder := DetectEncoder(ctx, opts.GOOS, opts.Runner)
+			encoder := DetectPathDEncoder(ctx, opts.GOOS, vizCfg.Resolution, opts.Runner)
 			args, err := BuildPathDArgs(opts.MergedAudioPath, opts.ASSPath, opts.OutPath, opts.OverlayTitles, opts.TotalDuration, vizCfg, encoder.Args)
 			if err != nil {
 				return "", err

@@ -239,6 +239,61 @@ func TestDetectEncoderArgs(t *testing.T) {
 	})
 }
 
+func TestDetectPathDEncoder(t *testing.T) {
+	t.Run("darwin probes VideoToolbox -q:v 65 first and uses it on Apple Silicon", func(t *testing.T) {
+		var probes [][]string
+		runner := func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			probes = append(probes, args)
+			return nil, nil
+		}
+		got := DetectPathDEncoder(context.Background(), "darwin", Resolution1440p, runner)
+		want := []string{"-c:v", "h264_videotoolbox", "-q:v", "65", "-profile:v", "high"}
+		if got.Name != "h264_videotoolbox" || !reflect.DeepEqual(got.Args, want) {
+			t.Fatalf("got %+v, want Args=%v", got, want)
+		}
+		if len(probes) != 1 || !strings.Contains(strings.Join(probes[0], " "), "-q:v 65") {
+			t.Fatalf("expected single -q:v 65 probe, got %v", probes)
+		}
+	})
+
+	t.Run("darwin falls back to resolution-scaled bitrate when -q:v probe fails", func(t *testing.T) {
+		for _, tc := range []struct {
+			res  string
+			want string
+		}{
+			{Resolution1080p, "12000k"},
+			{Resolution1440p, "18000k"},
+			{Resolution4K, "28000k"},
+		} {
+			runner := func(_ context.Context, _ string, args ...string) ([]byte, error) {
+				if strings.Contains(strings.Join(args, " "), "-q:v") {
+					return nil, errors.New("qscale not available on Intel")
+				}
+				return nil, nil
+			}
+			got := DetectPathDEncoder(context.Background(), "darwin", tc.res, runner)
+			want := []string{"-c:v", "h264_videotoolbox", "-b:v", tc.want, "-profile:v", "high"}
+			if got.Name != "h264_videotoolbox" || !reflect.DeepEqual(got.Args, want) {
+				t.Fatalf("%s: got %+v, want Args=%v", tc.res, got, want)
+			}
+		}
+	})
+
+	t.Run("windows and linux use cq 18 on nvenc and crf 18 fast high on libx264 fallback", func(t *testing.T) {
+		okRunner := func(_ context.Context, _ string, _ ...string) ([]byte, error) { return nil, nil }
+		nvenc := DetectPathDEncoder(context.Background(), "linux", Resolution1080p, okRunner)
+		if nvenc.Name != "h264_nvenc" || !reflect.DeepEqual(nvenc.Args, []string{"-c:v", "h264_nvenc", "-preset", "p4", "-cq", "18"}) {
+			t.Fatalf("nvenc = %+v", nvenc)
+		}
+
+		failRunner := func(_ context.Context, _ string, _ ...string) ([]byte, error) { return nil, errors.New("no gpu") }
+		x264 := DetectPathDEncoder(context.Background(), "linux", Resolution1080p, failRunner)
+		if x264.Name != "libx264" || !reflect.DeepEqual(x264.Args, []string{"-c:v", "libx264", "-preset", "fast", "-crf", "18", "-profile:v", "high"}) {
+			t.Fatalf("x264 = %+v", x264)
+		}
+	})
+}
+
 func TestBuildRenderArgs(t *testing.T) {
 	t.Run("Path A normalize and mux args", func(t *testing.T) {
 		norm := BuildPathANormalizeArgs("bg.mp4", "tmp/norm_loop.mp4")

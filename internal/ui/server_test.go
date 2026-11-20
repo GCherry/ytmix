@@ -1291,6 +1291,7 @@ func TestPathDServerHealthRenderLANAndTrackAudio(t *testing.T) {
 
 		// Invalid brightness (explicit 0 and 9 and 101), negative fade, mutual exclusion all fail with 400.
 		for _, badPayload := range []map[string]any{
+			{"sessionId": probed.SessionID, "trackIds": []string{probed.Tracks[0].ID}, "bgMode": "visualizer", "visualizer": "bars", "visualizerResolution": "720p"},
 			{"sessionId": probed.SessionID, "trackIds": []string{probed.Tracks[0].ID}, "bgMode": "visualizer", "visualizer": "bars", "visualizerBrightness": 0},
 			{"sessionId": probed.SessionID, "trackIds": []string{probed.Tracks[0].ID}, "bgMode": "visualizer", "visualizer": "bars", "visualizerBrightness": 9},
 			{"sessionId": probed.SessionID, "trackIds": []string{probed.Tracks[0].ID}, "bgMode": "visualizer", "visualizer": "bars", "visualizerBrightness": 101},
@@ -1391,6 +1392,7 @@ func TestPathDServerHealthRenderLANAndTrackAudio(t *testing.T) {
 			"bgMode":               "visualizer",
 			"visualizer":           "black",
 			"visualizerTheme":      "oled-ember",
+			"visualizerResolution": "1440p",
 			"visualizerGlow":       glowFalse,
 			"visualizerBrightness": brightness40,
 			"fadeToBlackMinutes":   15,

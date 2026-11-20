@@ -57,6 +57,7 @@ func TestParseFlags(t *testing.T) {
 			defCfg.Normalize || defCfg.OverlayTitles || defCfg.TitleDuration != 0 ||
 			defCfg.FontName != "Arial" || defCfg.Shuffle ||
 			defCfg.Visualizer != "" || defCfg.VisualizerTheme != "studio-mint" ||
+			defCfg.VisualizerResolution != "1080p" ||
 			!defCfg.VisualizerGlow || defCfg.VisualizerBrightness != 100 ||
 			defCfg.FadeToBlack != 0 || defCfg.DimTitles {
 			t.Fatalf("unexpected default config: %+v", defCfg)
@@ -65,6 +66,7 @@ func TestParseFlags(t *testing.T) {
 		vizCfg, listViz, err := ParseCLIFlags([]string{
 			"--visualizer", "ember",
 			"--visualizer-theme", "oled-ember",
+			"--visualizer-resolution", "1440p",
 			"--visualizer-glow=false",
 			"--visualizer-brightness", "45",
 			"--fade-to-black", "15m",
@@ -75,12 +77,14 @@ func TestParseFlags(t *testing.T) {
 			t.Fatalf("ParseCLIFlags Path D unexpected err=%v listViz=%v", err, listViz)
 		}
 		if vizCfg.Visualizer != "ember" || vizCfg.VisualizerTheme != "oled-ember" ||
+			vizCfg.VisualizerResolution != "1440p" ||
 			vizCfg.VisualizerGlow || vizCfg.VisualizerBrightness != 45 ||
 			vizCfg.FadeToBlack != 15*time.Minute || !vizCfg.DimTitles {
 			t.Fatalf("unexpected Path D config: %+v", vizCfg)
 		}
 
 		for _, badArgs := range [][]string{
+			{"--visualizer-resolution", "720p"},
 			{"--visualizer-brightness", "0"},
 			{"--visualizer-brightness", "9"},
 			{"--visualizer-brightness", "101"},
@@ -112,7 +116,7 @@ func TestPrintVisualizers(t *testing.T) {
 		t.Fatalf("PrintVisualizers error: %v", err)
 	}
 	text := out.String()
-	for _, want := range []string{"black", "ember", "bars", "3dscope", "studio-mint", "oled-ember", "ready", "unavailable (missing a3dscope)"} {
+	for _, want := range []string{"black", "ember", "bars", "3dscope", "studio-mint", "oled-ember", "1080p", "1440p", "4k", "ready", "unavailable (missing a3dscope)"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("PrintVisualizers missing %q:\n%s", want, text)
 		}

@@ -50,6 +50,12 @@
     { id: "night-indigo", name: "Deep Night Indigo", bg: "#000000", primary: "#3B4F73", secondary: "#1E293B", glow: "rgba(59, 79, 115, 0.35)" },
   ];
 
+  let RESOLUTIONS = [
+    { id: "1080p", name: "1080p Full HD", width: 1920, height: 1080, description: "1920x1080 · Fast export (~300 MB RAM, default)" },
+    { id: "1440p", name: "1440p QHD", width: 2560, height: 1440, description: "2560x1440 · Sharper fullscreen & YouTube VP9 (~490 MB RAM)" },
+    { id: "4k", name: "4K UHD", width: 3840, height: 2160, description: "3840x2160 · Max sharpness (~4x slower CPU filter load, large file)" },
+  ];
+
   const CATEGORY_DEFS = [
     { id: "all", label: "All" },
     { id: "dark", label: "Dark / Sleep" },
@@ -72,6 +78,7 @@
     lastCompleteJob: null,
     visualizer: "bars",
     visualizerTheme: "studio-mint",
+    visualizerResolution: "1080p",
     visualizerGlow: true,
     visualizerBrightness: 100,
     fadeToBlackMin: 0,
@@ -149,6 +156,10 @@
     return THEMES.find((t) => t.id === id) || THEMES[0];
   }
 
+  function getResolution(id) {
+    return RESOLUTIONS.find((r) => r.id === id) || RESOLUTIONS[0];
+  }
+
   function filteredPresets() {
     if (state.vizCategory === "all") return PRESETS;
     return PRESETS.filter((p) => p.category === state.vizCategory);
@@ -204,17 +215,18 @@
     const overlay = $("overlay-toggle").checked;
     if (state.bgMode === "visualizer") {
       const preset = getPreset(state.visualizer);
+      const resSpec = getResolution(state.visualizerResolution);
       if (preset.id === "black") {
         return {
           path: "Path D",
           kind: "visualizer",
-          fpsLabel: overlay ? "10 fps · -tune stillimage · Pure #000000 Blackout" : "2 fps · -tune stillimage · Pure #000000 Blackout",
+          fpsLabel: overlay ? `${resSpec.id} · 10 fps · -tune stillimage · Pure #000000 Blackout` : `${resSpec.id} · 2 fps · -tune stillimage · Pure #000000 Blackout`,
         };
       }
       return {
         path: "Path D",
         kind: "visualizer",
-        fpsLabel: `30 fps · FFmpeg ${preset.filter}`,
+        fpsLabel: `${resSpec.id} · 30 fps · FFmpeg ${preset.filter}`,
       };
     }
 
@@ -304,6 +316,16 @@
           primary: t.primary,
           secondary: t.secondary,
           glow: t.glow,
+        }));
+      }
+
+      if (Array.isArray(data.visualizerResolutions) && data.visualizerResolutions.length > 0) {
+        RESOLUTIONS = data.visualizerResolutions.map((r) => ({
+          id: r.id,
+          name: r.name,
+          width: r.width,
+          height: r.height,
+          description: r.description,
         }));
       }
 
@@ -849,6 +871,22 @@
     glowToggle.checked = state.visualizerGlow;
     glowToggle.disabled = isBlack;
 
+    const resSelect = $("viz-resolution-select");
+    if (resSelect) {
+      resSelect.innerHTML = "";
+      RESOLUTIONS.forEach((res) => {
+        const opt = document.createElement("option");
+        opt.value = res.id;
+        opt.textContent = `${res.name} (${res.width}x${res.height})`;
+        if (res.id === state.visualizerResolution) opt.selected = true;
+        resSelect.appendChild(opt);
+      });
+    }
+    const resHint = $("viz-resolution-hint");
+    if (resHint) {
+      resHint.textContent = getResolution(state.visualizerResolution).description;
+    }
+
     $("darkness-mode-note").textContent = isBlack ? "Pure #000000 blackout (0% light)" : "Applies across any visualizer preset";
     $("viz-brightness-slider").value = String(state.visualizerBrightness);
     $("viz-brightness-slider").disabled = isBlack;
@@ -968,6 +1006,9 @@
 
     if (state.bgMode === "visualizer") {
       parts.push("--visualizer", state.visualizer);
+      if (state.visualizerResolution && state.visualizerResolution !== "1080p") {
+        parts.push("--visualizer-resolution", state.visualizerResolution);
+      }
       if (state.visualizer !== "black") {
         if (state.visualizerTheme !== "studio-mint") {
           parts.push("--visualizer-theme", state.visualizerTheme);
@@ -1113,6 +1154,7 @@
       shuffle: $("shuffle-toggle").checked,
       visualizer: state.bgMode === "visualizer" ? state.visualizer : "",
       visualizerTheme: state.visualizerTheme,
+      visualizerResolution: state.visualizerResolution,
       visualizerGlow: state.visualizerGlow,
       visualizerBrightness: state.visualizerBrightness,
       fadeToBlackMinutes: state.visualizer === "black" ? 0 : state.fadeToBlackMin,
@@ -2382,6 +2424,10 @@
     $("viz-theme-select").addEventListener("change", (e) => {
       state.visualizerTheme = e.target.value;
       resetStageBuffers();
+      renderAll();
+    });
+    $("viz-resolution-select").addEventListener("change", (e) => {
+      state.visualizerResolution = e.target.value || "1080p";
       renderAll();
     });
     $("viz-glow-toggle").addEventListener("change", (e) => {

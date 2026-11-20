@@ -107,18 +107,19 @@ type visualizerDTO struct {
 }
 
 type healthResponse struct {
-	Status                  string                `json:"status"`
-	FFmpeg                  bool                  `json:"ffmpeg"`
-	FFprobe                 bool                  `json:"ffprobe"`
-	Encoder                 string                `json:"encoder"`
-	GOOS                    string                `json:"goos"`
-	BindHost                string                `json:"bindHost"`
-	LocalPathsAllowed       bool                  `json:"localPathsAllowed"`
-	SupportedBackgroundExts render.BackgroundExts `json:"supportedBackgroundExts"`
-	Visualizers             []visualizerDTO       `json:"visualizers"`
-	VisualizerThemes        []render.ThemeSpec    `json:"visualizerThemes"`
-	Defaults                healthDefaults        `json:"defaults"`
-	Roots                   []fsRootDTO           `json:"roots,omitempty"`
+	Status                  string                  `json:"status"`
+	FFmpeg                  bool                    `json:"ffmpeg"`
+	FFprobe                 bool                    `json:"ffprobe"`
+	Encoder                 string                  `json:"encoder"`
+	GOOS                    string                  `json:"goos"`
+	BindHost                string                  `json:"bindHost"`
+	LocalPathsAllowed       bool                    `json:"localPathsAllowed"`
+	SupportedBackgroundExts render.BackgroundExts   `json:"supportedBackgroundExts"`
+	Visualizers             []visualizerDTO         `json:"visualizers"`
+	VisualizerThemes        []render.ThemeSpec      `json:"visualizerThemes"`
+	VisualizerResolutions   []render.ResolutionSpec `json:"visualizerResolutions"`
+	Defaults                healthDefaults          `json:"defaults"`
+	Roots                   []fsRootDTO             `json:"roots,omitempty"`
 }
 
 type healthDefaults struct {
@@ -164,6 +165,7 @@ type renderConfigRequest struct {
 	Shuffle              bool     `json:"shuffle"`
 	Visualizer           string   `json:"visualizer"`
 	VisualizerTheme      string   `json:"visualizerTheme"`
+	VisualizerResolution string   `json:"visualizerResolution"`
 	VisualizerGlow       *bool    `json:"visualizerGlow"`
 	VisualizerBrightness *int     `json:"visualizerBrightness"`
 	FadeToBlackMinutes   float64  `json:"fadeToBlackMinutes"`
@@ -422,6 +424,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		SupportedBackgroundExts: render.SupportedBackgroundExts(),
 		Visualizers:             vizDTOs,
 		VisualizerThemes:        render.ListThemes(),
+		VisualizerResolutions:   render.ListResolutions(),
 		Defaults: healthDefaults{
 			AudioDir:   audioDirDefault,
 			BG:         bgDefault,
@@ -868,6 +871,7 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 		Shuffle:              req.Shuffle,
 		Visualizer:           req.Visualizer,
 		VisualizerTheme:      req.VisualizerTheme,
+		VisualizerResolution: req.VisualizerResolution,
 		VisualizerGlow:       vizGlow,
 		VisualizerBrightness: vizBrightness,
 		FadeToBlack:          fadeToBlack,
