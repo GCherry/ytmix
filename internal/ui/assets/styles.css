@@ -83,7 +83,7 @@ body {
 }
 
 .chassis {
-  max-width: 1440px;
+  max-width: 1520px;
   margin: 0 auto;
   background: var(--chassis);
   min-height: 100vh;
@@ -174,7 +174,7 @@ body {
 
 .studio-grid {
   display: grid;
-  grid-template-columns: 1.12fr 0.88fr;
+  grid-template-columns: 1.24fr 0.76fr;
   align-items: start;
 }
 
@@ -185,6 +185,16 @@ body {
 .col-left,
 .col-right {
   min-width: 0;
+}
+
+.col-right {
+  position: sticky;
+  top: 0;
+  max-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  background: var(--chassis);
 }
 
 .panel {
@@ -314,6 +324,7 @@ body {
 .select:focus-visible,
 .btn:focus-visible,
 .seg-btn:focus-visible,
+.tab-btn:focus-visible,
 .slider:focus-visible,
 .preset-card:focus-visible,
 .cat-chip:focus-visible,
@@ -1309,18 +1320,162 @@ body {
   text-shadow: none;
 }
 
-@media (max-width: 640px) {
-  .preset-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+/* Hybrid Studio (A+C) Tabs, Dual 02+03 Workbench & Sticky Monitor Dock */
+.studio-tabs-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 20px 0 8px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--well);
+}
+
+.tab-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+
+.utility-tabs {
+  padding: 0 12px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--well);
+  flex-shrink: 0;
+}
+
+.tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tab-btn:hover {
+  color: var(--ink);
+}
+
+.tab-btn.is-active {
+  color: var(--ink);
+  border-bottom-color: var(--gold);
+}
+
+.tab-idx {
+  color: var(--gold);
+  font-size: 11px;
+}
+
+.tab-count,
+.tab-badge {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.tab-badge {
+  padding: 1px 6px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius);
+  background: var(--chassis);
+}
+
+.tab-badge.is-running {
+  border-color: var(--gold);
+  color: var(--gold);
+}
+
+.tab-badge.is-done {
+  border-color: var(--mint);
+  color: var(--mint);
+}
+
+.tab-badge.is-error {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.dual-studio-grid {
+  display: grid;
+  grid-template-columns: 1.22fr 0.78fr;
+  align-items: start;
+}
+
+.dual-studio-bg {
+  border-right: 1px solid var(--hairline);
+  min-width: 0;
+}
+
+.dual-studio-bg .preset-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dual-studio-audio {
+  min-width: 0;
+}
+
+.stage-panel {
+  padding-bottom: 14px;
+}
+
+.stage-track-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 6px 8px;
+}
+
+.stage-track-bar .select {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+}
+
+.utility-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.render-dock {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--hairline);
+  background: var(--chassis);
+}
+
+.render-dock .cta-stack {
+  margin-top: 0;
+}
+
+@media (max-width: 1180px) {
+  .dual-studio-grid {
+    grid-template-columns: 1fr;
   }
 
-  .style-controls-bar,
-  .sleep-bottom-grid {
-    grid-template-columns: 1fr;
+  .dual-studio-bg {
+    border-right: 0;
+    border-bottom: 1px solid var(--hairline);
+  }
+
+  .dual-studio-bg .preset-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
-@media (max-width: 920px) {
+@media (max-width: 980px) {
   .studio-grid {
     grid-template-columns: 1fr;
   }
@@ -1328,6 +1483,16 @@ body {
   .col-left {
     border-right: 0;
     border-bottom: 1px solid var(--hairline);
+  }
+
+  .col-right {
+    position: static;
+    max-height: none;
+    overflow-y: visible;
+  }
+
+  .render-dock {
+    position: static;
   }
 
   .split-fields,
@@ -1342,5 +1507,17 @@ body {
   .inline-field .btn,
   .fs-mkdir-bar .btn {
     flex: 1 1 auto;
+  }
+}
+
+@media (max-width: 640px) {
+  .preset-grid,
+  .dual-studio-bg .preset-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .style-controls-bar,
+  .sleep-bottom-grid {
+    grid-template-columns: 1fr;
   }
 }
