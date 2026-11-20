@@ -87,3 +87,17 @@ All paths stream FFmpeg `-progress pipe:1` telemetry and map merged audio strict
 - **Test 4 (Path D Default):** Omitted `--bg`, `bars`, `--visualizer-glow` (`8.0s`).
 - **Test 5 (Path D Blackout):** Omitted `--bg`, `black` (`2 fps` `-tune stillimage`), verifying `1920x1080` H.264/AAC and near-zero pixel luminance (`YAVG <= 17.0`).
 - **Test 6 (Path D Dark/Sleep Controls):** Omitted `--bg`, `ember`, `--visualizer-brightness 40`, `--fade-to-black 1m` (short test Mix checking fade omission when `st >= totalDuration`), `--overlay-titles`, `--dim-titles` (`8.0s`).
+
+---
+
+## 6. Embedded Web & Mobile Studio (`ytmix ui`)
+
+`ytmix ui` embeds static HTML/CSS/JS assets (`internal/ui/assets` via `embed.FS`, zero external CDN dependencies) inside a standard-library `net/http` server (`internal/ui/server.go`).
+
+- **Subcommand Flags:** `--host` (default `127.0.0.1`), `--port` (default `8080`), `--no-open`, `--audio-dir`, `--bg`, `--out-dir`, `--out`, `--timestamps`, and repeatable `--allow-dir`.
+- **Host / Path Security Boundary:** Loopback sessions (`127.0.0.1` / `::1`) allow reading local `--audio-dir` / `--bg` / `--allow-dir` paths (`localPathsAllowed: true`). Binding non-loopback addresses (`0.0.0.0` for LAN/mobile access) restricts local filesystem browsing/paths (`403`) while continuing to permit browser uploads and **`bgMode: "visualizer"` (Path D)** renders.
+- **Health & Discovery (`GET /api/health`):** Reports `ffmpeg`/`ffprobe` availability, cached hardware `encoder`, sorted `visualizers` (`14` specs with per-host `available` capability booleans from cached `sync.Once` `DetectFilters`), and `visualizerThemes` (`7` palettes).
+- **Variant A Studio & Auditioning:**
+  - `02 Background Visual` adds an **Auto Visualizer** tab alongside **Upload File** and **Local Path**, displaying category filter chips (`All`, `Dark / Sleep`, `Spectrum`, `Wave & 3D`, `Meters`), a 6-card `3×2` paged preset grid (`◀`/`▶` + pagination dots), 7 Color Themes, Subtle Glow toggle, Darkness & Sleep controls, and a `Test 3s Fade` preview toggle.
+  - `16:9 Stage Preview` renders 60fps `<canvas>` simulations for all 14 presets and connects **Audition Selected Track** to `GET /api/sessions/{sessionId}/tracks/{trackId}/audio` (`Content-Type: audio/mpeg`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`, `http.ServeContent`) via Web Audio API `AnalyserNode`.
+- **SSE Telemetry:** Active jobs stream structured `mixer.TelemetrySink` progress events (`ffmpeg -progress pipe:1`) over `GET /api/events` (`text/event-stream`).

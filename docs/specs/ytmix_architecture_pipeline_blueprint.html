@@ -24,6 +24,9 @@
     .glow-amber {
       box-shadow: 0 0 25px -5px rgba(245, 158, 11, 0.35);
     }
+    .glow-cyan {
+      box-shadow: 0 0 25px -5px rgba(6, 182, 212, 0.35);
+    }
     @keyframes pulse-slow {
       0%, 100% { opacity: 0.35; transform: scale(1); }
       50% { opacity: 0.7; transform: scale(1.04); }
@@ -39,12 +42,13 @@
     <!-- Header -->
     <header class="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-6">
       <div>
-        <div class="flex items-center gap-3">
-          <span class="px-2.5 py-1 text-xs font-semibold tracking-wider uppercase bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded-full mono">Go 1.22+ CLI Spec</span>
+        <div class="flex flex-wrap items-center gap-2.5">
+          <span class="px-2.5 py-1 text-xs font-semibold tracking-wider uppercase bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded-full mono">Go 1.22+ Stdlib</span>
           <span class="px-2.5 py-1 text-xs font-semibold tracking-wider uppercase bg-indigo-500/10 text-indigo-400 border border-indigo-500/30 rounded-full mono">FFmpeg + FFprobe</span>
+          <span class="px-2.5 py-1 text-xs font-semibold tracking-wider uppercase bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 rounded-full mono">Paths A–D + ytmix ui</span>
         </div>
         <h1 class="text-2xl md:text-3xl font-bold text-white mt-2 tracking-tight">ytmix — Automated YouTube Mix Builder</h1>
-        <p class="text-slate-400 text-sm mt-1">Interactive architecture blueprint & FFmpeg execution path simulator</p>
+        <p class="text-slate-400 text-sm mt-1">Interactive architecture blueprint, Path D Auto Visualizer & FFmpeg execution path simulator</p>
       </div>
       <div class="bg-slate-900/90 border border-slate-800 rounded-xl px-4 py-3 flex items-center gap-4">
         <div>
@@ -75,26 +79,108 @@
         <!-- Visual Input Mode -->
         <div class="space-y-2">
           <label class="text-xs font-medium text-slate-300 uppercase tracking-wider">Background Visual (--bg)</label>
-          <div class="grid grid-cols-2 gap-2.5">
-            <button id="btnBgVideo" onclick="setBgMode('video')" class="px-3.5 py-2.5 rounded-xl border text-left transition-all bg-indigo-500/15 border-indigo-500 text-white">
-              <div class="text-xs font-semibold mono">loop_visual.mp4</div>
-              <div class="text-[11px] text-slate-400 mt-0.5">Short Video / GIF Loop</div>
+          <div class="grid grid-cols-3 gap-2">
+            <button id="btnBgVideo" onclick="setBgMode('video')" class="px-3 py-2.5 rounded-xl border text-left transition-all bg-indigo-500/15 border-indigo-500 text-white">
+              <div class="text-xs font-semibold mono">loop.mp4</div>
+              <div class="text-[11px] text-slate-400 mt-0.5">Video / GIF</div>
             </button>
-            <button id="btnBgImage" onclick="setBgMode('image')" class="px-3.5 py-2.5 rounded-xl border text-left transition-all bg-slate-800/60 border-slate-700/70 text-slate-300 hover:border-slate-600">
-              <div class="text-xs font-semibold mono">cover_art.png</div>
-              <div class="text-[11px] text-slate-400 mt-0.5">Static Cover Image</div>
+            <button id="btnBgImage" onclick="setBgMode('image')" class="px-3 py-2.5 rounded-xl border text-left transition-all bg-slate-800/60 border-slate-700/70 text-slate-300 hover:border-slate-600">
+              <div class="text-xs font-semibold mono">cover.png</div>
+              <div class="text-[11px] text-slate-400 mt-0.5">Static Art</div>
+            </button>
+            <button id="btnBgVisualizer" onclick="setBgMode('visualizer')" class="px-3 py-2.5 rounded-xl border text-left transition-all bg-slate-800/60 border-slate-700/70 text-slate-300 hover:border-slate-600">
+              <div class="text-xs font-semibold mono">(Omitted)</div>
+              <div class="text-[11px] text-slate-400 mt-0.5">Auto Visualizer</div>
             </button>
           </div>
         </div>
 
+        <!-- Path D Controls (Visible when --bg is omitted) -->
+        <div id="pathDControls" class="hidden space-y-3 pt-2 border-t border-slate-800/80">
+          <div class="grid grid-cols-2 gap-2.5">
+            <div>
+              <label for="selPreset" class="block text-[11px] font-medium text-cyan-300 mb-1 mono">--visualizer (14)</label>
+              <select id="selPreset" onchange="updateState()" class="w-full rounded-lg bg-slate-950 border border-slate-700 px-2.5 py-1.5 text-xs text-white mono">
+                <optgroup label="Dark / Sleep (isDark)">
+                  <option value="black">black — Pure Blackout (2 fps)</option>
+                  <option value="ember">ember — Dim Ember Pulse</option>
+                  <option value="night-line">night-line — Midnight Whisper Line</option>
+                  <option value="night-fog">night-fog — Sub-Bass Night Fog</option>
+                  <option value="lunar-halo">lunar-halo — Dim Lunar Halo</option>
+                </optgroup>
+                <optgroup label="Classic Spectrum & Wave">
+                  <option value="bars" selected>bars — Frequency Bars (default)</option>
+                  <option value="waves">waves — Centered Waveform</option>
+                  <option value="cqt">cqt — Musical CQT Spectrum</option>
+                  <option value="radial">radial — Polar Vector Scope</option>
+                  <option value="spectrogram">spectrogram — Scrolling Spectrogram</option>
+                  <option value="3dscope">3dscope — 3D Phase Landscape</option>
+                </optgroup>
+                <optgroup label="Meters">
+                  <option value="histogram">histogram — Frequency Histogram</option>
+                  <option value="phase">phase — Stereo Phase Vector</option>
+                  <option value="vu">vu — Stereo VU Bars</option>
+                </optgroup>
+              </select>
+            </div>
+            <div>
+              <label for="selTheme" class="block text-[11px] font-medium text-cyan-300 mb-1 mono">--visualizer-theme</label>
+              <select id="selTheme" onchange="updateState()" class="w-full rounded-lg bg-slate-950 border border-slate-700 px-2.5 py-1.5 text-xs text-white mono">
+                <option value="studio-mint" selected>studio-mint</option>
+                <option value="midnight-cyan">midnight-cyan</option>
+                <option value="sunset-amber">sunset-amber</option>
+                <option value="neon-violet">neon-violet</option>
+                <option value="monochrome">monochrome</option>
+                <option value="oled-ember">oled-ember</option>
+                <option value="night-indigo">night-indigo</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-2.5">
+            <div>
+              <div class="flex justify-between text-[11px] mb-1">
+                <span class="text-slate-300 mono">--visualizer-brightness</span>
+                <span id="lblBrightness" class="text-cyan-300 font-semibold mono">100%</span>
+              </div>
+              <input id="rngBrightness" type="range" min="10" max="100" step="5" value="100" oninput="updateState()" class="w-full accent-cyan-400 cursor-pointer">
+            </div>
+            <div>
+              <label for="selFade" class="block text-[11px] font-medium text-slate-300 mb-1 mono">--fade-to-black</label>
+              <select id="selFade" onchange="updateState()" class="w-full rounded-lg bg-slate-950 border border-slate-700 px-2.5 py-1.5 text-xs text-white mono">
+                <option value="0" selected>Disabled (0)</option>
+                <option value="15m">15m (Sleep Fade)</option>
+                <option value="30m">30m (Sleep Fade)</option>
+                <option value="45m">45m (Sleep Fade)</option>
+              </select>
+            </div>
+          </div>
+
+          <label class="flex items-center justify-between p-2.5 rounded-xl bg-slate-800/40 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+            <div>
+              <div class="text-xs font-medium text-white mono">--visualizer-glow</div>
+              <div class="text-[11px] text-slate-400">Apply subtle gblur ambient halo</div>
+            </div>
+            <input id="chkGlow" type="checkbox" checked onchange="updateState()" class="w-4 h-4 accent-cyan-400 rounded cursor-pointer">
+          </label>
+        </div>
+
         <!-- Toggle Switches -->
-        <div class="space-y-3 pt-2 border-t border-slate-800/80">
+        <div class="space-y-2.5 pt-2 border-t border-slate-800/80">
           <label class="flex items-center justify-between p-3 rounded-xl bg-slate-800/40 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
             <div>
               <div class="text-sm font-medium text-white mono">--overlay-titles</div>
               <div class="text-xs text-slate-400">Burn track names via .ass subtitle filter</div>
             </div>
             <input id="chkOverlay" type="checkbox" onchange="updateState()" class="w-5 h-5 accent-indigo-500 rounded cursor-pointer">
+          </label>
+
+          <label id="dimTitlesContainer" class="opacity-40 pointer-events-none flex items-center justify-between p-3 rounded-xl bg-slate-800/40 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+            <div>
+              <div class="text-sm font-medium text-white mono">--dim-titles</div>
+              <div class="text-xs text-slate-400">Translucent warm-gray ASS text (&amp;H789EB2AF)</div>
+            </div>
+            <input id="chkDimTitles" type="checkbox" onchange="updateState()" class="w-5 h-5 accent-cyan-400 rounded cursor-pointer">
           </label>
 
           <label class="flex items-center justify-between p-3 rounded-xl bg-slate-800/40 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
@@ -110,7 +196,7 @@
               <div class="text-sm font-medium text-white mono">--shuffle</div>
               <div class="text-xs text-slate-400">Randomize MP3 track sequence</div>
             </div>
-            <input id="chkShuffle" type="checkbox" onchange="updateState()" class="w-5 h-5 accent-indigo-500 rounded cursor-pointer">
+            <input id="chkShuffle" type="checkbox" onchange="updateState()" class="w-5 h-4 accent-indigo-500 rounded cursor-pointer">
           </label>
         </div>
 
@@ -149,20 +235,23 @@
 
           <div class="grid grid-cols-1 md:grid-cols-12 gap-4 items-stretch">
             <!-- 16:9 Canvas Mock -->
-            <div class="md:col-span-7 relative aspect-video rounded-xl overflow-hidden border border-slate-700/80 bg-gradient-to-br from-indigo-950 via-slate-900 to-emerald-950 flex items-center justify-center">
+            <div id="previewStage" class="md:col-span-7 relative aspect-video rounded-xl overflow-hidden border border-slate-700/80 bg-gradient-to-br from-indigo-950 via-slate-900 to-emerald-950 flex items-center justify-center transition-all">
               <!-- Animated Background Indicator -->
               <div id="previewLoopEffect" class="absolute inset-0 bg-[radial-gradient(circle_at_50%_40%,rgba(99,102,241,0.28),transparent_65%)] animate-loop"></div>
+
+              <!-- Path D Bars Mock Visual -->
+              <div id="previewVizMock" class="hidden absolute inset-x-8 bottom-8 top-10 flex items-end justify-center gap-1.5 opacity-85 pointer-events-none transition-opacity"></div>
 
               <div class="relative z-10 text-center px-4">
                 <div id="previewVisualBadge" class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-black/50 text-indigo-300 border border-indigo-500/30 backdrop-blur-sm mono">
                   <span>↻</span> Looping MP4 (-stream_loop -1)
                 </div>
-                <div class="text-[11px] text-slate-400 mt-1.5 mono">1920x1080 • yuv420p • 320k AAC</div>
+                <div id="previewCodecSub" class="text-[11px] text-slate-400 mt-1.5 mono">1920x1080 • yuv420p • 320k AAC</div>
               </div>
 
               <!-- Burned-in .ASS Track Overlay Preview -->
               <div id="previewAssOverlay" class="hidden absolute bottom-4 left-5 z-20 bg-black/65 backdrop-blur-sm border-l-2 border-emerald-400 px-3 py-1.5 rounded-r-md shadow-lg transition-all">
-                <div class="text-[10px] uppercase tracking-wider text-emerald-400 font-semibold mono">.ASS Subtitle Layer</div>
+                <div id="previewAssLabel" class="text-[10px] uppercase tracking-wider text-emerald-400 font-semibold mono">.ASS Subtitle Layer</div>
                 <div id="previewTrackTitle" class="text-xs font-semibold text-white">♪ Midnight Espresso</div>
               </div>
 
@@ -209,14 +298,14 @@
       </div>
     </div>
 
-    <!-- 3 Execution Paths Architecture Diagram -->
+    <!-- 4 Execution Paths Architecture Diagram -->
     <section class="space-y-4">
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-        <h2 class="text-lg font-bold text-white">3. Smart Video Rendering Architecture (Why It Renders Fast)</h2>
+        <h2 class="text-lg font-bold text-white">3. Smart Video Rendering Architecture (4 Execution Paths)</h2>
         <span class="text-xs text-slate-400">The active path highlights based on your flag selection above</span>
       </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         <!-- Path A Card -->
         <div id="cardPathA" class="rounded-2xl border p-5 transition-all bg-slate-900/90 border-emerald-500 glow-emerald">
           <div class="flex items-center justify-between mb-3">
@@ -225,7 +314,7 @@
           </div>
           <h3 class="text-base font-bold text-white">Video Loop + No Overlays</h3>
           <p class="text-xs text-slate-400 mt-1.5 leading-relaxed">
-            Pre-transcodes the short 5–10s `.mp4` loop once to `1920x1080 yuv420p`, then muxes it with `-stream_loop -1` and `-c:v copy`. Zero frame re-encoding across the entire mix.
+            Pre-normalizes the short `.mp4`/`.mov`/`.gif` loop once to `1920x1080` (`setsar=1`, `yuv420p`), then muxes with `-stream_loop -1 -c:v copy`.
           </p>
           <div class="mt-4 pt-3 border-t border-slate-800/80 text-[11px] mono text-slate-300 space-y-1">
             <div>• Input: <span class="text-emerald-400">.mp4 / .mov / .gif</span></div>
@@ -242,12 +331,12 @@
           </div>
           <h3 class="text-base font-bold text-white">Video Loop + Burned Titles</h3>
           <p class="text-xs text-slate-400 mt-1.5 leading-relaxed">
-            Generates a dynamic `.ass` subtitle script with fade tags (`\fad(500,500)`) and burns it over the looping video using `h264_videotoolbox` (macOS) or `h264_nvenc` (Windows).
+            Burns dynamic `.ass` subtitles (`\fad(500,500)`) over the looping video using `h264_videotoolbox` (macOS), `h264_nvenc`, or `libx264`.
           </p>
           <div class="mt-4 pt-3 border-t border-slate-800/80 text-[11px] mono text-slate-300 space-y-1">
             <div>• Input: <span class="text-indigo-400">.mp4 / .mov / .gif</span></div>
             <div>• Overlays: <span class="text-indigo-400">Enabled (.ASS Filter)</span></div>
-            <div>• Video Codec: <span class="text-indigo-400">videotoolbox / nvenc</span></div>
+            <div>• Video Codec: <span class="text-indigo-400">DetectEncoder</span></div>
           </div>
         </div>
 
@@ -259,13 +348,53 @@
           </div>
           <h3 class="text-base font-bold text-white">Static Artwork Mode</h3>
           <p class="text-xs text-slate-400 mt-1.5 leading-relaxed">
-            Uses `-loop 1 -tune stillimage` at `2 fps` (or `10 fps` when burning `.ass` track overlays) so `libx264` processes 93% fewer frames than a standard 30fps timeline.
+            Uses `-loop 1 -tune stillimage` at `2 fps` (or `10 fps` with `.ass` overlays) so `libx264` processes up to 93% fewer frames.
           </p>
           <div class="mt-4 pt-3 border-t border-slate-800/80 text-[11px] mono text-slate-300 space-y-1">
             <div>• Input: <span class="text-amber-400">.png / .jpg / .webp</span></div>
             <div>• Framerate: <span class="text-amber-400">2 fps (or 10 fps w/ text)</span></div>
             <div>• Video Codec: <span class="text-amber-400">libx264 -tune stillimage</span></div>
           </div>
+        </div>
+
+        <!-- Path D Card -->
+        <div id="cardPathD" class="rounded-2xl border p-5 transition-all bg-slate-900/40 border-slate-800 opacity-60">
+          <div class="flex items-center justify-between mb-3">
+            <span class="px-2.5 py-0.5 text-xs font-bold uppercase rounded bg-cyan-500/20 text-cyan-300 mono">Path D</span>
+            <span class="text-xs text-cyan-300 font-semibold mono">Auto Visualizer</span>
+          </div>
+          <h3 class="text-base font-bold text-white">14 Presets + Sleep Modes</h3>
+          <p class="text-xs text-slate-400 mt-1.5 leading-relaxed">
+            Selected whenever `--bg` is omitted. Uses FFmpeg audio-to-video filters (14 presets, 7 Color Themes, brightness/fade/dim-titles) or `#000000` `2 fps` blackout.
+          </p>
+          <div class="mt-4 pt-3 border-t border-slate-800/80 text-[11px] mono text-slate-300 space-y-1">
+            <div>• Input: <span class="text-cyan-300">merged_audio.m4a (no --bg)</span></div>
+            <div>• Dark / Sleep: <span class="text-cyan-300">5 presets + fade/dimmer</span></div>
+            <div>• Preflight: <span class="text-cyan-300">DetectFilters()</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Package DAG & Embedded Web UI Summary -->
+    <section class="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 space-y-4">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <h2 class="text-lg font-bold text-white">4. Package Dependency Graph &amp; Embedded Studio (`ytmix ui`)</h2>
+        <span class="text-xs text-slate-400 mono">Acyclic stdlib-only Go packages</span>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-5 text-xs text-slate-300">
+        <div class="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-2 mono">
+          <div class="text-slate-400 uppercase tracking-wider text-[11px]">Package Ownership &amp; Imports</div>
+          <div><span class="text-indigo-300">cmd/ytmix</span> ──&gt; <span class="text-emerald-300">internal/mixer</span>, <span class="text-cyan-300">internal/ui</span>, <span class="text-amber-300">internal/render</span></div>
+          <div><span class="text-cyan-300">internal/ui</span> ──&gt; <span class="text-emerald-300">internal/mixer</span>, <span class="text-amber-300">internal/render</span>, <span class="text-slate-300">internal/audio</span></div>
+          <div><span class="text-emerald-300">internal/mixer</span> ──&gt; <span class="text-slate-300">probe</span>, <span class="text-slate-300">audio</span>, <span class="text-slate-300">subtitle</span>, <span class="text-amber-300">render</span></div>
+          <div class="text-slate-500 pt-1">Leaf packages (`probe`, `audio`, `subtitle`, `render`) never import siblings or `mixer`/`ui`.</div>
+        </div>
+        <div class="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-1.5">
+          <div class="text-slate-400 uppercase tracking-wider text-[11px] mono">Editorial Mix Studio (Variant A)</div>
+          <div>• <span class="text-white font-semibold">Auto Visualizer Tab:</span> Category chips (`All`, `Dark / Sleep`, `Spectrum`, `Wave &amp; 3D`, `Meters`), 6-card 3×2 pager (`◀`/`▶` + dots), 7 Color Themes.</div>
+          <div>• <span class="text-white font-semibold">60fps Stage &amp; Auditioning:</span> Live HTML5 `&lt;canvas&gt;` renderers + Web Audio `AnalyserNode` over `GET /api/sessions/{id}/tracks/{tid}/audio`.</div>
+          <div>• <span class="text-white font-semibold">LAN-Safe Path D:</span> `bgMode: "visualizer"` works across LAN (`0.0.0.0`) while keeping local filesystem path inputs gated (`403`).</div>
         </div>
       </div>
     </section>
@@ -282,17 +411,33 @@
       { name: 'Late Night Commit', duration: 178 }
     ];
 
+    const themeColors = {
+      'studio-mint': ['#10b981', '#0d9488'],
+      'midnight-cyan': ['#38bdf8', '#2563eb'],
+      'sunset-amber': ['#fb923c', '#e11d48'],
+      'neon-violet': ['#c084fc', '#6366f1'],
+      'monochrome': ['#e2e8f0', '#94a3b8'],
+      'oled-ember': ['#9a3412', '#5c1e09'],
+      'night-indigo': ['#60a5fa', '#312e81']
+    };
+
     function setBgMode(mode) {
       bgMode = mode;
       const btnVideo = document.getElementById('btnBgVideo');
       const btnImage = document.getElementById('btnBgImage');
+      const btnViz = document.getElementById('btnBgVisualizer');
+      const inactive = 'px-3 py-2.5 rounded-xl border text-left transition-all bg-slate-800/60 border-slate-700/70 text-slate-300 hover:border-slate-600';
+
+      btnVideo.className = inactive;
+      btnImage.className = inactive;
+      btnViz.className = inactive;
 
       if (mode === 'video') {
-        btnVideo.className = 'px-3.5 py-2.5 rounded-xl border text-left transition-all bg-indigo-500/15 border-indigo-500 text-white';
-        btnImage.className = 'px-3.5 py-2.5 rounded-xl border text-left transition-all bg-slate-800/60 border-slate-700/70 text-slate-300 hover:border-slate-600';
+        btnVideo.className = 'px-3 py-2.5 rounded-xl border text-left transition-all bg-indigo-500/15 border-indigo-500 text-white';
+      } else if (mode === 'image') {
+        btnImage.className = 'px-3 py-2.5 rounded-xl border text-left transition-all bg-amber-500/15 border-amber-500 text-white';
       } else {
-        btnImage.className = 'px-3.5 py-2.5 rounded-xl border text-left transition-all bg-amber-500/15 border-amber-500 text-white';
-        btnVideo.className = 'px-3.5 py-2.5 rounded-xl border text-left transition-all bg-slate-800/60 border-slate-700/70 text-slate-300 hover:border-slate-600';
+        btnViz.className = 'px-3 py-2.5 rounded-xl border text-left transition-all bg-cyan-500/15 border-cyan-500 text-white';
       }
       updateState();
     }
@@ -304,18 +449,116 @@
       return String(m).padStart(2, '0') + ':' + String(rem).padStart(2, '0');
     }
 
+    function renderMockBars(colors, preset, brightness) {
+      const mock = document.getElementById('previewVizMock');
+      mock.innerHTML = '';
+      if (preset === 'black') {
+        mock.classList.add('hidden');
+        return;
+      }
+      mock.classList.remove('hidden');
+      mock.style.opacity = String(Math.max(0.1, brightness / 100));
+      const heights = [28, 52, 76, 60, 88, 94, 70, 82, 58, 44, 66, 84, 54, 38, 62, 46];
+      heights.forEach((h, idx) => {
+        const bar = document.createElement('div');
+        bar.className = 'w-2 rounded-t transition-all';
+        bar.style.height = (preset === 'night-line' ? 6 : h) + '%';
+        bar.style.background = `linear-gradient(to top, ${colors[1]}, ${colors[0]})`;
+        if (idx % 2 === 1 && preset === 'ember') bar.style.opacity = '0.55';
+        mock.appendChild(bar);
+      });
+    }
+
+    function buildPathDFFmpegCmd(preset, theme, glow, brightness, fadeToBlack, overlay) {
+      const subs = overlay ? ",subtitles='temp/titles.ass'" : '';
+      const fadePart = fadeToBlack !== '0' ? ',fade=t=out:st=900:d=15:color=black' : '';
+      if (preset === 'black') {
+        const fps = overlay ? 10 : 2;
+        const vfParts = [];
+        if (overlay) {
+          vfParts.push("subtitles='temp/titles.ass'");
+          if (fadeToBlack !== '0') vfParts.push('fade=t=out:st=900:d=15:color=black');
+        }
+        vfParts.push('format=yuv420p');
+        return `ffmpeg -y -f lavfi -i color=c=black:s=1920x1080:r=${fps} -i temp/merged_audio.m4a \\\n  -vf "${vfParts.join(',')}" \\\n  -map 0:v:0 -map 1:a:0 -c:v libx264 -tune stillimage -preset veryfast -crf 18 -c:a copy -shortest output.mp4`;
+      }
+
+      let primary = `[0:a]showfreqs=s=1920x1080:r=30:mode=bar:fscale=log:ascale=sqrt,setsar=1,format=rgb24[vbase]`;
+      let builtInBlur = false;
+      if (preset === 'ember') {
+        primary = `[0:a]showwaves=s=960x540:r=30:mode=cline:colors=0x9A3412|0x5C1E09:scale=sqrt,format=rgb24${glow ? ',gblur=sigma=18' : ''},scale=1920:1080:flags=bilinear,setsar=1[vbase]`;
+        builtInBlur = true;
+      } else if (preset === 'night-line') {
+        primary = `[0:a]showwaves=s=1920x220:r=30:mode=line,pad=1920:1080:0:640:black,setsar=1,format=rgb24[vbase]`;
+      } else if (preset === 'night-fog') {
+        primary = `[0:a]showfreqs=s=960x540:r=30:mode=bar:fscale=log:ascale=sqrt,format=rgb24${glow ? ',gblur=sigma=28' : ''},scale=1920:1080:flags=bilinear,setsar=1[vbase]`;
+        builtInBlur = true;
+      } else if (preset === 'lunar-halo') {
+        primary = `[0:a]avectorscope=s=540x540:r=30:mode=polar:draw=line:scale=sqrt,format=rgb24${glow ? ',gblur=sigma=10' : ''},pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,setsar=1[vbase]`;
+        builtInBlur = true;
+      } else if (preset === 'waves') {
+        primary = `[0:a]showwaves=s=1920x1080:r=30:mode=cline:scale=sqrt,setsar=1,format=rgb24[vbase]`;
+      } else if (preset === 'cqt') {
+        primary = `[0:a]showcqt=s=1920x1080:r=30:axis=0:text=0:bar_g=2:sono_g=4,setsar=1,format=rgb24[vbase]`;
+      } else if (preset === 'radial') {
+        primary = `[0:a]avectorscope=s=1080x1080:r=30:mode=polar:draw=line:scale=sqrt,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=rgb24[vbase]`;
+      } else if (preset === 'spectrogram') {
+        primary = `[0:a]showspectrum=s=1920x1080:mode=combined:scale=log:slide=scroll:fps=30,setsar=1,format=rgb24[vbase]`;
+      } else if (preset === '3dscope') {
+        primary = `[0:a]a3dscope=s=1920x1080:r=30,setsar=1,format=rgb24[vbase]`;
+      } else if (preset === 'histogram') {
+        primary = `[0:a]ahistogram=s=1920x1080:r=30:dmode=separate:scale=log,setsar=1,format=rgb24[vbase]`;
+      } else if (preset === 'phase') {
+        primary = `[0:a]aphasemeter=s=1920x1080:r=30:video=1[aout][vraw];[aout]anullsink;[vraw]setsar=1,format=rgb24[vbase]`;
+      } else if (preset === 'vu') {
+        primary = `[0:a]showvolume=w=1600:h=140:r=30:t=0:v=0,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=rgb24[vbase]`;
+      }
+
+      const parts = [primary];
+      let cur = '[vbase]';
+      if (glow && !builtInBlur) {
+        parts.push(`${cur}split[vmain][vglow];[vglow]gblur=sigma=12[vblur];[vmain][vblur]blend=all_mode=screen:all_opacity=0.45[vpost]`);
+        cur = '[vpost]';
+      }
+      const post = [];
+      if (brightness < 100) {
+        const b = (brightness / 100).toFixed(2);
+        post.push(`colorchannelmixer=rr=${b}:gg=${b}:bb=${b}`);
+      }
+      if (overlay) post.push("subtitles='temp/titles.ass'");
+      if (fadeToBlack !== '0') post.push('fade=t=out:st=900:d=15:color=black');
+      post.push('format=yuv420p');
+      parts.push(`${cur}${post.join(',')}[vout]`);
+      return `ffmpeg -y -i temp/merged_audio.m4a \\\n  -filter_complex "${parts.join(';')}" \\\n  -map "[vout]" -map 0:a:0 -c:v libx264 -preset veryfast -crf 20 -c:a copy -shortest output.mp4`;
+    }
+
     function updateState() {
       const overlay = document.getElementById('chkOverlay').checked;
+      const dimTitles = document.getElementById('chkDimTitles').checked;
       const normalize = document.getElementById('chkNormalize').checked;
       const shuffle = document.getElementById('chkShuffle').checked;
       const crossfade = parseInt(document.getElementById('rngCrossfade').value, 10);
       const titleDur = parseInt(document.getElementById('rngTitleDur').value, 10);
 
-      // Update slider labels & enable/disable title duration
+      const preset = document.getElementById('selPreset').value;
+      const theme = document.getElementById('selTheme').value;
+      const brightness = parseInt(document.getElementById('rngBrightness').value, 10);
+      const fadeToBlack = document.getElementById('selFade').value;
+      const glow = document.getElementById('chkGlow').checked;
+
+      // Toggle Path D controls visibility
+      document.getElementById('pathDControls').className = bgMode === 'visualizer'
+        ? 'space-y-3 pt-2 border-t border-slate-800/80'
+        : 'hidden space-y-3 pt-2 border-t border-slate-800/80';
+
+      document.getElementById('lblBrightness').textContent = brightness + '%';
       document.getElementById('lblCrossfade').textContent = crossfade === 0 ? '0s (Instant Concat)' : crossfade + 's (acrossfade)';
       document.getElementById('lblTitleDur').textContent = titleDur === 0 ? '0s (Full Track)' : 'First ' + titleDur + 's + Fade';
-      const titleDurContainer = document.getElementById('titleDurationContainer');
-      titleDurContainer.className = overlay ? 'opacity-100 transition-opacity' : 'opacity-40 pointer-events-none transition-opacity';
+
+      document.getElementById('titleDurationContainer').className = overlay ? 'opacity-100 transition-opacity' : 'opacity-40 pointer-events-none transition-opacity';
+      document.getElementById('dimTitlesContainer').className = overlay
+        ? 'flex items-center justify-between p-3 rounded-xl bg-slate-800/40 border border-slate-800 cursor-pointer hover:border-slate-700 transition'
+        : 'opacity-40 pointer-events-none flex items-center justify-between p-3 rounded-xl bg-slate-800/40 border border-slate-800 transition';
 
       // Track list & timestamp calculation
       let tracks = [...sampleTracks];
@@ -335,34 +578,62 @@
       document.getElementById('overlapNote').textContent = crossfade > 0 ? `-${crossfade}s/track overlap` : 'Exact FFprobe Math';
 
       // Update visual preview box
+      const stage = document.getElementById('previewStage');
       const assOverlay = document.getElementById('previewAssOverlay');
+      const trackTitle = document.getElementById('previewTrackTitle');
+      const assLabel = document.getElementById('previewAssLabel');
       const loopEffect = document.getElementById('previewLoopEffect');
       const visualBadge = document.getElementById('previewVisualBadge');
-      document.getElementById('previewTrackTitle').textContent = '♪ ' + tracks[0].name;
+      const vizMock = document.getElementById('previewVizMock');
+      trackTitle.textContent = '♪ ' + tracks[0].name;
 
       if (overlay) {
         assOverlay.classList.remove('hidden');
+        if (dimTitles) {
+          trackTitle.style.color = '#9eb2af';
+          assOverlay.style.opacity = '0.72';
+          assLabel.textContent = '.ASS Dimmed Sleep Title';
+        } else {
+          trackTitle.style.color = '#ffffff';
+          assOverlay.style.opacity = '1';
+          assLabel.textContent = '.ASS Subtitle Layer';
+        }
       } else {
         assOverlay.classList.add('hidden');
       }
 
       if (bgMode === 'video') {
+        stage.className = 'md:col-span-7 relative aspect-video rounded-xl overflow-hidden border border-slate-700/80 bg-gradient-to-br from-indigo-950 via-slate-900 to-emerald-950 flex items-center justify-center transition-all';
         loopEffect.classList.add('animate-loop');
+        loopEffect.classList.remove('hidden');
+        vizMock.classList.add('hidden');
         visualBadge.innerHTML = '<span>↻</span> Looping MP4 (-stream_loop -1)';
-      } else {
+      } else if (bgMode === 'image') {
+        stage.className = 'md:col-span-7 relative aspect-video rounded-xl overflow-hidden border border-slate-700/80 bg-gradient-to-br from-amber-950/60 via-slate-900 to-slate-950 flex items-center justify-center transition-all';
         loopEffect.classList.remove('animate-loop');
+        loopEffect.classList.remove('hidden');
+        vizMock.classList.add('hidden');
         visualBadge.innerHTML = '<span>🖼</span> Static Image (-loop 1 -tune stillimage)';
+      } else {
+        stage.className = 'md:col-span-7 relative aspect-video rounded-xl overflow-hidden border border-cyan-500/40 bg-black flex items-center justify-center transition-all';
+        loopEffect.classList.add('hidden');
+        renderMockBars(themeColors[theme] || themeColors['studio-mint'], preset, brightness);
+        visualBadge.innerHTML = preset === 'black'
+          ? '<span>■</span> Pure Blackout (#000000 • 2 fps)'
+          : `<span>≈</span> Path D (${preset} • ${theme})`;
       }
 
       // Highlight active architecture path card
       const cardA = document.getElementById('cardPathA');
       const cardB = document.getElementById('cardPathB');
       const cardC = document.getElementById('cardPathC');
+      const cardD = document.getElementById('cardPathD');
       const baseCard = 'rounded-2xl border p-5 transition-all bg-slate-900/40 border-slate-800 opacity-55';
 
       cardA.className = baseCard;
       cardB.className = baseCard;
       cardC.className = baseCard;
+      cardD.className = baseCard;
 
       const activeBadge = document.getElementById('activePathBadge');
       const renderEst = document.getElementById('renderTimeEst');
@@ -382,10 +653,10 @@
         activeBadge.textContent = 'Path B: HW Encode + .ASS Burn';
         activeBadge.className = 'text-sm font-semibold text-indigo-400 mono';
         renderEst.textContent = '~2 - 4 min (GPU)';
-        encoderBadge.textContent = 'h264_videotoolbox / nvenc';
+        encoderBadge.textContent = 'DetectEncoder (nvenc / videotoolbox / libx264)';
         encoderBadge.className = 'text-xs px-2.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/30 mono';
-        ffmpegCmd = `ffmpeg -y -stream_loop -1 -i loop_visual.mp4 -i temp/merged_audio.m4a \\\n  -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,subtitles=temp/titles.ass,format=yuv420p" \\\n  -map 0:v:0 -map 1:a:0 -c:v h264_videotoolbox -b:v 6000k -c:a copy -shortest output.mp4`;
-      } else {
+        ffmpegCmd = `ffmpeg -y -stream_loop -1 -i loop_visual.mp4 -i temp/merged_audio.m4a \\\n  -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,subtitles='temp/titles.ass',format=yuv420p" \\\n  -map 0:v:0 -map 1:a:0 -c:v libx264 -preset veryfast -crf 20 -c:a copy -shortest output.mp4`;
+      } else if (bgMode === 'image') {
         cardC.className = 'rounded-2xl border p-5 transition-all bg-slate-900/95 border-amber-500 glow-amber';
         activeBadge.textContent = 'Path C: Low-FPS Still Image';
         activeBadge.className = 'text-sm font-semibold text-amber-400 mono';
@@ -393,21 +664,42 @@
         const fps = overlay ? 10 : 2;
         encoderBadge.textContent = `libx264 (${fps} fps stillimage)`;
         encoderBadge.className = 'text-xs px-2.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 mono';
-        const subFilter = overlay ? ',subtitles=temp/titles.ass' : '';
-        ffmpegCmd = `ffmpeg -y -loop 1 -framerate ${fps} -i cover_art.png -i temp/merged_audio.m4a \\\n  -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2${subFilter},format=yuv420p" \\\n  -map 0:v:0 -map 1:a:0 -c:v libx264 -tune stillimage -preset veryfast -crf 18 -c:a copy -shortest output.mp4`;
+        const subFilter = overlay ? ",subtitles='temp/titles.ass'" : '';
+        ffmpegCmd = `ffmpeg -y -loop 1 -framerate ${fps} -i cover_art.png -i temp/merged_audio.m4a \\\n  -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1${subFilter},format=yuv420p" \\\n  -map 0:v:0 -map 1:a:0 -c:v libx264 -tune stillimage -preset veryfast -crf 18 -c:a copy -shortest output.mp4`;
+      } else {
+        cardD.className = 'rounded-2xl border p-5 transition-all bg-slate-900/95 border-cyan-500 glow-cyan';
+        activeBadge.textContent = `Path D: Auto Visualizer (${preset})`;
+        activeBadge.className = 'text-sm font-semibold text-cyan-300 mono';
+        renderEst.textContent = preset === 'black' ? '~10 - 16 sec (2 fps)' : '~3 - 8 min (1080p30)';
+        encoderBadge.textContent = preset === 'black'
+          ? `libx264 (${overlay ? 10 : 2} fps stillimage)`
+          : 'DetectEncoder (-filter_complex)';
+        encoderBadge.className = 'text-xs px-2.5 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 mono';
+        ffmpegCmd = buildPathDFFmpegCmd(preset, theme, glow, brightness, fadeToBlack, overlay);
       }
 
       // Build CLI Command string
-      const bgFile = bgMode === 'video' ? 'loop_visual.mp4' : 'cover_art.png';
-      let cliFlags = [`ytmix --audio-dir ./tracks --bg ${bgFile}`];
-      if (crossfade > 0) cliFlags.push(`--crossfade ${crossfade}`);
-      if (normalize) cliFlags.push(`--normalize`);
-      if (overlay) {
-        cliFlags.push(`--overlay-titles`);
-        if (titleDur > 0) cliFlags.push(`--title-duration ${titleDur}`);
+      const cliFlags = ['ytmix --audio-dir ./tracks'];
+      if (bgMode === 'video') {
+        cliFlags.push('--bg loop_visual.mp4');
+      } else if (bgMode === 'image') {
+        cliFlags.push('--bg cover_art.png');
+      } else {
+        if (preset !== 'bars') cliFlags.push(`--visualizer ${preset}`);
+        if (theme !== 'studio-mint') cliFlags.push(`--visualizer-theme ${theme}`);
+        if (!glow) cliFlags.push('--visualizer-glow=false');
+        if (brightness < 100) cliFlags.push(`--visualizer-brightness ${brightness}`);
+        if (fadeToBlack !== '0') cliFlags.push(`--fade-to-black ${fadeToBlack}`);
       }
-      if (shuffle) cliFlags.push(`--shuffle`);
-      cliFlags.push(`--out output.mp4`);
+      if (crossfade > 0) cliFlags.push(`--crossfade ${crossfade}`);
+      if (normalize) cliFlags.push('--normalize');
+      if (overlay) {
+        cliFlags.push('--overlay-titles');
+        if (titleDur > 0) cliFlags.push(`--title-duration ${titleDur}`);
+        if (dimTitles) cliFlags.push('--dim-titles');
+      }
+      if (shuffle) cliFlags.push('--shuffle');
+      cliFlags.push('--out output.mp4');
 
       document.getElementById('cliCommandBox').textContent = cliFlags.join(' ');
       document.getElementById('ffmpegCommandBox').textContent = ffmpegCmd;
