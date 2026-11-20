@@ -1304,6 +1304,10 @@ func (s *Server) handleFSPick(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("native picker failed: %v", err))
 		return
 	}
+	if strings.TrimSpace(picked) == "" {
+		writeJSON(w, http.StatusOK, fsPickResponse{Cancelled: true})
+		return
+	}
 
 	canonicalPath, err := canonicalizeCandidatePath(picked)
 	if err != nil {

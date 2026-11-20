@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1486,6 +1487,15 @@ func TestNativePickerEndpointAndSessionRoots(t *testing.T) {
 			t.Fatalf("unexpected pick response: %+v", pickResp)
 		}
 
+		// Listing the newly picked externalAudio folder via /api/fs/list now succeeds and includes it in roots.
+		listPickedReq := httptest.NewRequest(http.MethodGet, "/api/fs/list?path="+url.QueryEscape(pickResp.Path), nil)
+		listPickedReq.RemoteAddr = "127.0.0.1:50000"
+		listPickedRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(listPickedRec, listPickedReq)
+		if listPickedRec.Code != http.StatusOK || !strings.Contains(listPickedRec.Body.String(), filepath.Base(pickResp.Path)) {
+			t.Fatalf("fs/list after pick failed: %d: %s", listPickedRec.Code, listPickedRec.Body.String())
+		}
+
 		// Now probing externalAudio succeeds.
 		probeReq := httptest.NewRequest(http.MethodPost, "/api/probe", strings.NewReader(`{"audioDir":`+strconvQuote(pickResp.Path)+`}`))
 		probeReq.Header.Set("Content-Type", "application/json")
@@ -1614,6 +1624,29 @@ func TestNativePickerEndpointAndSessionRoots(t *testing.T) {
 		srv.Handler().ServeHTTP(lanRec, lanReq)
 		if lanRec.Code != http.StatusForbidden {
 			t.Fatalf("expected 403 for LAN pick, got %d", lanRec.Code)
+		}
+
+		// Cross-origin Origin and Sec-Fetch-Site headers get 403.
+		csrfOriginReq := httptest.NewRequest(http.MethodPost, "/api/fs/pick", strings.NewReader(`{"kind":"folder"}`))
+		csrfOriginReq.Host = "127.0.0.1:8080"
+		csrfOriginReq.RemoteAddr = "127.0.0.1:50000"
+		csrfOriginReq.Header.Set("Content-Type", "application/json")
+		csrfOriginReq.Header.Set("Origin", "https://evil.example")
+		csrfOriginRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(csrfOriginRec, csrfOriginReq)
+		if csrfOriginRec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for cross-origin Origin on pick, got %d", csrfOriginRec.Code)
+		}
+
+		csrfSiteReq := httptest.NewRequest(http.MethodPost, "/api/fs/pick", strings.NewReader(`{"kind":"folder"}`))
+		csrfSiteReq.Host = "127.0.0.1:8080"
+		csrfSiteReq.RemoteAddr = "127.0.0.1:50000"
+		csrfSiteReq.Header.Set("Content-Type", "application/json")
+		csrfSiteReq.Header.Set("Sec-Fetch-Site", "cross-site")
+		csrfSiteRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(csrfSiteRec, csrfSiteReq)
+		if csrfSiteRec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for Sec-Fetch-Site cross-site on pick, got %d", csrfSiteRec.Code)
 		}
 
 		// Invalid kind gets 400.

@@ -2007,6 +2007,8 @@
           appendLog("Native file picker unavailable in this environment; enter a local Background Visual path manually.");
           $("bg-path-input").focus();
         }
+      } else if (triggerEl && typeof triggerEl.focus === "function" && !triggerEl.disabled) {
+        triggerEl.focus();
       }
     }
   }
