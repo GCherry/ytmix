@@ -31,233 +31,253 @@
     <div class="alert-banner" id="health-banner" hidden role="alert"></div>
 
     <main class="studio-grid">
-      <!-- Left Column: 01 - 03 -->
+      <!-- Left Column: Tabbed [01 Tracks & Sequence] -> [02+03 Visuals & Overlays Side-by-Side] -->
       <div class="col-left">
-        <section class="panel" aria-labelledby="sec-tracks">
-          <div class="panel-head">
-            <div class="panel-title-wrap">
-              <span class="panel-index mono">01</span>
-              <h2 id="sec-tracks">Tracks &amp; Sequence</h2>
-            </div>
-            <div class="segmented" role="tablist" aria-label="Track Source Mode">
-              <button type="button" class="seg-btn is-active" id="tracks-mode-upload" role="tab" aria-selected="true">Upload MP3s</button>
-              <button type="button" class="seg-btn" id="tracks-mode-local" role="tab" aria-selected="false">Local Folder</button>
-            </div>
+        <div class="studio-tabs-bar">
+          <div class="tab-bar" role="tablist" aria-label="Studio Configuration">
+            <button type="button" class="tab-btn is-active" id="left-tab-tracks" role="tab" aria-selected="true" aria-controls="left-pane-tracks">
+              <span class="tab-idx mono">01</span>Tracks &amp; Sequence <span class="tab-count mono" id="left-tracks-badge">(0)</span>
+            </button>
+            <button type="button" class="tab-btn" id="left-tab-studio" role="tab" aria-selected="false" aria-controls="left-pane-studio">
+              <span class="tab-idx mono">02+03</span>Visuals &amp; Overlays
+            </button>
           </div>
+          <span class="mono summary-stat" id="left-tab-duration">00:00</span>
+        </div>
 
-          <div id="tracks-upload-pane" class="source-pane">
-            <label class="dropzone" id="tracks-dropzone" for="tracks-file-input">
-              <input id="tracks-file-input" type="file" accept=".mp3,audio/mpeg" multiple hidden>
-              <span class="dropzone-title">Drop .mp3 Tracks here or browse</span>
-              <span class="dropzone-hint mono">Probed via ffprobe · ID3 title &amp; duration extracted</span>
-            </label>
-          </div>
-
-          <div id="tracks-local-pane" class="source-pane" hidden>
-            <div class="inline-field inline-field-wrap">
-              <label class="sr-only" for="audio-dir-input">Audio Directory (--audio-dir)</label>
-              <input id="audio-dir-input" type="text" class="input mono" value="./tracks" placeholder="./tracks">
-              <button type="button" class="btn btn-secondary" id="browse-audio-dir-btn">Browse…</button>
-              <button type="button" class="btn btn-secondary" id="probe-local-btn">Probe Folder</button>
-            </div>
-            <p class="field-hint" id="local-tracks-hint">Scans local folder for .mp3 Tracks via <code>ffprobe</code>.</p>
-          </div>
-
-          <div class="panel-toolbar">
-            <label class="toggle-row">
-              <input type="checkbox" id="shuffle-toggle">
-              <span>Shuffle sequence <code class="mono">--shuffle</code></span>
-            </label>
-            <span class="mono summary-stat" id="tracks-summary">0 Tracks · 00:00</span>
-          </div>
-
-          <div class="well audition-bar">
-            <div class="audition-actions">
-              <button type="button" class="btn btn-mint btn-sm" id="audition-btn" disabled>&#9654; Audition Selected Track</button>
-              <span class="audition-track-name mono" id="audition-track-name"></span>
-            </div>
-            <span class="source-badge mono" id="audio-source-badge">Ambient Sim</span>
-          </div>
-          <audio id="audition-audio" preload="none" hidden></audio>
-
-          <div class="well table-well">
-            <table class="track-table" aria-label="Selected Tracks">
-              <thead>
-                <tr>
-                  <th class="col-start">Start</th>
-                  <th class="col-title">Display Title</th>
-                  <th class="col-len">Length</th>
-                  <th class="col-actions">Order</th>
-                </tr>
-              </thead>
-              <tbody id="track-tbody">
-                <tr class="empty-row">
-                  <td colspan="4">No Tracks loaded. Upload .mp3 files or probe a local folder.</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section class="panel" aria-labelledby="sec-bg">
-          <div class="panel-head">
-            <div class="panel-title-wrap">
-              <span class="panel-index mono">02</span>
-              <h2 id="sec-bg">Background Visual</h2>
-            </div>
-            <div class="segmented" role="tablist" aria-label="Background Visual Source">
-              <button type="button" class="seg-btn is-active" id="bg-mode-upload" role="tab" aria-selected="true">Upload File</button>
-              <button type="button" class="seg-btn" id="bg-mode-local" role="tab" aria-selected="false">Local Path</button>
-              <button type="button" class="seg-btn" id="bg-mode-visualizer" role="tab" aria-selected="false">Auto Visualizer</button>
-            </div>
-          </div>
-
-          <div id="bg-upload-pane" class="source-pane">
-            <label class="dropzone dropzone-compact" id="bg-dropzone" for="bg-file-input">
-              <input id="bg-file-input" type="file" accept=".jpg,.jpeg,.png,.webp,.mp4,.mov,.gif,image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime" hidden>
-              <span class="dropzone-title" id="bg-upload-label">Drop Background Visual or browse</span>
-              <span class="dropzone-hint mono">.jpg .png .webp (Path C) · .mp4 .mov .gif (Path A / B)</span>
-            </label>
-          </div>
-
-          <div id="bg-local-pane" class="source-pane" hidden>
-            <div class="inline-field">
-              <label class="sr-only" for="bg-path-input">Background Visual Path (--bg)</label>
-              <input id="bg-path-input" type="text" class="input mono" placeholder="cover_art.png or loop_visual.mp4">
-              <button type="button" class="btn btn-secondary" id="browse-bg-path-btn">Browse…</button>
-            </div>
-            <p class="field-hint">Previewed directly on the 16:9 stage when running locally.</p>
-          </div>
-
-          <div id="bg-visualizer-pane" class="source-pane" hidden>
-            <div class="cat-chips" id="viz-cat-chips" role="group" aria-label="Auto Visualizer categories"></div>
-
-            <div class="preset-grid" id="viz-preset-grid"></div>
-
-            <div class="preset-pager" id="viz-pager" hidden>
-              <button type="button" class="btn btn-secondary btn-sm mono" id="viz-page-prev" aria-label="Previous preset page">&#9664;</button>
-              <div class="preset-pager-center">
-                <span class="preset-page-info mono tabular-nums" id="viz-page-info">1 / 3</span>
-                <div class="preset-page-dots" id="viz-page-dots" role="tablist" aria-label="Preset pages"></div>
+        <div id="left-pane-tracks" class="left-tab-pane" role="tabpanel" aria-labelledby="left-tab-tracks">
+          <section class="panel" aria-labelledby="sec-tracks">
+            <div class="panel-head">
+              <div class="panel-title-wrap">
+                <span class="panel-index mono">01</span>
+                <h2 id="sec-tracks">Tracks &amp; Sequence</h2>
               </div>
-              <button type="button" class="btn btn-secondary btn-sm mono" id="viz-page-next" aria-label="Next preset page">&#9654;</button>
+              <div class="segmented" role="tablist" aria-label="Track Source Mode">
+                <button type="button" class="seg-btn is-active" id="tracks-mode-upload" role="tab" aria-selected="true">Upload MP3s</button>
+                <button type="button" class="seg-btn" id="tracks-mode-local" role="tab" aria-selected="false">Local Folder</button>
+              </div>
             </div>
 
-            <div class="style-controls-bar">
-              <div class="control-block">
-                <label class="control-label" for="viz-theme-select">Color Theme <code class="mono">--visualizer-theme</code></label>
-                <select id="viz-theme-select" class="select"></select>
-              </div>
-              <label class="toggle-card">
-                <input type="checkbox" id="viz-glow-toggle" checked>
-                <span class="toggle-title">Subtle Glow <code class="mono">gblur</code></span>
+            <div id="tracks-upload-pane" class="source-pane">
+              <label class="dropzone" id="tracks-dropzone" for="tracks-file-input">
+                <input id="tracks-file-input" type="file" accept=".mp3,audio/mpeg" multiple hidden>
+                <span class="dropzone-title">Drop .mp3 Tracks here or browse</span>
+                <span class="dropzone-hint mono">Probed via ffprobe · ID3 title &amp; duration extracted</span>
               </label>
             </div>
 
-            <div class="darkness-box" id="darkness-box">
-              <div class="darkness-head">
-                <span class="darkness-title">&#9790; Darkness &amp; Sleep Controls</span>
-                <span class="darkness-note mono" id="darkness-mode-note">Applies across any visualizer preset</span>
+            <div id="tracks-local-pane" class="source-pane" hidden>
+              <div class="inline-field inline-field-wrap">
+                <label class="sr-only" for="audio-dir-input">Audio Directory (--audio-dir)</label>
+                <input id="audio-dir-input" type="text" class="input mono" value="./tracks" placeholder="./tracks">
+                <button type="button" class="btn btn-secondary" id="browse-audio-dir-btn">Browse…</button>
+                <button type="button" class="btn btn-secondary" id="probe-local-btn">Probe Folder</button>
+              </div>
+              <p class="field-hint" id="local-tracks-hint">Scans local folder for .mp3 Tracks via <code>ffprobe</code>.</p>
+            </div>
+
+            <div class="panel-toolbar">
+              <label class="toggle-row">
+                <input type="checkbox" id="shuffle-toggle">
+                <span>Shuffle sequence <code class="mono">--shuffle</code></span>
+              </label>
+              <span class="mono summary-stat" id="tracks-summary">0 Tracks · 00:00</span>
+            </div>
+
+            <div class="well audition-bar">
+              <div class="audition-actions">
+                <button type="button" class="btn btn-mint btn-sm" id="audition-btn" disabled>&#9654; Audition Selected Track</button>
+                <span class="audition-track-name mono" id="audition-track-name"></span>
+              </div>
+              <span class="source-badge mono" id="audio-source-badge">Ambient Sim</span>
+            </div>
+            <audio id="audition-audio" preload="none" hidden></audio>
+
+            <div class="well table-well">
+              <table class="track-table" aria-label="Selected Tracks">
+                <thead>
+                  <tr>
+                    <th class="col-start">Start</th>
+                    <th class="col-title">Display Title</th>
+                    <th class="col-len">Length</th>
+                    <th class="col-actions">Order</th>
+                  </tr>
+                </thead>
+                <tbody id="track-tbody">
+                  <tr class="empty-row">
+                    <td colspan="4">No Tracks loaded. Upload .mp3 files or probe a local folder.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <div id="left-pane-studio" class="left-tab-pane dual-studio-grid" role="tabpanel" aria-labelledby="left-tab-studio" hidden>
+          <div class="dual-studio-bg">
+            <section class="panel" aria-labelledby="sec-bg">
+              <div class="panel-head">
+                <div class="panel-title-wrap">
+                  <span class="panel-index mono">02</span>
+                  <h2 id="sec-bg">Background Visual</h2>
+                </div>
+                <div class="segmented" role="tablist" aria-label="Background Visual Source">
+                  <button type="button" class="seg-btn is-active" id="bg-mode-upload" role="tab" aria-selected="true">Upload File</button>
+                  <button type="button" class="seg-btn" id="bg-mode-local" role="tab" aria-selected="false">Local Path</button>
+                  <button type="button" class="seg-btn" id="bg-mode-visualizer" role="tab" aria-selected="false">Auto Visualizer</button>
+                </div>
               </div>
 
-              <div class="control-block">
-                <div class="control-label-row">
-                  <label class="control-label" for="viz-brightness-slider">Brightness / Dimmer <code class="mono">--visualizer-brightness</code></label>
-                  <span class="mono tabular-nums" id="viz-brightness-val">100%</span>
-                </div>
-                <div class="brightness-row">
-                  <div class="brightness-slider-wrap">
-                    <input id="viz-brightness-slider" type="range" min="10" max="100" step="5" value="100" class="slider">
-                  </div>
-                  <div class="quick-pills" role="group" aria-label="Brightness presets">
-                    <button type="button" class="quick-pill is-active" data-dim="100">100% Full</button>
-                    <button type="button" class="quick-pill" data-dim="45">45% Dim</button>
-                    <button type="button" class="quick-pill" data-dim="20">20% Sleep</button>
-                  </div>
-                </div>
-              </div>
-
-              <div class="sleep-bottom-grid">
-                <div class="control-block">
-                  <label class="control-label" for="viz-fade-select">Sleep Fade-to-Black <code class="mono">--fade-to-black</code></label>
-                  <div class="fade-control-row">
-                    <select id="viz-fade-select" class="select">
-                      <option value="0" selected>Off</option>
-                      <option value="1">After 1 min</option>
-                      <option value="5">After 5 min</option>
-                      <option value="15">After 15 min</option>
-                      <option value="30">After 30 min</option>
-                    </select>
-                    <button type="button" class="btn btn-secondary btn-sm" id="test-fade-btn">Test 3s Fade</button>
-                  </div>
-                  <span class="field-hint" id="blackout-fade-hint" hidden>Already pure black from 00:00.</span>
-                </div>
-
-                <label class="toggle-card" title="Dims burned-in bottom-left Track Title Overlays for sleep Mixes">
-                  <input type="checkbox" id="dim-titles-toggle">
-                  <span class="toggle-title">Dim Titles <code class="mono">--dim-titles</code></span>
+              <div id="bg-upload-pane" class="source-pane">
+                <label class="dropzone dropzone-compact" id="bg-dropzone" for="bg-file-input">
+                  <input id="bg-file-input" type="file" accept=".jpg,.jpeg,.png,.webp,.mp4,.mov,.gif,image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime" hidden>
+                  <span class="dropzone-title" id="bg-upload-label">Drop Background Visual or browse</span>
+                  <span class="dropzone-hint mono">.jpg .png .webp (Path C) · .mp4 .mov .gif (Path A / B)</span>
                 </label>
               </div>
-            </div>
-          </div>
-        </section>
 
-        <section class="panel" aria-labelledby="sec-audio">
-          <div class="panel-head">
-            <div class="panel-title-wrap">
-              <span class="panel-index mono">03</span>
-              <h2 id="sec-audio">Audio &amp; Title Overlays</h2>
-            </div>
-            <span class="mono badge-soft" id="crossfade-badge">0.0s Crossfade</span>
-          </div>
-
-          <div class="controls-grid">
-            <div class="control-block">
-              <div class="control-label-row">
-                <label for="crossfade-slider">Crossfade <code class="mono">--crossfade</code></label>
-                <span class="mono tabular-nums" id="crossfade-val">0.0 s</span>
-              </div>
-              <input id="crossfade-slider" type="range" min="0" max="8" step="0.5" value="0" class="slider">
-              <p class="field-hint error-text" id="crossfade-warning" hidden></p>
-            </div>
-
-            <div class="control-block">
-              <label class="toggle-card">
-                <input type="checkbox" id="normalize-toggle">
-                <div>
-                  <div class="toggle-title">Loudness Normalization <code class="mono">--normalize</code></div>
-                  <div class="field-hint">Target -14 LUFS (TP=-1.5, LRA=11)</div>
+              <div id="bg-local-pane" class="source-pane" hidden>
+                <div class="inline-field">
+                  <label class="sr-only" for="bg-path-input">Background Visual Path (--bg)</label>
+                  <input id="bg-path-input" type="text" class="input mono" placeholder="cover_art.png or loop_visual.mp4">
+                  <button type="button" class="btn btn-secondary" id="browse-bg-path-btn">Browse…</button>
                 </div>
-              </label>
-            </div>
+                <p class="field-hint">Previewed directly on the 16:9 stage when running locally.</p>
+              </div>
 
-            <div class="control-block">
-              <label class="toggle-card">
-                <input type="checkbox" id="overlay-toggle">
-                <div>
-                  <div class="toggle-title">Burn Title Overlays <code class="mono">--overlay-titles</code></div>
-                  <div class="field-hint">Generates .ass script with 500ms fades</div>
+              <div id="bg-visualizer-pane" class="source-pane" hidden>
+                <div class="cat-chips" id="viz-cat-chips" role="group" aria-label="Auto Visualizer categories"></div>
+
+                <div class="preset-grid" id="viz-preset-grid"></div>
+
+                <div class="preset-pager" id="viz-pager" hidden>
+                  <button type="button" class="btn btn-secondary btn-sm mono" id="viz-page-prev" aria-label="Previous preset page">&#9664;</button>
+                  <div class="preset-pager-center">
+                    <span class="preset-page-info mono tabular-nums" id="viz-page-info">1 / 3</span>
+                    <div class="preset-page-dots" id="viz-page-dots" role="tablist" aria-label="Preset pages"></div>
+                  </div>
+                  <button type="button" class="btn btn-secondary btn-sm mono" id="viz-page-next" aria-label="Next preset page">&#9654;</button>
                 </div>
-              </label>
-            </div>
 
-            <div class="split-fields">
-              <div class="control-block">
-                <label for="font-name-input">Overlay Font <code class="mono">--font-name</code></label>
-                <input id="font-name-input" type="text" class="input" value="Arial" placeholder="Arial">
+                <div class="style-controls-bar">
+                  <div class="control-block">
+                    <label class="control-label" for="viz-theme-select">Color Theme <code class="mono">--visualizer-theme</code></label>
+                    <select id="viz-theme-select" class="select"></select>
+                  </div>
+                  <label class="toggle-card">
+                    <input type="checkbox" id="viz-glow-toggle" checked>
+                    <span class="toggle-title">Subtle Glow <code class="mono">gblur</code></span>
+                  </label>
+                </div>
+
+                <div class="darkness-box" id="darkness-box">
+                  <div class="darkness-head">
+                    <span class="darkness-title">&#9790; Darkness &amp; Sleep Controls</span>
+                    <span class="darkness-note mono" id="darkness-mode-note">Applies across any visualizer preset</span>
+                  </div>
+
+                  <div class="control-block">
+                    <div class="control-label-row">
+                      <label class="control-label" for="viz-brightness-slider">Brightness / Dimmer <code class="mono">--visualizer-brightness</code></label>
+                      <span class="mono tabular-nums" id="viz-brightness-val">100%</span>
+                    </div>
+                    <div class="brightness-row">
+                      <div class="brightness-slider-wrap">
+                        <input id="viz-brightness-slider" type="range" min="10" max="100" step="5" value="100" class="slider">
+                      </div>
+                      <div class="quick-pills" role="group" aria-label="Brightness presets">
+                        <button type="button" class="quick-pill is-active" data-dim="100">100% Full</button>
+                        <button type="button" class="quick-pill" data-dim="45">45% Dim</button>
+                        <button type="button" class="quick-pill" data-dim="20">20% Sleep</button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="sleep-bottom-grid">
+                    <div class="control-block">
+                      <label class="control-label" for="viz-fade-select">Sleep Fade-to-Black <code class="mono">--fade-to-black</code></label>
+                      <div class="fade-control-row">
+                        <select id="viz-fade-select" class="select">
+                          <option value="0" selected>Off</option>
+                          <option value="1">After 1 min</option>
+                          <option value="5">After 5 min</option>
+                          <option value="15">After 15 min</option>
+                          <option value="30">After 30 min</option>
+                        </select>
+                        <button type="button" class="btn btn-secondary btn-sm" id="test-fade-btn">Test 3s Fade</button>
+                      </div>
+                      <span class="field-hint" id="blackout-fade-hint" hidden>Already pure black from 00:00.</span>
+                    </div>
+
+                    <label class="toggle-card" title="Dims burned-in bottom-left Track Title Overlays for sleep Mixes">
+                      <input type="checkbox" id="dim-titles-toggle">
+                      <span class="toggle-title">Dim Titles <code class="mono">--dim-titles</code></span>
+                    </label>
+                  </div>
+                </div>
               </div>
-              <div class="control-block">
-                <label for="title-duration-input">Title Duration (s) <code class="mono">--title-duration</code></label>
-                <input id="title-duration-input" type="number" min="0" max="3600" step="1" value="0" class="input mono tabular-nums">
-              </div>
-            </div>
+            </section>
           </div>
-        </section>
+
+          <div class="dual-studio-audio">
+            <section class="panel" aria-labelledby="sec-audio">
+              <div class="panel-head">
+                <div class="panel-title-wrap">
+                  <span class="panel-index mono">03</span>
+                  <h2 id="sec-audio">Audio &amp; Title Overlays</h2>
+                </div>
+                <span class="mono badge-soft" id="crossfade-badge">0.0s Crossfade</span>
+              </div>
+
+              <div class="controls-grid">
+                <div class="control-block">
+                  <div class="control-label-row">
+                    <label for="crossfade-slider">Crossfade <code class="mono">--crossfade</code></label>
+                    <span class="mono tabular-nums" id="crossfade-val">0.0 s</span>
+                  </div>
+                  <input id="crossfade-slider" type="range" min="0" max="8" step="0.5" value="0" class="slider">
+                  <p class="field-hint error-text" id="crossfade-warning" hidden></p>
+                </div>
+
+                <div class="control-block">
+                  <label class="toggle-card">
+                    <input type="checkbox" id="normalize-toggle">
+                    <div>
+                      <div class="toggle-title">Loudness Normalization <code class="mono">--normalize</code></div>
+                      <div class="field-hint">Target -14 LUFS (TP=-1.5, LRA=11)</div>
+                    </div>
+                  </label>
+                </div>
+
+                <div class="control-block">
+                  <label class="toggle-card">
+                    <input type="checkbox" id="overlay-toggle">
+                    <div>
+                      <div class="toggle-title">Burn Title Overlays <code class="mono">--overlay-titles</code></div>
+                      <div class="field-hint">Generates .ass script with 500ms fades</div>
+                    </div>
+                  </label>
+                </div>
+
+                <div class="split-fields">
+                  <div class="control-block">
+                    <label for="font-name-input">Overlay Font <code class="mono">--font-name</code></label>
+                    <input id="font-name-input" type="text" class="input" value="Arial" placeholder="Arial">
+                  </div>
+                  <div class="control-block">
+                    <label for="title-duration-input">Title Duration (s) <code class="mono">--title-duration</code></label>
+                    <input id="title-duration-input" type="number" min="0" max="3600" step="1" value="0" class="input mono tabular-nums">
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
       </div>
 
-      <!-- Right Column: Stage, Chapters, Outputs, Telemetry & Render -->
-      <div class="col-right">
-        <section class="panel" aria-labelledby="sec-stage">
+      <!-- Right Column: Sticky 16:9 Stage Monitor + Utility Tabs + Pinned Render Dock -->
+      <aside class="col-right">
+        <section class="panel stage-panel" aria-labelledby="sec-stage">
           <div class="panel-head">
             <div class="panel-title-wrap">
               <h2 id="sec-stage">16:9 Stage Preview</h2>
@@ -294,76 +314,102 @@
             <span id="stage-codec-meta">H.264 + AAC 320k · 48 kHz</span>
             <span id="stage-fps-meta">Select Background Visual</span>
           </div>
+
+          <div class="well stage-track-bar">
+            <button type="button" class="btn btn-mint btn-sm" id="stage-audition-btn" disabled>&#9654; Audition</button>
+            <label class="sr-only" for="stage-track-select">Preview Track Title Overlay</label>
+            <select id="stage-track-select" class="select" disabled>
+              <option value="0">No Tracks loaded</option>
+            </select>
+          </div>
         </section>
 
-        <section class="panel" aria-labelledby="sec-chapters">
-          <div class="panel-head">
-            <div class="panel-title-wrap">
-              <h2 id="sec-chapters"><code class="mono">timestamps.txt</code> · YouTube Chapters</h2>
-            </div>
-            <div class="head-actions">
-              <button type="button" class="btn btn-ghost btn-sm" id="copy-chapters-btn">Copy</button>
-            </div>
-          </div>
-          <pre class="well code-well mono tabular-nums" id="chapters-preview">00:00 Add .mp3 Tracks to preview chapters</pre>
-        </section>
+        <div class="tab-bar utility-tabs" role="tablist" aria-label="Mix Details and Telemetry">
+          <button type="button" class="tab-btn is-active" id="right-tab-chapters" role="tab" aria-selected="true" aria-controls="right-pane-chapters">Chapters</button>
+          <button type="button" class="tab-btn" id="right-tab-output" role="tab" aria-selected="false" aria-controls="right-pane-output">Output &amp; CLI</button>
+          <button type="button" class="tab-btn" id="right-tab-telemetry" role="tab" aria-selected="false" aria-controls="right-pane-telemetry">
+            Telemetry <span class="tab-badge mono" id="telemetry-tab-badge">Idle</span>
+          </button>
+        </div>
 
-        <section class="panel" aria-labelledby="sec-outputs">
-          <div class="panel-head">
-            <div class="panel-title-wrap">
-              <h2 id="sec-outputs">Output Targets &amp; CLI</h2>
-            </div>
-            <button type="button" class="btn btn-ghost btn-sm" id="copy-cli-btn">Copy CLI</button>
-          </div>
-
-          <div class="control-block" id="out-dir-row">
-            <label for="out-dir-input">Output Directory <code class="mono">--out-dir</code></label>
-            <div class="inline-field">
-              <input id="out-dir-input" type="text" class="input mono" value="" placeholder="Workspace / current working directory">
-              <button type="button" class="btn btn-secondary" id="browse-out-dir-btn">Browse…</button>
-            </div>
-            <p class="field-hint">Missing subfolders are created automatically. Relative filenames save inside this folder.</p>
+        <div class="utility-body">
+          <div id="right-pane-chapters" class="right-tab-pane" role="tabpanel" aria-labelledby="right-tab-chapters">
+            <section class="panel" aria-labelledby="sec-chapters">
+              <div class="panel-head">
+                <div class="panel-title-wrap">
+                  <h2 id="sec-chapters"><code class="mono">timestamps.txt</code> · YouTube Chapters</h2>
+                </div>
+                <div class="head-actions">
+                  <button type="button" class="btn btn-ghost btn-sm" id="copy-chapters-btn">Copy</button>
+                </div>
+              </div>
+              <pre class="well code-well mono tabular-nums" id="chapters-preview">00:00 Add .mp3 Tracks to preview chapters</pre>
+            </section>
           </div>
 
-          <p class="field-hint" id="lan-output-note" hidden>LAN session: rendered Mix &amp; Chapter Timestamps remain isolated on the server; use <strong>Save to Folder…</strong> or the download buttons after rendering.</p>
+          <div id="right-pane-output" class="right-tab-pane" role="tabpanel" aria-labelledby="right-tab-output" hidden>
+            <section class="panel" aria-labelledby="sec-outputs">
+              <div class="panel-head">
+                <div class="panel-title-wrap">
+                  <h2 id="sec-outputs">Output Targets &amp; CLI</h2>
+                </div>
+                <button type="button" class="btn btn-ghost btn-sm" id="copy-cli-btn">Copy CLI</button>
+              </div>
 
-          <div class="split-fields output-names-grid">
-            <div class="control-block">
-              <label for="out-path-input">Video Filename <code class="mono">--out</code></label>
-              <input id="out-path-input" type="text" class="input mono" value="output.mp4" placeholder="output.mp4">
-            </div>
-            <div class="control-block">
-              <label for="timestamps-path-input">Chapters Filename <code class="mono">--timestamps</code></label>
-              <input id="timestamps-path-input" type="text" class="input mono" value="timestamps.txt" placeholder="timestamps.txt">
-            </div>
+              <div class="control-block" id="out-dir-row">
+                <label for="out-dir-input">Output Directory <code class="mono">--out-dir</code></label>
+                <div class="inline-field">
+                  <input id="out-dir-input" type="text" class="input mono" value="" placeholder="Workspace / current working directory">
+                  <button type="button" class="btn btn-secondary" id="browse-out-dir-btn">Browse…</button>
+                </div>
+                <p class="field-hint">Missing subfolders are created automatically. Relative filenames save inside this folder.</p>
+              </div>
+
+              <p class="field-hint" id="lan-output-note" hidden>LAN session: rendered Mix &amp; Chapter Timestamps remain isolated on the server; use <strong>Save to Folder…</strong> or the download buttons after rendering.</p>
+
+              <div class="split-fields output-names-grid">
+                <div class="control-block">
+                  <label for="out-path-input">Video Filename <code class="mono">--out</code></label>
+                  <input id="out-path-input" type="text" class="input mono" value="output.mp4" placeholder="output.mp4">
+                </div>
+                <div class="control-block">
+                  <label for="timestamps-path-input">Chapters Filename <code class="mono">--timestamps</code></label>
+                  <input id="timestamps-path-input" type="text" class="input mono" value="timestamps.txt" placeholder="timestamps.txt">
+                </div>
+              </div>
+
+              <pre class="well cli-well mono" id="cli-preview">ytmix --audio-dir ./tracks --bg "" --out output.mp4</pre>
+            </section>
           </div>
 
-          <pre class="well cli-well mono" id="cli-preview">ytmix --audio-dir ./tracks --bg "" --out output.mp4</pre>
-        </section>
+          <div id="right-pane-telemetry" class="right-tab-pane" role="tabpanel" aria-labelledby="right-tab-telemetry" hidden>
+            <section class="panel" aria-labelledby="sec-telemetry">
+              <div class="panel-head">
+                <div class="panel-title-wrap">
+                  <span class="panel-index mono">04</span>
+                  <h2 id="sec-telemetry">Pipeline Telemetry (5 Steps)</h2>
+                </div>
+                <span class="mono badge-soft" id="telemetry-state">Idle</span>
+              </div>
 
-        <section class="panel" aria-labelledby="sec-telemetry">
-          <div class="panel-head">
-            <div class="panel-title-wrap">
-              <span class="panel-index mono">04</span>
-              <h2 id="sec-telemetry">Pipeline Telemetry (5 Steps)</h2>
-            </div>
-            <span class="mono badge-soft" id="telemetry-state">Idle</span>
+              <div class="progress-track" aria-hidden="true">
+                <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
+              </div>
+
+              <ol class="step-list mono" id="step-list">
+                <li data-step="1"><span class="step-num">[1/5]</span><span class="step-msg">Track discovery &amp; ffprobe validation</span></li>
+                <li data-step="2"><span class="step-num">[2/5]</span><span class="step-msg">Audio processing &amp; merge</span></li>
+                <li data-step="3"><span class="step-num">[3/5]</span><span class="step-msg">Chapter Timestamps calculation</span></li>
+                <li data-step="4"><span class="step-num">[4/5]</span><span class="step-msg">Title Overlays (.ass) generation</span></li>
+                <li data-step="5"><span class="step-num">[5/5]</span><span class="step-msg">FFmpeg 1080p Mix render</span></li>
+              </ol>
+
+              <pre class="well log-well mono" id="telemetry-log">Ready to render.</pre>
+            </section>
           </div>
+        </div>
 
-          <div class="progress-track" aria-hidden="true">
-            <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
-          </div>
-
-          <ol class="step-list mono" id="step-list">
-            <li data-step="1"><span class="step-num">[1/5]</span><span class="step-msg">Track discovery &amp; ffprobe validation</span></li>
-            <li data-step="2"><span class="step-num">[2/5]</span><span class="step-msg">Audio processing &amp; merge</span></li>
-            <li data-step="3"><span class="step-num">[3/5]</span><span class="step-msg">Chapter Timestamps calculation</span></li>
-            <li data-step="4"><span class="step-num">[4/5]</span><span class="step-msg">Title Overlays (.ass) generation</span></li>
-            <li data-step="5"><span class="step-num">[5/5]</span><span class="step-msg">FFmpeg 1080p Mix render</span></li>
-          </ol>
-
-          <pre class="well log-well mono" id="telemetry-log">Ready to render.</pre>
-
+        <div class="render-dock">
           <div class="cta-stack">
             <button type="button" class="btn btn-gold" id="render-btn">
               Render Mix → <span class="mono" id="render-btn-target">output.mp4</span>
@@ -374,8 +420,8 @@
               <a class="btn btn-secondary" id="download-ts-link" href="#" download>Download timestamps.txt</a>
             </div>
           </div>
-        </section>
-      </div>
+        </div>
+      </aside>
     </main>
   </div>
 

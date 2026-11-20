@@ -161,9 +161,9 @@ func TestStaticAssetsAndHealth(t *testing.T) {
 		wantType string
 		wantSub  []string
 	}{
-		{"/", "text/html", []string{"Editorial Mix Studio", "out-dir-input", "browse-out-dir-btn", "browse-audio-dir-btn", "browse-bg-path-btn", "fs-modal", "save-lan-folder-btn", "fs-modal-out-name", "fs-modal-ts-name", "bg-mode-visualizer", "viz-pager", "audition-btn", "darkness-box", "stage-canvas"}},
-		{"/styles.css", "text/css", []string{"[hidden]", ".modal-backdrop", ".fs-root-chip", ".preset-grid", ".preset-pager", ".darkness-box", ".audition-bar"}},
-		{"/app.js", "javascript", []string{"/api/render", "/api/fs/list", "/api/fs/mkdir", "/api/fs/pick", "pickNativePath", "showDirectoryPicker", "/api/sessions/", "VIZ_PAGE_SIZE", "visualizerBrightness", "fadeToBlackMinutes"}},
+		{"/", "text/html", []string{"Editorial Mix Studio", "out-dir-input", "browse-out-dir-btn", "browse-audio-dir-btn", "browse-bg-path-btn", "fs-modal", "save-lan-folder-btn", "fs-modal-out-name", "fs-modal-ts-name", "bg-mode-visualizer", "viz-pager", "audition-btn", "darkness-box", "stage-canvas", "left-tab-tracks", "left-tab-studio", "left-pane-studio", "stage-audition-btn", "stage-track-select", "right-tab-chapters", "right-tab-output", "right-tab-telemetry", "render-dock"}},
+		{"/styles.css", "text/css", []string{"[hidden]", ".modal-backdrop", ".fs-root-chip", ".preset-grid", ".preset-pager", ".darkness-box", ".audition-bar", ".studio-tabs-bar", ".dual-studio-grid", ".stage-track-bar", ".render-dock"}},
+		{"/app.js", "javascript", []string{"/api/render", "/api/fs/list", "/api/fs/mkdir", "/api/fs/pick", "pickNativePath", "showDirectoryPicker", "/api/sessions/", "VIZ_PAGE_SIZE", "visualizerBrightness", "fadeToBlackMinutes", "setLeftTab", "setRightTab", "renderStageTrackSelect"}},
 	} {
 		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
 		rec := httptest.NewRecorder()

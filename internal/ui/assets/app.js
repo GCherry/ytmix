@@ -83,6 +83,8 @@
     fadePreviewState: "idle", // "idle" | "fading" | "blackout"
     auditioning: false,
     pickerBusy: false,
+    leftTab: "tracks",      // "tracks" | "studio"
+    rightTab: "chapters",   // "chapters" | "output" | "telemetry"
     fsModal: {
       open: false,
       mode: "outDir", // "outDir" | "audioDir"
@@ -520,18 +522,70 @@
     renderAll();
   }
 
+  function setLeftTab(tab) {
+    if (tab !== "tracks" && tab !== "studio") return;
+    state.leftTab = tab;
+    const isTracks = tab === "tracks";
+    const tabTracks = $("left-tab-tracks");
+    const tabStudio = $("left-tab-studio");
+    if (tabTracks && tabStudio) {
+      tabTracks.classList.toggle("is-active", isTracks);
+      tabStudio.classList.toggle("is-active", !isTracks);
+      tabTracks.setAttribute("aria-selected", String(isTracks));
+      tabStudio.setAttribute("aria-selected", String(!isTracks));
+    }
+    const paneTracks = $("left-pane-tracks");
+    const paneStudio = $("left-pane-studio");
+    if (paneTracks) paneTracks.hidden = !isTracks;
+    if (paneStudio) paneStudio.hidden = isTracks;
+  }
+
+  function setRightTab(tab) {
+    if (tab !== "chapters" && tab !== "output" && tab !== "telemetry") return;
+    state.rightTab = tab;
+    ["chapters", "output", "telemetry"].forEach((name) => {
+      const btn = $(`right-tab-${name}`);
+      const pane = $(`right-pane-${name}`);
+      const active = tab === name;
+      if (btn) {
+        btn.classList.toggle("is-active", active);
+        btn.setAttribute("aria-selected", String(active));
+      }
+      if (pane) {
+        pane.hidden = !active;
+      }
+    });
+  }
+
+  function setTelemetryTabBadge(label, statusClass) {
+    const badge = $("telemetry-tab-badge");
+    if (!badge) return;
+    badge.textContent = label;
+    badge.classList.remove("is-running", "is-done", "is-error");
+    if (statusClass) {
+      badge.classList.add(statusClass);
+    }
+  }
+
   function renderAuditionBar() {
     const btn = $("audition-btn");
+    const stageBtn = $("stage-audition-btn");
     const nameEl = $("audition-track-name");
     const badge = $("audio-source-badge");
     const tr = state.tracks[state.selectedTrackIdx];
     const canAudition = Boolean(state.sessionId && tr && tr.id);
 
     btn.disabled = !canAudition;
+    if (stageBtn) stageBtn.disabled = !canAudition;
     if (state.auditioning && canAudition) {
       btn.textContent = "\u25A0 Stop Audition";
       btn.classList.remove("btn-mint");
       btn.classList.add("btn-gold");
+      if (stageBtn) {
+        stageBtn.textContent = "\u25A0 Stop";
+        stageBtn.classList.remove("btn-mint");
+        stageBtn.classList.add("btn-gold");
+      }
       nameEl.textContent = tr.displayTitle;
       badge.textContent = "Track Stream";
       badge.classList.add("is-live");
@@ -539,13 +593,47 @@
       btn.textContent = "\u25B6 Audition Selected Track";
       btn.classList.add("btn-mint");
       btn.classList.remove("btn-gold");
+      if (stageBtn) {
+        stageBtn.textContent = "\u25B6 Audition";
+        stageBtn.classList.add("btn-mint");
+        stageBtn.classList.remove("btn-gold");
+      }
       nameEl.textContent = tr ? tr.displayTitle : "";
       badge.textContent = "Ambient Sim";
       badge.classList.remove("is-live");
     }
   }
 
+  function renderStageTrackSelect() {
+    const sel = $("stage-track-select");
+    if (!sel) return;
+    sel.innerHTML = "";
+    if (state.tracks.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = "0";
+      opt.textContent = "No Tracks loaded";
+      sel.appendChild(opt);
+      sel.disabled = true;
+      return;
+    }
+    sel.disabled = false;
+    state.tracks.forEach((tr, idx) => {
+      const opt = document.createElement("option");
+      opt.value = String(idx);
+      opt.textContent = `${idx + 1}. ${tr.displayTitle}`;
+      if (idx === state.selectedTrackIdx) {
+        opt.selected = true;
+      }
+      sel.appendChild(opt);
+    });
+  }
+
   function renderTracksTable(sched) {
+    const badgeEl = $("left-tracks-badge");
+    const durEl = $("left-tab-duration");
+    if (badgeEl) badgeEl.textContent = `(${state.tracks.length})`;
+    if (durEl) durEl.textContent = formatTime(sched.totalDuration, false);
+
     const tbody = $("track-tbody");
     tbody.innerHTML = "";
     if (state.tracks.length === 0) {
@@ -557,11 +645,13 @@
       row.appendChild(cell);
       tbody.appendChild(row);
       $("tracks-summary").textContent = "0 Tracks · 00:00";
+      renderStageTrackSelect();
       renderAuditionBar();
       return;
     }
 
     $("tracks-summary").textContent = `${state.tracks.length} Track(s) · ${formatTime(sched.totalDuration, false)}`;
+    renderStageTrackSelect();
     state.tracks.forEach((tr, idx) => {
       const row = document.createElement("tr");
       row.className = "track-row" + (idx === state.selectedTrackIdx ? " is-selected" : "");
@@ -957,6 +1047,7 @@
     state.lastCompleteJob = null;
     $("progress-fill").style.width = "0%";
     $("telemetry-state").textContent = "Running";
+    setTelemetryTabBadge("Running", "is-running");
     $("download-bar").hidden = true;
     $("save-lan-folder-btn").hidden = true;
     $("save-lan-folder-btn").textContent = "Save to Folder…";
@@ -1002,6 +1093,7 @@
 
     state.rendering = true;
     resetTelemetry();
+    setRightTab("telemetry");
     $("telemetry-log").textContent = "Submitting Mix configuration…";
     renderAll();
 
@@ -1052,6 +1144,7 @@
     } catch (err) {
       state.rendering = false;
       $("telemetry-state").textContent = "Error";
+      setTelemetryTabBadge("Error", "is-error");
       appendLog(`Error: ${err.message}`);
       renderAll();
     }
@@ -1066,6 +1159,7 @@
       markStep(payload.step, false);
       $("progress-fill").style.width = `${payload.progress || 0}%`;
       $("telemetry-state").textContent = `Running · ${payload.progress || 0}%`;
+      setTelemetryTabBadge(`${payload.progress || 0}%`, "is-running");
       appendLog(payload.message);
     });
 
@@ -1078,6 +1172,7 @@
         parts.push(payload.speed);
       }
       $("telemetry-state").textContent = parts.join(" · ");
+      setTelemetryTabBadge(`${pct}%`, "is-running");
     });
 
     es.addEventListener("log", (e) => {
@@ -1094,6 +1189,7 @@
       markStep(6, true);
       $("progress-fill").style.width = "100%";
       $("telemetry-state").textContent = `Complete (${payload.renderingPath})`;
+      setTelemetryTabBadge("Done", "is-done");
       if (payload.timestampsText) {
         $("chapters-preview").textContent = payload.timestampsText;
       }
@@ -1128,6 +1224,7 @@
       state.eventSource = null;
       state.rendering = false;
       $("telemetry-state").textContent = "Failed";
+      setTelemetryTabBadge("Failed", "is-error");
       renderAll();
     });
   }
@@ -2234,6 +2331,12 @@
   }
 
   function bindEvents() {
+    $("left-tab-tracks").addEventListener("click", () => setLeftTab("tracks"));
+    $("left-tab-studio").addEventListener("click", () => setLeftTab("studio"));
+    $("right-tab-chapters").addEventListener("click", () => setRightTab("chapters"));
+    $("right-tab-output").addEventListener("click", () => setRightTab("output"));
+    $("right-tab-telemetry").addEventListener("click", () => setRightTab("telemetry"));
+
     $("tracks-mode-upload").addEventListener("click", () => setTracksMode("upload"));
     $("tracks-mode-local").addEventListener("click", () => setTracksMode("local"));
     $("bg-mode-upload").addEventListener("click", () => setBgMode("upload"));
@@ -2241,6 +2344,22 @@
     $("bg-mode-visualizer").addEventListener("click", () => setBgMode("visualizer"));
 
     $("audition-btn").addEventListener("click", toggleAudition);
+    if ($("stage-audition-btn")) {
+      $("stage-audition-btn").addEventListener("click", toggleAudition);
+    }
+    if ($("stage-track-select")) {
+      $("stage-track-select").addEventListener("change", (e) => {
+        const nextIdx = Math.max(0, Math.min(state.tracks.length - 1, Number(e.target.value) || 0));
+        const changed = state.selectedTrackIdx !== nextIdx;
+        state.selectedTrackIdx = nextIdx;
+        renderTracksTable(computeSchedule());
+        renderStageOverlay();
+        renderAuditionBar();
+        if (changed && state.auditioning) {
+          playSelectedTrackAudition();
+        }
+      });
+    }
     $("audition-audio").addEventListener("ended", () => {
       state.auditioning = false;
       renderAuditionBar();
