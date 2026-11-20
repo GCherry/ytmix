@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -160,9 +161,9 @@ func TestStaticAssetsAndHealth(t *testing.T) {
 		wantType string
 		wantSub  []string
 	}{
-		{"/", "text/html", []string{"Editorial Mix Studio", "out-dir-input", "browse-out-dir-btn", "browse-audio-dir-btn", "fs-modal", "save-lan-folder-btn", "fs-modal-out-name", "fs-modal-ts-name", "bg-mode-visualizer", "viz-pager", "audition-btn", "darkness-box", "stage-canvas"}},
+		{"/", "text/html", []string{"Editorial Mix Studio", "out-dir-input", "browse-out-dir-btn", "browse-audio-dir-btn", "browse-bg-path-btn", "fs-modal", "save-lan-folder-btn", "fs-modal-out-name", "fs-modal-ts-name", "bg-mode-visualizer", "viz-pager", "audition-btn", "darkness-box", "stage-canvas"}},
 		{"/styles.css", "text/css", []string{"[hidden]", ".modal-backdrop", ".fs-root-chip", ".preset-grid", ".preset-pager", ".darkness-box", ".audition-bar"}},
-		{"/app.js", "javascript", []string{"/api/render", "/api/fs/list", "/api/fs/mkdir", "showDirectoryPicker", "/api/sessions/", "VIZ_PAGE_SIZE", "visualizerBrightness", "fadeToBlackMinutes"}},
+		{"/app.js", "javascript", []string{"/api/render", "/api/fs/list", "/api/fs/mkdir", "/api/fs/pick", "pickNativePath", "showDirectoryPicker", "/api/sessions/", "VIZ_PAGE_SIZE", "visualizerBrightness", "fadeToBlackMinutes"}},
 	} {
 		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
 		rec := httptest.NewRecorder()
@@ -770,7 +771,7 @@ func TestCSRFSameOriginAndContentTypeGuards(t *testing.T) {
 	})
 
 	t.Run("rejects non-JSON Content-Type such as text/plain on JSON routes", func(t *testing.T) {
-		for _, path := range []string{"/api/probe", "/api/render"} {
+		for _, path := range []string{"/api/probe", "/api/render", "/api/fs/pick"} {
 			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"audioDir":"."}`))
 			req.Host = "127.0.0.1:8080"
 			req.RemoteAddr = "127.0.0.1:50000"
@@ -1417,6 +1418,292 @@ func TestPathDServerHealthRenderLANAndTrackAudio(t *testing.T) {
 		srv.Handler().ServeHTTP(sseRec, sseReq)
 		if !strings.Contains(sseRec.String(), "event: complete") {
 			t.Fatalf("expected LAN Path D render complete event, got:\n%s", sseRec.String())
+		}
+	})
+}
+
+func TestNativePickerEndpointAndSessionRoots(t *testing.T) {
+	t.Run("POST /api/fs/pick authorizes picked folder and bgFile parent for probe, preview-bg, list, and render", func(t *testing.T) {
+		ws := t.TempDir()
+		externalAudio := t.TempDir()
+		externalArt := t.TempDir()
+		externalOut := t.TempDir()
+
+		if err := os.WriteFile(filepath.Join(externalAudio, "01 - Outside.mp3"), []byte("MP3"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		bgFile := filepath.Join(externalArt, "cover.png")
+		if err := os.WriteFile(bgFile, []byte("PNG"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		nextPick := ""
+		srv, err := NewServer(Config{
+			Host:         "127.0.0.1",
+			Port:         8080,
+			WorkspaceDir: ws,
+			LookPath:     okLookPath,
+			Runner:       stubPipelineRunner(t, map[string]string{"Outside": "5.0"}),
+			PickPath: func(_ context.Context, kind, _ string) (string, error) {
+				if nextPick == "" {
+					return "", ErrPickerCancelled
+				}
+				return nextPick, nil
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer srv.Close()
+
+		// Before picking, externalAudio is rejected.
+		preProbe := httptest.NewRequest(http.MethodPost, "/api/probe", strings.NewReader(`{"audioDir":`+strconvQuote(externalAudio)+`}`))
+		preProbe.Header.Set("Content-Type", "application/json")
+		preProbe.RemoteAddr = "127.0.0.1:50000"
+		preProbeRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(preProbeRec, preProbe)
+		if preProbeRec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 before picking externalAudio, got %d", preProbeRec.Code)
+		}
+
+		// Pick externalAudio folder.
+		nextPick = externalAudio
+		pickAudioReq := httptest.NewRequest(http.MethodPost, "/api/fs/pick", strings.NewReader(`{"kind":"folder","initialPath":"./tracks"}`))
+		pickAudioReq.Header.Set("Content-Type", "application/json")
+		pickAudioReq.RemoteAddr = "127.0.0.1:50000"
+		pickAudioRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(pickAudioRec, pickAudioReq)
+		if pickAudioRec.Code != http.StatusOK {
+			t.Fatalf("pick folder failed: %d: %s", pickAudioRec.Code, pickAudioRec.Body.String())
+		}
+		var pickResp struct {
+			Cancelled bool   `json:"cancelled"`
+			Path      string `json:"path"`
+		}
+		if err := json.Unmarshal(pickAudioRec.Body.Bytes(), &pickResp); err != nil {
+			t.Fatal(err)
+		}
+		if pickResp.Cancelled || pickResp.Path == "" {
+			t.Fatalf("unexpected pick response: %+v", pickResp)
+		}
+
+		// Listing the newly picked externalAudio folder via /api/fs/list now succeeds and includes it in roots.
+		listPickedReq := httptest.NewRequest(http.MethodGet, "/api/fs/list?path="+url.QueryEscape(pickResp.Path), nil)
+		listPickedReq.RemoteAddr = "127.0.0.1:50000"
+		listPickedRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(listPickedRec, listPickedReq)
+		if listPickedRec.Code != http.StatusOK || !strings.Contains(listPickedRec.Body.String(), filepath.Base(pickResp.Path)) {
+			t.Fatalf("fs/list after pick failed: %d: %s", listPickedRec.Code, listPickedRec.Body.String())
+		}
+
+		// Now probing externalAudio succeeds.
+		probeReq := httptest.NewRequest(http.MethodPost, "/api/probe", strings.NewReader(`{"audioDir":`+strconvQuote(pickResp.Path)+`}`))
+		probeReq.Header.Set("Content-Type", "application/json")
+		probeReq.RemoteAddr = "127.0.0.1:50000"
+		probeRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(probeRec, probeReq)
+		if probeRec.Code != http.StatusOK {
+			t.Fatalf("probe after pick failed: %d: %s", probeRec.Code, probeRec.Body.String())
+		}
+		var probed probeResponse
+		if err := json.Unmarshal(probeRec.Body.Bytes(), &probed); err != nil {
+			t.Fatal(err)
+		}
+
+		// Pick bgFile and verify /api/preview-bg succeeds.
+		nextPick = bgFile
+		pickBGReq := httptest.NewRequest(http.MethodPost, "/api/fs/pick", strings.NewReader(`{"kind":"bgFile"}`))
+		pickBGReq.Header.Set("Content-Type", "application/json")
+		pickBGReq.RemoteAddr = "127.0.0.1:50000"
+		pickBGRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(pickBGRec, pickBGReq)
+		if pickBGRec.Code != http.StatusOK {
+			t.Fatalf("pick bgFile failed: %d: %s", pickBGRec.Code, pickBGRec.Body.String())
+		}
+		if err := json.Unmarshal(pickBGRec.Body.Bytes(), &pickResp); err != nil {
+			t.Fatal(err)
+		}
+		prevReq := httptest.NewRequest(http.MethodGet, "/api/preview-bg?path="+pickResp.Path, nil)
+		prevReq.RemoteAddr = "127.0.0.1:50000"
+		prevRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(prevRec, prevReq)
+		if prevRec.Code != http.StatusOK {
+			t.Fatalf("preview-bg after pick failed: %d: %s", prevRec.Code, prevRec.Body.String())
+		}
+
+		// Pick externalOut and verify render writes into it.
+		nextPick = externalOut
+		pickOutReq := httptest.NewRequest(http.MethodPost, "/api/fs/pick", strings.NewReader(`{"kind":"folder"}`))
+		pickOutReq.Header.Set("Content-Type", "application/json")
+		pickOutReq.RemoteAddr = "127.0.0.1:50000"
+		pickOutRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(pickOutRec, pickOutReq)
+		if pickOutRec.Code != http.StatusOK {
+			t.Fatalf("pick outDir failed: %d: %s", pickOutRec.Code, pickOutRec.Body.String())
+		}
+		renderBody, _ := json.Marshal(renderConfigRequest{
+			SessionID:  probed.SessionID,
+			TrackIDs:   []string{probed.Tracks[0].ID},
+			BGMode:     "local",
+			BGPath:     bgFile,
+			OutDir:     externalOut,
+			Out:        "picked.mp4",
+			Timestamps: "picked.txt",
+		})
+		renderReq := httptest.NewRequest(http.MethodPost, "/api/render", bytes.NewReader(renderBody))
+		renderReq.Header.Set("Content-Type", "application/json")
+		renderReq.RemoteAddr = "127.0.0.1:50000"
+		renderRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(renderRec, renderReq)
+		if renderRec.Code != http.StatusAccepted {
+			t.Fatalf("render to picked outDir failed: %d: %s", renderRec.Code, renderRec.Body.String())
+		}
+		var started renderStartResponse
+		_ = json.Unmarshal(renderRec.Body.Bytes(), &started)
+		sseReq := httptest.NewRequest(http.MethodGet, started.EventsURL, nil)
+		sseRec := newSSERecorder()
+		srv.Handler().ServeHTTP(sseRec, sseReq)
+		if !strings.Contains(sseRec.String(), "event: complete") {
+			t.Fatalf("expected complete SSE event, got:\n%s", sseRec.String())
+		}
+
+		// Cancel returns 200 { cancelled: true }.
+		nextPick = ""
+		cancelReq := httptest.NewRequest(http.MethodPost, "/api/fs/pick", strings.NewReader(`{"kind":"folder"}`))
+		cancelReq.Header.Set("Content-Type", "application/json")
+		cancelReq.RemoteAddr = "127.0.0.1:50000"
+		cancelRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(cancelRec, cancelReq)
+		if cancelRec.Code != http.StatusOK || !strings.Contains(cancelRec.Body.String(), `"cancelled":true`) {
+			t.Fatalf("expected cancelled:true, got %d: %s", cancelRec.Code, cancelRec.Body.String())
+		}
+	})
+
+	t.Run("POST /api/fs/pick enforces guards, fallback 503, unsupported bg ext, and 409 busy", func(t *testing.T) {
+		ws := t.TempDir()
+		badFile := filepath.Join(ws, "notes.txt")
+		if err := os.WriteFile(badFile, []byte("txt"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		startedCh := make(chan struct{})
+		releaseCh := make(chan struct{})
+		var mode string
+
+		srv, err := NewServer(Config{
+			Host:         "127.0.0.1",
+			Port:         8080,
+			WorkspaceDir: ws,
+			LookPath:     okLookPath,
+			Runner:       stubPipelineRunner(t, nil),
+			PickPath: func(_ context.Context, _ string, _ string) (string, error) {
+				switch mode {
+				case "unavailable":
+					return "", ErrPickerUnavailable
+				case "badfile":
+					return badFile, nil
+				case "block":
+					close(startedCh)
+					<-releaseCh
+					return ws, nil
+				default:
+					return ws, nil
+				}
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer srv.Close()
+
+		// Non-loopback client gets 403.
+		lanReq := httptest.NewRequest(http.MethodPost, "/api/fs/pick", strings.NewReader(`{"kind":"folder"}`))
+		lanReq.Header.Set("Content-Type", "application/json")
+		lanReq.RemoteAddr = "192.168.1.55:50000"
+		lanRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(lanRec, lanReq)
+		if lanRec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for LAN pick, got %d", lanRec.Code)
+		}
+
+		// Cross-origin Origin and Sec-Fetch-Site headers get 403.
+		csrfOriginReq := httptest.NewRequest(http.MethodPost, "/api/fs/pick", strings.NewReader(`{"kind":"folder"}`))
+		csrfOriginReq.Host = "127.0.0.1:8080"
+		csrfOriginReq.RemoteAddr = "127.0.0.1:50000"
+		csrfOriginReq.Header.Set("Content-Type", "application/json")
+		csrfOriginReq.Header.Set("Origin", "https://evil.example")
+		csrfOriginRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(csrfOriginRec, csrfOriginReq)
+		if csrfOriginRec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for cross-origin Origin on pick, got %d", csrfOriginRec.Code)
+		}
+
+		csrfSiteReq := httptest.NewRequest(http.MethodPost, "/api/fs/pick", strings.NewReader(`{"kind":"folder"}`))
+		csrfSiteReq.Host = "127.0.0.1:8080"
+		csrfSiteReq.RemoteAddr = "127.0.0.1:50000"
+		csrfSiteReq.Header.Set("Content-Type", "application/json")
+		csrfSiteReq.Header.Set("Sec-Fetch-Site", "cross-site")
+		csrfSiteRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(csrfSiteRec, csrfSiteReq)
+		if csrfSiteRec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for Sec-Fetch-Site cross-site on pick, got %d", csrfSiteRec.Code)
+		}
+
+		// Invalid kind gets 400.
+		badKindReq := httptest.NewRequest(http.MethodPost, "/api/fs/pick", strings.NewReader(`{"kind":"exe"}`))
+		badKindReq.Header.Set("Content-Type", "application/json")
+		badKindReq.RemoteAddr = "127.0.0.1:50000"
+		badKindRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(badKindRec, badKindReq)
+		if badKindRec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for invalid kind, got %d", badKindRec.Code)
+		}
+
+		// Unavailable picker returns 503 with fallback:true.
+		mode = "unavailable"
+		unavailReq := httptest.NewRequest(http.MethodPost, "/api/fs/pick", strings.NewReader(`{"kind":"folder"}`))
+		unavailReq.Header.Set("Content-Type", "application/json")
+		unavailReq.RemoteAddr = "127.0.0.1:50000"
+		unavailRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(unavailRec, unavailReq)
+		if unavailRec.Code != http.StatusServiceUnavailable || !strings.Contains(unavailRec.Body.String(), `"fallback":true`) {
+			t.Fatalf("expected 503 fallback:true, got %d: %s", unavailRec.Code, unavailRec.Body.String())
+		}
+
+		// Unsupported bgFile extension returns 400.
+		mode = "badfile"
+		badBGReq := httptest.NewRequest(http.MethodPost, "/api/fs/pick", strings.NewReader(`{"kind":"bgFile"}`))
+		badBGReq.Header.Set("Content-Type", "application/json")
+		badBGReq.RemoteAddr = "127.0.0.1:50000"
+		badBGRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(badBGRec, badBGReq)
+		if badBGRec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for unsupported bgFile, got %d: %s", badBGRec.Code, badBGRec.Body.String())
+		}
+
+		// Concurrent picker returns 409 Conflict.
+		mode = "block"
+		done1 := make(chan int, 1)
+		go func() {
+			r1 := httptest.NewRequest(http.MethodPost, "/api/fs/pick", strings.NewReader(`{"kind":"folder"}`))
+			r1.Header.Set("Content-Type", "application/json")
+			r1.RemoteAddr = "127.0.0.1:50000"
+			w1 := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w1, r1)
+			done1 <- w1.Code
+		}()
+		<-startedCh
+		r2 := httptest.NewRequest(http.MethodPost, "/api/fs/pick", strings.NewReader(`{"kind":"folder"}`))
+		r2.Header.Set("Content-Type", "application/json")
+		r2.RemoteAddr = "127.0.0.1:50000"
+		w2 := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w2, r2)
+		close(releaseCh)
+		if code1 := <-done1; code1 != http.StatusOK {
+			t.Fatalf("first concurrent pick = %d, want 200", code1)
+		}
+		if w2.Code != http.StatusConflict {
+			t.Fatalf("second concurrent pick = %d, want 409", w2.Code)
 		}
 	})
 }

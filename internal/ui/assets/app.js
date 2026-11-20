@@ -82,6 +82,7 @@
     fadePreviewFactor: 1,
     fadePreviewState: "idle", // "idle" | "fading" | "blackout"
     auditioning: false,
+    pickerBusy: false,
     fsModal: {
       open: false,
       mode: "outDir", // "outDir" | "audioDir"
@@ -345,6 +346,8 @@
         $("browse-out-dir-btn").disabled = true;
         $("browse-audio-dir-btn").hidden = true;
         $("browse-audio-dir-btn").disabled = true;
+        $("browse-bg-path-btn").hidden = true;
+        $("browse-bg-path-btn").disabled = true;
         $("lan-output-note").hidden = false;
         setTracksMode("upload");
         if (state.bgMode === "local") {
@@ -356,6 +359,8 @@
         $("browse-out-dir-btn").disabled = false;
         $("browse-audio-dir-btn").hidden = false;
         $("browse-audio-dir-btn").disabled = false;
+        $("browse-bg-path-btn").hidden = false;
+        $("browse-bg-path-btn").disabled = false;
         $("lan-output-note").hidden = true;
       }
       renderAll();
@@ -1937,6 +1942,77 @@
     }
   }
 
+  function setBrowseButtonsDisabled(disabled) {
+    ["browse-audio-dir-btn", "browse-out-dir-btn", "browse-bg-path-btn"].forEach((id) => {
+      const btn = $(id);
+      if (btn) btn.disabled = disabled;
+    });
+  }
+
+  async function pickNativePath(target, triggerEl) {
+    if (!state.health || !state.health.localPathsAllowed || state.pickerBusy) return;
+    const isBG = target === "bgFile";
+    const kind = isBG ? "bgFile" : "folder";
+    const initialPath = isBG
+      ? $("bg-path-input").value.trim()
+      : (target === "outDir" ? $("out-dir-input").value.trim() : $("audio-dir-input").value.trim());
+
+    state.pickerBusy = true;
+    setBrowseButtonsDisabled(true);
+    let fallbackToModal = false;
+    try {
+      const res = await fetch("/api/fs/pick", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind, initialPath }),
+      });
+      let data = {};
+      try {
+        data = await res.json();
+      } catch {
+        data = {};
+      }
+      if (res.status === 503 && data && data.fallback) {
+        fallbackToModal = true;
+        return;
+      }
+      if (!res.ok) {
+        appendLog(`Browse error: ${data.error || "Unable to open native picker"}`);
+        return;
+      }
+      if (data.cancelled || !data.path) {
+        return;
+      }
+      if (target === "audioDir") {
+        $("audio-dir-input").value = data.path;
+        renderAll();
+        await probeLocalFolder();
+      } else if (target === "outDir") {
+        $("out-dir-input").value = data.path;
+        renderAll();
+      } else if (target === "bgFile") {
+        $("bg-path-input").value = data.path;
+        renderAll();
+      }
+    } catch (err) {
+      appendLog(`Browse error: ${err.message}`);
+    } finally {
+      state.pickerBusy = false;
+      const allowLocal = Boolean(state.health && state.health.localPathsAllowed);
+      setBrowseButtonsDisabled(!allowLocal);
+      if (fallbackToModal && allowLocal) {
+        if (target === "audioDir" || target === "outDir") {
+          openFSModal(target, triggerEl);
+        } else {
+          appendLog("Native file picker unavailable in this environment; enter a local Background Visual path manually.");
+          $("bg-path-input").focus();
+        }
+      } else if (triggerEl && typeof triggerEl.focus === "function" && !triggerEl.disabled) {
+        triggerEl.focus();
+      }
+    }
+  }
+
   async function openFSModal(mode, triggerEl) {
     if (!state.health || !state.health.localPathsAllowed) return;
     state.fsModal.mode = mode;
@@ -2229,14 +2305,15 @@
 
     $("tracks-file-input").addEventListener("change", (e) => probeUploadedFiles(e.target.files));
     bindDropzone($("tracks-dropzone"), probeUploadedFiles);
-    $("browse-audio-dir-btn").addEventListener("click", (e) => openFSModal("audioDir", e.currentTarget));
+    $("browse-audio-dir-btn").addEventListener("click", (e) => pickNativePath("audioDir", e.currentTarget));
     $("probe-local-btn").addEventListener("click", probeLocalFolder);
 
     $("bg-file-input").addEventListener("change", (e) => handleBgFile(e.target.files[0]));
     bindDropzone($("bg-dropzone"), (files) => handleBgFile(files[0]));
     $("bg-path-input").addEventListener("input", () => renderAll());
+    $("browse-bg-path-btn").addEventListener("click", (e) => pickNativePath("bgFile", e.currentTarget));
 
-    $("browse-out-dir-btn").addEventListener("click", (e) => openFSModal("outDir", e.currentTarget));
+    $("browse-out-dir-btn").addEventListener("click", (e) => pickNativePath("outDir", e.currentTarget));
 
     $("shuffle-toggle").addEventListener("change", () => {
       if ($("shuffle-toggle").checked && state.tracks.length > 1) {
