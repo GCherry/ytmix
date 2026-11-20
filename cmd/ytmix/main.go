@@ -111,6 +111,7 @@ func NewCLIFlagSet(cfg *mixer.Config, listVisualizers *bool, output io.Writer) *
 	fs.BoolVar(&cfg.Shuffle, "shuffle", false, "Randomize Track order instead of sorting alphabetically.")
 	fs.StringVar(&cfg.Visualizer, "visualizer", "", "Path D Auto Visualizer preset when --bg is omitted (default bars; see --list-visualizers).")
 	fs.StringVar(&cfg.VisualizerTheme, "visualizer-theme", render.DefaultVisualizerTheme, "Path D Color Theme (studio-mint, midnight-cyan, sunset-amber, neon-violet, monochrome, oled-ember, night-indigo).")
+	fs.StringVar(&cfg.VisualizerResolution, "visualizer-resolution", render.DefaultVisualizerResolution, "Path D output resolution (1080p, 1440p, 4k).")
 	fs.BoolVar(&cfg.VisualizerGlow, "visualizer-glow", true, "Apply subtle glow blur on Path D Auto Visualizer presets.")
 	fs.IntVar(&cfg.VisualizerBrightness, "visualizer-brightness", render.DefaultVisualizerBrightness, "Global Path D visualizer brightness percentage in 10..100.")
 	fs.DurationVar(&cfg.FadeToBlack, "fade-to-black", 0, "Fade Path D video and burned Title Overlays to #000000 black after this duration (e.g. 15m; 0 disables).")
@@ -138,6 +139,9 @@ func ParseCLIFlags(args []string) (mixer.Config, bool, error) {
 	fs := NewCLIFlagSet(&cfg, &listVisualizers, io.Discard)
 	if err := fs.Parse(args); err != nil {
 		return mixer.Config{}, false, err
+	}
+	if _, ok := render.LookupResolution(cfg.VisualizerResolution); !ok {
+		return mixer.Config{}, false, fmt.Errorf("unknown --visualizer-resolution %q (supported: 1080p, 1440p, 4k)", cfg.VisualizerResolution)
 	}
 	if cfg.VisualizerBrightness < render.MinVisualizerBrightness || cfg.VisualizerBrightness > render.MaxVisualizerBrightness {
 		return mixer.Config{}, false, fmt.Errorf("--visualizer-brightness must be between %d and %d (got %d)", render.MinVisualizerBrightness, render.MaxVisualizerBrightness, cfg.VisualizerBrightness)
@@ -183,6 +187,15 @@ func PrintVisualizers(ctx context.Context, w io.Writer, lookPath func(string) (s
 	}
 	for _, th := range render.ListThemes() {
 		if _, err := fmt.Fprintf(w, "  %-14s  %-24s  primary=%s secondary=%s bg=%s\n", th.ID, th.Name, th.Primary, th.Secondary, th.BG); err != nil {
+			return err
+		}
+	}
+
+	if _, err := fmt.Fprintln(w, "\nPath D Output Resolutions (--visualizer-resolution):"); err != nil {
+		return err
+	}
+	for _, res := range render.ListResolutions() {
+		if _, err := fmt.Fprintf(w, "  %-8s  %-14s  %dx%d  %s\n", res.ID, res.Name, res.Width, res.Height, res.Description); err != nil {
 			return err
 		}
 	}

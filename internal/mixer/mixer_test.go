@@ -26,6 +26,7 @@ func TestValidateConfig(t *testing.T) {
 		for _, bad := range []Config{
 			{Visualizer: "unknown-preset"},
 			{VisualizerTheme: "unknown-theme"},
+			{VisualizerResolution: "720p"},
 			{VisualizerBrightness: 9},
 			{VisualizerBrightness: 101},
 			{FadeToBlack: -1 * time.Second},
@@ -33,6 +34,10 @@ func TestValidateConfig(t *testing.T) {
 			if err := ValidateConfig(bad, okLookPath); err == nil {
 				t.Fatalf("expected error for invalid Path D config %+v", bad)
 			}
+		}
+		resCfg := Config{VisualizerResolution: "1440p"}
+		if got := resCfg.VisualizerConfig().Resolution; got != "1440p" {
+			t.Fatalf("VisualizerConfig().Resolution = %q, want 1440p", got)
 		}
 	})
 
