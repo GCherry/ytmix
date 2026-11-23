@@ -822,6 +822,29 @@ func TestProbeTrackFilesAndRunWithTracks(t *testing.T) {
 			t.Fatalf("unexpected PathD black entries: 2fps=%+v 10fps=%+v", cal[kd2], cal[kd10])
 		}
 	})
+
+	t.Run("etaTracker preserves pre-first-progress wall time for norm_loop and single-block mux", func(t *testing.T) {
+		renderStart := time.Now().Add(-750 * time.Millisecond)
+		tr := &etaTracker{
+			est:         render.MixEstimate{Path: render.PathA, LoopDurationSec: 10, PathANormSec: 1.0, PathAMuxSec: 0.2},
+			mixDuration: 120,
+			renderStart: renderStart,
+		}
+		// Single progress=end block after 750ms of norm_loop work
+		tr.update(render.ProgressUpdate{Substage: "norm_loop", OutTimeSec: 10, Speed: "10.0x", Done: true})
+		if tr.normLoopWallSec < 0.70 {
+			t.Fatalf("expected normLoopWallSec >= 0.70s (including pre-first-progress time), got %v", tr.normLoopWallSec)
+		}
+		if tr.muxStart.IsZero() {
+			t.Fatal("expected muxStart to be recorded when norm_loop finishes")
+		}
+		// Simulate fast sub-0.5s mux emitting only progress=end 100ms later
+		tr.muxStart = time.Now().Add(-100 * time.Millisecond)
+		tr.update(render.ProgressUpdate{Substage: "mux", OutTimeSec: 120, Speed: "1200x", Done: true})
+		if tr.muxWallSec < 0.08 {
+			t.Fatalf("expected muxWallSec >= 0.08s on single-block mux, got %v", tr.muxWallSec)
+		}
+	})
 }
 
 func TestResolveAndPrepareOutputTargets(t *testing.T) {

@@ -684,6 +684,8 @@ var calibrationPathFn = DefaultCalibrationPath
 type etaTracker struct {
 	est             render.MixEstimate
 	mixDuration     float64
+	renderStart     time.Time
+	muxStart        time.Time
 	lastSubstage    string
 	substageStart   time.Time
 	emaSpeed        float64
@@ -695,15 +697,27 @@ type etaTracker struct {
 func (t *etaTracker) update(u render.ProgressUpdate) float64 {
 	now := time.Now()
 	if u.Substage != t.lastSubstage {
+		if t.lastSubstage == "" && !t.renderStart.IsZero() {
+			t.substageStart = t.renderStart
+		} else if u.Substage == "mux" && !t.muxStart.IsZero() {
+			t.substageStart = t.muxStart
+		} else {
+			t.substageStart = now
+		}
 		t.lastSubstage = u.Substage
-		t.substageStart = now
 		t.emaSpeed = 0
 	}
 	elapsedSub := now.Sub(t.substageStart).Seconds()
 	switch u.Substage {
 	case "norm_loop":
 		t.normLoopWallSec = elapsedSub
+		if u.Done {
+			t.muxStart = now
+		}
 	case "mux":
+		if !t.muxStart.IsZero() {
+			elapsedSub = now.Sub(t.muxStart).Seconds()
+		}
 		t.muxWallSec = elapsedSub
 	case "render":
 		t.renderWallSec = elapsedSub
@@ -992,9 +1006,12 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, sink Telemetry
 	if streamRunner != nil {
 		renderStream = render.StreamRunner(streamRunner)
 	}
+	renderStart := time.Now()
 	tracker := &etaTracker{
-		est:         est,
-		mixDuration: sched.TotalDuration,
+		est:           est,
+		mixDuration:   sched.TotalDuration,
+		renderStart:   renderStart,
+		substageStart: renderStart,
 	}
 	var onRenderProgress render.ProgressFunc
 	if sink != nil || sched.TotalDuration >= minCalibratedMixSec {
@@ -1025,7 +1042,6 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, sink Telemetry
 		}
 	}
 
-	renderStart := time.Now()
 	pathKind, err := render.RenderWithOptions(ctx, render.RenderOptions{
 		BGPath:          cfg.BG,
 		MergedAudioPath: mergedAudioPath,
@@ -1045,7 +1061,11 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, sink Telemetry
 	if err != nil {
 		return err
 	}
-	if tracker.renderWallSec <= 0 && pathKind != render.PathA {
+	if pathKind == render.PathA {
+		if !tracker.muxStart.IsZero() {
+			tracker.muxWallSec = time.Since(tracker.muxStart).Seconds()
+		}
+	} else {
 		tracker.renderWallSec = time.Since(renderStart).Seconds()
 	}
 	if calPath != "" && sched.TotalDuration >= minCalibratedMixSec {
