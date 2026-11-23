@@ -181,3 +181,41 @@ func TestSecurityOSRootConfinement(t *testing.T) {
 		}
 	})
 }
+
+func TestResolveRenderOutputTarget(t *testing.T) {
+	ws := t.TempDir()
+	outDir := filepath.Join(ws, "exports")
+	outside := t.TempDir()
+
+	srv, err := NewServer(Config{
+		Host:         "127.0.0.1",
+		WorkspaceDir: ws,
+		LookPath:     okLookPath,
+		Runner:       stubPipelineRunner(t, nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	// Empty input uses fallback resolved relative to safeOutDir.
+	resolved, status, err := srv.resolveRenderOutputTarget(outDir, "   ", "output.mp4")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("fallback resolveRenderOutputTarget failed: status=%d err=%v", status, err)
+	}
+	if !strings.HasSuffix(resolved, filepath.Join("exports", "output.mp4")) {
+		t.Fatalf("unexpected fallback path: %q", resolved)
+	}
+
+	// Trailing slash or backslash fails with 400 Bad Request.
+	for _, bad := range []string{"sub/", `sub\`} {
+		if _, status, err := srv.resolveRenderOutputTarget(outDir, bad, "output.mp4"); err == nil || status != http.StatusBadRequest {
+			t.Fatalf("expected 400 for %q, got status=%d err=%v", bad, status, err)
+		}
+	}
+
+	// Outside allowedRoots fails with 403 Forbidden.
+	if _, status, err := srv.resolveRenderOutputTarget(outDir, filepath.Join(outside, "escape.mp4"), "output.mp4"); err == nil || status != http.StatusForbidden {
+		t.Fatalf("expected 403 for outside target, got status=%d err=%v", status, err)
+	}
+}
