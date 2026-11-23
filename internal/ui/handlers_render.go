@@ -259,12 +259,8 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.preserveCollidingArtifacts(job.id, outPath, tsPath); err != nil {
-		s.store.releaseActive(job.id)
+		s.store.discardUnstartedJob(job.id)
 		jobCancel()
-		job.finish(jobFailed, err.Error(), "error", map[string]any{
-			"jobId":   job.id,
-			"message": err.Error(),
-		})
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("preserve prior render artifacts: %v", err))
 		return
 	}

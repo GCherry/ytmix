@@ -268,11 +268,6 @@ func (st *jobStore) resolveTracks(sessionID string, trackIDs []string) ([]mixer.
 	return tracks, nil
 }
 
-func (st *jobStore) resolveTrack(sessionID, trackID string) (mixer.Track, error) {
-	tr, _, err := st.resolveTrackWithDir(sessionID, trackID)
-	return tr, err
-}
-
 func (st *jobStore) resolveTrackWithDir(sessionID, trackID string) (mixer.Track, string, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -328,6 +323,22 @@ func (st *jobStore) releaseActive(jobID string) {
 	if st.activeJobID == jobID {
 		st.activeJobID = ""
 		st.activeSessionID = ""
+	}
+}
+
+func (st *jobStore) discardUnstartedJob(jobID string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.activeJobID == jobID {
+		st.activeJobID = ""
+		st.activeSessionID = ""
+	}
+	delete(st.jobs, jobID)
+	for i, id := range st.jobRing {
+		if id == jobID {
+			st.jobRing = append(st.jobRing[:i], st.jobRing[i+1:]...)
+			break
+		}
 	}
 }
 

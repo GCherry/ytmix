@@ -36,8 +36,8 @@ _(None yet — all pre-build design choices were confirmed in Wave 0 rounds 1–
 |---|---|
 | Go minimum version | Bump [go.mod](../../go.mod) from `go 1.22` to `go 1.24` and update `1.22+` references in [AGENTS.md](../../AGENTS.md), [README.md](../../README.md), [ytmix_technical_specification.md](../specs/ytmix_technical_specification.md), and [ytmix_architecture_pipeline_blueprint.html](../specs/ytmix_architecture_pipeline_blueprint.html) to `1.24+`. |
 | `os.Root` (`os.OpenRoot`) scope | Adopt `os.Root` in `internal/ui/security.go` for all server-side file reads (`handlePreviewBG`, `handleSessionTrackAudio`, `serveJobArtifact`), directory listings (`handleFSList`), `mkdir` (`handleFSMkdir`), and uploaded part writes (`saveUploadedPart`) within `allowedRoots` / `jobDir` / `session.tempDir`, while keeping canonicalized paths for `ffmpeg`/`mixer` subprocesses and updating [ADR 0002](../../docs/adr/0002-embedded-http-ui-and-sse-telemetry.md). |
-| Local-mode consecutive overwrite protection | Retain per-job artifact snapshots in `jobDir` (`os.Link` hardlink when on the same filesystem, or streaming file copy right before a colliding render overwrites a retained job's `outPath` / `tsPath`) so prior jobs in the 5-job ring always serve their exact rendered files while the user's `--out` / `--timestamps` target on disk receives the latest Mix. |
-| `internal/ui` file partition | Split [server.go](../../internal/ui/server.go) (currently 2,111 lines) into cohesive package-private files in `package ui` (~200–450 lines each): `server.go` (lifecycle, config, routing, embedded assets, capability cache, `handleHealth`), `handlers_probe.go`, `handlers_render.go`, `handlers_fs.go`, and `security.go` alongside existing [jobs.go](../../internal/ui/jobs.go) and [picker.go](../../internal/ui/picker.go). |
+| Local-mode consecutive overwrite protection | Retain per-job artifact snapshots in `jobDir` (an `os.OpenRoot`-confined independent file copy right before a colliding render overwrites a retained job's `outPath` / `tsPath`, avoiding shared-inode `O_TRUNC` corruption from `ffmpeg -y`) so prior jobs in the 5-job ring always serve their exact rendered files while the user's `--out` / `--timestamps` target on disk receives the latest Mix. |
+| `internal/ui` file partition | Split [server.go](../../internal/ui/server.go) (currently 2,111 lines) into cohesive package-private files in `package ui`: `server.go` (lifecycle, config, routing, embedded assets, capability cache, `handleHealth`), `handlers_probe.go`, `handlers_render.go`, `handlers_fs.go`, and `security.go` alongside existing [jobs.go](../../internal/ui/jobs.go) and [picker.go](../../internal/ui/picker.go). |
 | SSE disconnect & `app.js` `>= 1h` Track table | Update `writeSSEEvent` to return write errors and `handleRenderEvents` to check `r.Context().Done()` and write errors during both history replay and live streaming; update `renderTracksTable` in [app.js](../../internal/ui/assets/app.js) so Track `Start` times use `includeHours = sched.totalDuration >= 3600` consistently with Chapter Timestamps (`timestamps.txt`). |
 
 ## Grill
@@ -55,7 +55,7 @@ Issue #13 (UI Refactor + Go 1.24 os.Root + Overwrite + SSE + >=1h Start)
 │   ├── Relative path + `filepath.ToSlash` `"."` normalization for `root.FS()` (G2)
 │   └── Canonicalized paths preserved for `ffmpeg`/`mixer` CLI subprocesses + ADR 0002 updated (G5)
 ├── Consecutive Loopback Overwrite Fix [Confirmed: per-job snapshot in `jobDir` before colliding overwrite]
-│   └── `os.Link` (zero-copy same-FS) -> streaming copy fallback under `jobStore.mu` before overwriting (G3)
+│   └── Independent `os.OpenRoot`-confined copy under `jobStore.mu` before overwriting (G3)
 ├── File Partition (`package ui` only, no sub-packages per AGENTS.md) [Confirmed: 5-file split + jobs.go/picker.go]
 │   └── Preserve all exported APIs, HTTP routes/status codes, and `gosec`/`depguard`/CodeQL cleanliness (G4)
 └── SSE & `app.js` Fixes
@@ -68,7 +68,7 @@ Issue #13 (UI Refactor + Go 1.24 os.Root + Overwrite + SSE + >=1h Start)
 |---|-------|-----|---------------|
 | G1 | **Critical** | Open `os.OpenRoot(root)` per operation with `defer root.Close()` inside `security.go` helpers rather than caching long-lived `*os.Root` handles in `Server`, preventing FD leaks across dynamic `allowedRoots` and Windows directory locks. | Decisions / Phase 1A |
 | G2 | **Critical** | Normalize `filepath.Rel(root, target)` (`""` -> `"."`, `filepath.ToSlash` for `fs.ReadDir(root.FS(), ...)`) and ensure non-existent output paths still resolve safely via deepest-existing-ancestor canonicalization + `os.Root` parent verification before `PrepareOutputTargets`. | Phase 1A |
-| G3 | **Critical** | Snapshot prior retained jobs' `outPath` / `tsPath` into their `jobDir` (`os.Link` first, `io.Copy` `0600` fallback) atomically under `jobStore.mu` / `job.mu` right before a new local render claims/overwrites the same path, and serve `jobDir`-confined artifacts via `os.OpenRoot(job.dir)`. | Phase 1B |
+| G3 | **Critical** | Snapshot prior retained jobs' `outPath` / `tsPath` into their `jobDir` via an `os.OpenRoot`-confined independent file copy atomically under `jobStore.mu` / `job.mu` right before a new local render claims/overwrites the same path, and serve `jobDir`-confined artifacts via `os.OpenRoot(job.dir)`. | Phase 1B |
 | G4 | **Critical** | Keep all new files strictly in `package ui` (honoring [AGENTS.md](../../AGENTS.md) anti-bloat rules and `depguard` zero-dependency constraints), preserving every public symbol (`Config`, `Server`, `NewServer`, `Handler`, `HTTPServer`, `Close`, `PickPathFunc`) and HTTP status contract. | Phase 1A / Phase 1B |
 | G5 | **Low-risk** | Update [ADR 0002](../../docs/adr/0002-embedded-http-ui-and-sse-telemetry.md) and `Go 1.22+` references in [AGENTS.md](../../AGENTS.md), [README.md](../../README.md), [ytmix_technical_specification.md](../specs/ytmix_technical_specification.md), and [ytmix_architecture_pipeline_blueprint.html](../specs/ytmix_architecture_pipeline_blueprint.html). | Phase 1C |
 | G6 | **Low-risk** | Add deterministic regression tests for `os.Root` confinement (including symlink escape & `mkdir`), consecutive local render artifact preservation, `handleRenderEvents` disconnect/write-error termination, and `app.js` `renderTracksTable` `includeHours` consistency. | Phase 1A / Phase 1B |
@@ -110,7 +110,7 @@ Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 **Triggered by:** Agent — Nov 23, 2026 10:12:55 PM UTC
 
 - [x] Bump [go.mod](../../go.mod) from `go 1.22` to `go 1.24`.
-- [x] Create `internal/ui/security.go` implementing `os.Root` (`os.OpenRoot`) confined operations (`openAllowedFile`, `statAllowedDir`, `readAllowedDir`, `mkdirAllowedDir`, `openRootRel`, `saveUploadedPart` via `os.OpenRoot`, plus `resolveAllowedPath`, `resolveRenderOutputTarget`, `requireSameOrigin`, `localPathsAllowed`, and filename sanitizers).
+- [x] Create `internal/ui/security.go` implementing `os.Root` (`os.OpenRoot`) confined operations (`openAllowedFile`, `openFileInDir`, `readAllowedDir`, `mkdirAllowedDir`, `saveUploadedPartInDir`, plus `resolveAllowedPath`, `resolveRenderOutputTarget`, `requireSameOrigin`, `localPathsAllowed`, and filename sanitizers).
 - [x] Partition [internal/ui/server.go](../../internal/ui/server.go) cleanly into `server.go` (lifecycle, `Config`, `Server`, routing, embedded assets, encoder/filter caches, `handleHealth`), `handlers_probe.go` (`/api/probe`, `/api/estimate`, `/api/sessions/{sessionId}/tracks/{trackId}/audio`, `/api/preview-bg`), `handlers_render.go` (`/api/render`, `runRenderJob`, `/api/render/{id}/events`, `/api/render/{id}/output`, `/api/render/{id}/timestamps`), and `handlers_fs.go` (`/api/fs/list`, `/api/fs/pick`, `/api/fs/mkdir`) with zero public API changes.
 - [x] Add focused unit tests in `internal/ui/security_test.go` covering `os.Root` traversal/symlink rejection, `allowedRoots` boundaries, `mkdirAllowedDir`, and `resolveRenderOutputTarget`.
 
@@ -123,7 +123,7 @@ Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 
 #### Phase Summary
 
-Bumped [go.mod](../../go.mod) to `go 1.24`, extracted [internal/ui/security.go](../../internal/ui/security.go) using ephemeral `os.OpenRoot` handles (`openAllowedFile`, `openFileInDir`, `readAllowedDir`, `mkdirAllowedDir`, `saveUploadedPartInDir`), partitioned the 2,111-line [internal/ui/server.go](../../internal/ui/server.go) into `server.go` (388 lines), `handlers_probe.go` (574 lines), `handlers_render.go` (575 lines), `handlers_fs.go` (253 lines), and `security.go` (481 lines), and added [internal/ui/security_test.go](../../internal/ui/security_test.go).
+Bumped [go.mod](../../go.mod) to `go 1.24`, extracted [internal/ui/security.go](../../internal/ui/security.go) using ephemeral `os.OpenRoot` handles (`openAllowedFile`, `openFileInDir`, `readAllowedDir`, `mkdirAllowedDir`, `saveUploadedPartInDir`), partitioned the 2,111-line [internal/ui/server.go](../../internal/ui/server.go) into `server.go` (388 lines), `handlers_probe.go` (574 lines), `handlers_render.go` (600 lines), `handlers_fs.go` (253 lines), and `security.go` (482 lines), and added [internal/ui/security_test.go](../../internal/ui/security_test.go).
 
 ### Phase 1B: Consecutive Output Isolation, SSE Disconnect Fix & `app.js` `>= 1h` Formatting
 

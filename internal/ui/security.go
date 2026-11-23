@@ -373,6 +373,7 @@ func (s *Server) mkdirAllowedDir(rawParent, folderName string) (string, int, err
 	if _, err := subRoot.Stat(folderName); err == nil {
 		return "", http.StatusConflict, fmt.Errorf("folder %q already exists", folderName)
 	}
+	// #nosec G301 -- user-facing output directory uses standard 0755 permissions inside a confined allowedRoot via os.OpenRoot.
 	if err := subRoot.Mkdir(folderName, 0755); err != nil {
 		return "", http.StatusInternalServerError, fmt.Errorf("create folder %q: %v", folderName, err)
 	}
