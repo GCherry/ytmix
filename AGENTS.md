@@ -4,7 +4,7 @@ Instructions for coding agents working in `ytmix`.
 
 ## Project Overview
 
-`ytmix` is a zero-dependency Go (`1.22+`) CLI tool that wraps `ffmpeg` and `ffprobe` to compile a directory of `.mp3` audio files and a background visual (static image or looping video/GIF) into a 1080p `.mp4` video with YouTube chapter timestamps (`timestamps.txt`).
+`ytmix` is a zero-dependency Go (`1.24+`) CLI tool that wraps `ffmpeg` and `ffprobe` to compile a directory of `.mp3` audio files and a background visual (static image or looping video/GIF) into a 1080p `.mp4` video with YouTube chapter timestamps (`timestamps.txt`).
 
 ## Source-of-Truth Docs
 
@@ -14,7 +14,7 @@ Instructions for coding agents working in `ytmix`.
 
 ## Build, Test & Verification
 
-Prerequisite: `go` (`1.22+`), `ffmpeg`, and `ffprobe` must be available on `PATH`.
+Prerequisite: `go` (`1.24+`), `ffmpeg`, and `ffprobe` must be available on `PATH`.
 
 ```powershell
 # Build binary

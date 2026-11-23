@@ -1,6 +1,6 @@
 # ytmix
 
-`ytmix` is a high-performance, zero-dependency Go (`1.22+`) CLI tool that wraps `ffmpeg` and `ffprobe` to compile a directory of `.mp3` audio files and either a Background Visual (static image or short looping video/GIF) or an auto-generated music-reactive visualizer into a 1080p `.mp4` Mix ready for YouTube upload, alongside a YouTube-formatted Chapter Timestamps file (`timestamps.txt`).
+`ytmix` is a high-performance, zero-dependency Go (`1.24+`) CLI tool that wraps `ffmpeg` and `ffprobe` to compile a directory of `.mp3` audio files and either a Background Visual (static image or short looping video/GIF) or an auto-generated music-reactive visualizer into a 1080p `.mp4` Mix ready for YouTube upload, alongside a YouTube-formatted Chapter Timestamps file (`timestamps.txt`).
 
 ## Features
 
@@ -18,7 +18,7 @@
 
 ## Prerequisites
 
-- **Go** `1.22+`
+- **Go** `1.24+`
 - **FFmpeg** and **FFprobe** installed and available on your system `PATH`
 
 Verify prerequisites:

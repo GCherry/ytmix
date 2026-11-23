@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -267,17 +269,22 @@ func (st *jobStore) resolveTracks(sessionID string, trackIDs []string) ([]mixer.
 }
 
 func (st *jobStore) resolveTrack(sessionID, trackID string) (mixer.Track, error) {
+	tr, _, err := st.resolveTrackWithDir(sessionID, trackID)
+	return tr, err
+}
+
+func (st *jobStore) resolveTrackWithDir(sessionID, trackID string) (mixer.Track, string, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	sess, ok := st.sessions[sessionID]
 	if !ok {
-		return mixer.Track{}, errors.New("unknown or expired sessionId; re-probe Tracks first")
+		return mixer.Track{}, "", errors.New("unknown or expired sessionId; re-probe Tracks first")
 	}
 	tr, exists := sess.tracks[trackID]
 	if !exists {
-		return mixer.Track{}, fmt.Errorf("unknown trackId %q in session", trackID)
+		return mixer.Track{}, "", fmt.Errorf("unknown trackId %q in session", trackID)
 	}
-	return tr, nil
+	return tr, sess.tempDir, nil
 }
 
 func (st *jobStore) claimRenderSlot(job *renderJob, sessionID string) error {
@@ -322,6 +329,118 @@ func (st *jobStore) releaseActive(jobID string) {
 		st.activeJobID = ""
 		st.activeSessionID = ""
 	}
+}
+
+func (st *jobStore) preserveCollidingArtifacts(excludeJobID, outPath, tsPath string) error {
+	st.mu.Lock()
+	candidates := make([]*renderJob, 0, len(st.jobs))
+	for id, j := range st.jobs {
+		if id == excludeJobID {
+			continue
+		}
+		candidates = append(candidates, j)
+	}
+	st.mu.Unlock()
+
+	for _, job := range candidates {
+		job.mu.Lock()
+		status := job.status
+		jobDir := job.dir
+		jobOut := job.outPath
+		jobTS := job.tsPath
+		job.mu.Unlock()
+
+		if status != jobComplete || jobDir == "" {
+			continue
+		}
+
+		var snapOut, snapTS string
+		if sameCleanPath(jobOut, outPath) {
+			snap, err := snapshotArtifactToDir(jobOut, jobDir, "mix.mp4")
+			if err != nil {
+				return err
+			}
+			snapOut = snap
+		}
+		if sameCleanPath(jobTS, tsPath) {
+			snap, err := snapshotArtifactToDir(jobTS, jobDir, "timestamps.txt")
+			if err != nil {
+				return err
+			}
+			snapTS = snap
+		}
+
+		if snapOut != "" || snapTS != "" {
+			job.mu.Lock()
+			if snapOut != "" && sameCleanPath(job.outPath, outPath) {
+				job.outPath = snapOut
+			}
+			if snapTS != "" && sameCleanPath(job.tsPath, tsPath) {
+				job.tsPath = snapTS
+			}
+			job.mu.Unlock()
+		}
+	}
+	return nil
+}
+
+func sameCleanPath(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
+}
+
+func snapshotArtifactToDir(srcPath, dstDir, dstName string) (string, error) {
+	dstPath := filepath.Join(dstDir, dstName)
+	if sameCleanPath(srcPath, dstPath) {
+		return dstPath, nil
+	}
+	// Copy to an independent file inside jobDir rather than hardlinking, because
+	// ffmpeg -y and os.WriteFile truncate the target path in-place (O_TRUNC),
+	// which would overwrite a shared inode.
+	if err := copyFileToDir(srcPath, dstDir, dstName); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
+	}
+	return dstPath, nil
+}
+
+func copyFileToDir(srcPath, dstDir, dstName string) error {
+	srcDir := filepath.Dir(srcPath)
+	srcBase := filepath.Base(srcPath)
+	// #nosec G304 G703 -- srcDir/srcBase come from a validated prior renderJob artifact; confined via os.OpenRoot.
+	srcRoot, err := os.OpenRoot(srcDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = srcRoot.Close() }()
+
+	srcFile, err := srcRoot.Open(srcBase)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = srcFile.Close() }()
+
+	// #nosec G304 G703 -- dstDir is a server-owned temp jobDir and dstName is a fixed literal filename; confined via os.OpenRoot.
+	dstRoot, err := os.OpenRoot(dstDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dstRoot.Close() }()
+
+	dstFile, err := dstRoot.OpenFile(dstName, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(dstFile, srcFile)
+	closeErr := dstFile.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
 }
 
 func (st *jobStore) getJob(id string) (*renderJob, bool) {

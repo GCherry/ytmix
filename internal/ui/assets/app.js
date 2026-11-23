@@ -736,6 +736,7 @@
 
     $("tracks-summary").textContent = `${state.tracks.length} Track(s) · ${formatTime(sched.totalDuration, false)}`;
     renderStageTrackSelect();
+    const includeHours = sched.totalDuration >= 3600;
     state.tracks.forEach((tr, idx) => {
       const row = document.createElement("tr");
       row.className = "track-row" + (idx === state.selectedTrackIdx ? " is-selected" : "");
@@ -753,7 +754,7 @@
 
       const tdStart = document.createElement("td");
       tdStart.className = "col-start";
-      tdStart.textContent = formatTime(sched.starts[idx] || 0, false);
+      tdStart.textContent = formatTime(sched.starts[idx] || 0, includeHours);
 
       const tdTitle = document.createElement("td");
       tdTitle.textContent = tr.displayTitle;
