@@ -73,6 +73,11 @@
     selectedTrackIdx: 0,
     bgFile: null,
     bgObjectUrl: "",
+    bgMeta: null,
+    estimate: null,
+    estimateTimer: 0,
+    estimateSeq: 0,
+    lastEstimateKey: "",
     rendering: false,
     eventSource: null,
     lastCompleteJob: null,
@@ -146,6 +151,20 @@
       return `${String(hrs).padStart(2, "0")}:${String(mins).padStart(2, "0")}:${String(rem).padStart(2, "0")}`;
     }
     return `${String(mins).padStart(2, "0")}:${String(rem).padStart(2, "0")}`;
+  }
+
+  function formatDurationHuman(sec) {
+    const s = Math.max(0, Math.round(Number(sec) || 0));
+    if (s < 60) {
+      return `${s}s`;
+    }
+    const hrs = Math.floor(s / 3600);
+    const mins = Math.floor((s % 3600) / 60);
+    const rem = s % 60;
+    if (hrs > 0) {
+      return mins > 0 ? `${hrs}h ${mins}m` : `${hrs}h`;
+    }
+    return rem > 0 ? `${mins}m ${rem}s` : `${mins}m`;
   }
 
   function getPreset(id) {
@@ -528,6 +547,45 @@
     renderAll();
   }
 
+  function probeClientBgMeta(file, objectUrl, ext) {
+    if (!file || !objectUrl) return;
+    if (IMAGE_EXTS.has(ext) || ext === ".gif") {
+      const img = new Image();
+      img.onload = () => {
+        if (state.bgObjectUrl !== objectUrl) return;
+        state.bgMeta = {
+          durationSec: 0,
+          fps: 0,
+          width: img.naturalWidth || 0,
+          height: img.naturalHeight || 0,
+        };
+        scheduleEstimate(true);
+      };
+      img.src = objectUrl;
+      return;
+    }
+    if (VIDEO_EXTS.has(ext)) {
+      const vid = document.createElement("video");
+      vid.preload = "metadata";
+      vid.muted = true;
+      vid.onloadedmetadata = () => {
+        if (state.bgObjectUrl !== objectUrl) return;
+        state.bgMeta = {
+          durationSec: Number.isFinite(vid.duration) && vid.duration > 0 ? vid.duration : 0,
+          fps: 0,
+          width: vid.videoWidth || 0,
+          height: vid.videoHeight || 0,
+        };
+        vid.removeAttribute("src");
+        scheduleEstimate(true);
+      };
+      vid.onerror = () => {
+        vid.removeAttribute("src");
+      };
+      vid.src = objectUrl;
+    }
+  }
+
   function handleBgFile(file) {
     if (!file) return;
     const ext = extOf(file.name);
@@ -540,7 +598,11 @@
     }
     state.bgFile = file;
     state.bgObjectUrl = URL.createObjectURL(file);
+    state.bgMeta = null;
+    state.estimate = null;
+    state.lastEstimateKey = "";
     $("bg-upload-label").textContent = file.name;
+    probeClientBgMeta(file, state.bgObjectUrl, ext);
     renderAll();
   }
 
@@ -919,7 +981,7 @@
       const preset = getPreset(state.visualizer);
       $("stage-bg-badge").textContent = `viz: ${preset.id}`;
       $("stage-path-badge").textContent = "Path D";
-      $("stage-fps-meta").textContent = info.fpsLabel;
+      renderStageFpsMeta(info);
 
       img.hidden = true;
       img.removeAttribute("src");
@@ -940,7 +1002,7 @@
     const bgName = activeBgName();
     $("stage-bg-badge").textContent = bgName ? baseName(bgName) : "No visual";
     $("stage-path-badge").textContent = info.path || "Select BG";
-    $("stage-fps-meta").textContent = info.fpsLabel;
+    renderStageFpsMeta(info);
 
     let src = "";
     if (state.bgMode === "upload" && state.bgObjectUrl) {
@@ -1082,6 +1144,154 @@
     const hasBg = vizReady || (Boolean(activeBgName()) && Boolean(detectRenderingPath().path));
     const hasTracks = state.tracks.length > 0;
     $("render-btn").disabled = state.rendering || !hasTracks || !hasBg || !sched.validCrossfade;
+
+    scheduleEstimate(false);
+    renderEstimateUI();
+  }
+
+  function renderStageFpsMeta(info) {
+    const el = $("stage-fps-meta");
+    if (!el) return;
+    const est = state.estimate;
+    if (est && est.renderingPath && est.renderingPath === info.path) {
+      if (est.renderingPath === "Path A" || est.renderingPath === "Path B") {
+        const fps = Math.round(est.loopFPS || 30);
+        if (est.loopDurationSec > 0 && est.loopCycles > 0) {
+          el.textContent = `${est.loopDurationSec.toFixed(1)}s loop · ${fps} fps · ×${est.loopCycles} cycles (${est.renderingPath})`;
+          return;
+        }
+        el.textContent = `Loop · ${fps} fps (${est.renderingPath})`;
+        return;
+      }
+      if (est.renderingPath === "Path C") {
+        const overlay = $("overlay-toggle").checked;
+        el.textContent = `Still image · ${overlay ? "10 fps" : "2 fps"} · -tune stillimage (${est.renderingPath})`;
+        return;
+      }
+      if (est.renderingPath === "Path D") {
+        el.textContent = `Auto Visualizer · ${info.fpsLabel}`;
+        return;
+      }
+    }
+    el.textContent = info.fpsLabel;
+  }
+
+  function buildEstimatePayload(sched) {
+    if (!sched || !sched.validCrossfade || state.tracks.length === 0) return null;
+    const info = detectRenderingPath();
+    if (!info.path) return null;
+
+    const payload = {
+      bgMode: state.bgMode,
+      crossfade: Number($("crossfade-slider").value) || 0,
+      normalize: $("normalize-toggle").checked,
+      overlayTitles: $("overlay-toggle").checked,
+    };
+    if (state.sessionId) {
+      payload.sessionId = state.sessionId;
+      payload.trackIds = state.tracks.map((t) => t.id);
+    } else {
+      payload.trackDurations = state.tracks.map((t) => t.duration);
+    }
+
+    if (state.bgMode === "visualizer") {
+      if (!getPreset(state.visualizer).available) return null;
+      payload.visualizer = state.visualizer;
+      payload.visualizerTheme = state.visualizerTheme;
+      payload.visualizerResolution = state.visualizerResolution;
+      payload.visualizerGlow = state.visualizerGlow;
+    } else if (state.bgMode === "upload") {
+      if (!state.bgFile) return null;
+      payload.bgName = state.bgFile.name;
+      if (state.bgMeta) {
+        payload.bgMeta = state.bgMeta;
+      }
+    } else if (state.bgMode === "local") {
+      if (!state.health || !state.health.localPathsAllowed) return null;
+      const bgPath = $("bg-path-input").value.trim();
+      if (!bgPath) return null;
+      payload.bgPath = bgPath;
+    }
+    return payload;
+  }
+
+  function scheduleEstimate(force) {
+    const sched = computeSchedule();
+    const payload = buildEstimatePayload(sched);
+    if (!payload) {
+      clearTimeout(state.estimateTimer);
+      state.estimateTimer = 0;
+      state.lastEstimateKey = "";
+      if (state.estimate !== null) {
+        state.estimate = null;
+        renderEstimateUI();
+        renderStageFpsMeta(detectRenderingPath());
+      }
+      return;
+    }
+    const key = JSON.stringify(payload);
+    if (!force && key === state.lastEstimateKey) {
+      return;
+    }
+    state.lastEstimateKey = key;
+    clearTimeout(state.estimateTimer);
+    state.estimateTimer = setTimeout(() => {
+      fetchEstimate(payload);
+    }, 140);
+  }
+
+  async function fetchEstimate(payload) {
+    const seq = ++state.estimateSeq;
+    try {
+      const res = await fetch("/api/estimate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        return;
+      }
+      const data = await res.json();
+      if (seq !== state.estimateSeq) return;
+      state.estimate = data;
+      renderEstimateUI();
+      renderStageFpsMeta(detectRenderingPath());
+    } catch {
+      // Keep UI responsive if transient estimate request fails.
+    }
+  }
+
+  function renderEstimateUI() {
+    const strip = $("estimate-strip");
+    const pill = $("estimate-pill");
+    const legend = $("estimate-legend");
+    const segAudio = $("cost-seg-audio");
+    const segVideo = $("cost-seg-video");
+    const btnEst = $("render-btn-est");
+    if (!strip || !pill || !legend || !segAudio || !segVideo) return;
+
+    const est = state.estimate;
+    if (!est || !(est.pointSec > 0)) {
+      strip.hidden = true;
+      if (btnEst) btnEst.textContent = "";
+      return;
+    }
+
+    strip.hidden = false;
+    const lowStr = formatDurationHuman(est.lowSec);
+    const highStr = formatDurationHuman(est.highSec);
+    const pointStr = formatDurationHuman(est.pointSec);
+    pill.textContent = `Est. ~${lowStr} – ${highStr} · ${est.renderingPath}`;
+
+    const rawAudioW = est.weights && typeof est.weights.audio === "number" ? est.weights.audio : 0.5;
+    const audioPct = Math.max(0, Math.min(100, Math.round(rawAudioW * 100)));
+    const videoPct = Math.max(0, 100 - audioPct);
+    legend.textContent = `Audio ${audioPct}% · Video ${videoPct}%`;
+    segAudio.style.width = `${audioPct}%`;
+    segVideo.style.width = `${videoPct}%`;
+    if (btnEst) {
+      btnEst.textContent = ` (Est. ~${pointStr})`;
+    }
   }
 
   function resetTelemetry() {
@@ -1089,6 +1299,11 @@
     $("progress-fill").style.width = "0%";
     $("telemetry-state").textContent = "Running";
     setTelemetryTabBadge("Running", "is-running");
+    const accEl = $("telemetry-accuracy");
+    if (accEl) {
+      accEl.hidden = true;
+      accEl.textContent = "";
+    }
     $("download-bar").hidden = true;
     $("save-lan-folder-btn").hidden = true;
     $("save-lan-folder-btn").textContent = "Save to Folder…";
@@ -1199,9 +1414,16 @@
     es.addEventListener("step", (e) => {
       const payload = JSON.parse(e.data);
       markStep(payload.step, false);
-      $("progress-fill").style.width = `${payload.progress || 0}%`;
-      $("telemetry-state").textContent = `Running · ${payload.progress || 0}%`;
-      setTelemetryTabBadge(`${payload.progress || 0}%`, "is-running");
+      const pct = payload.progress || 0;
+      $("progress-fill").style.width = `${pct}%`;
+      if (typeof payload.remainingSec === "number" && payload.remainingSec >= 0) {
+        const remText = `~${formatDurationHuman(payload.remainingSec)}`;
+        $("telemetry-state").textContent = `Running · ${pct}% · ${remText} left`;
+        setTelemetryTabBadge(`${pct}% · ${remText}`, "is-running");
+      } else {
+        $("telemetry-state").textContent = `Running · ${pct}%`;
+        setTelemetryTabBadge(`${pct}%`, "is-running");
+      }
       appendLog(payload.message);
     });
 
@@ -1213,8 +1435,14 @@
       if (payload.speed) {
         parts.push(payload.speed);
       }
+      let badgeText = `${pct}%`;
+      if (typeof payload.remainingSec === "number" && payload.remainingSec >= 0) {
+        const remText = `~${formatDurationHuman(payload.remainingSec)}`;
+        parts.push(`${remText} left`);
+        badgeText = `${pct}% · ${remText}`;
+      }
       $("telemetry-state").textContent = parts.join(" · ");
-      setTelemetryTabBadge(`${pct}%`, "is-running");
+      setTelemetryTabBadge(badgeText, "is-running");
     });
 
     es.addEventListener("log", (e) => {
@@ -1232,6 +1460,17 @@
       $("progress-fill").style.width = "100%";
       $("telemetry-state").textContent = `Complete (${payload.renderingPath})`;
       setTelemetryTabBadge("Done", "is-done");
+      if (typeof payload.estimatedSec === "number" && payload.estimatedSec > 0 && typeof payload.actualSec === "number") {
+        const diffPct = Math.round(((payload.actualSec - payload.estimatedSec) / payload.estimatedSec) * 100);
+        const sign = diffPct > 0 ? "+" : "";
+        const accText = `Estimated ~${formatDurationHuman(payload.estimatedSec)} · Actual ${formatDurationHuman(payload.actualSec)} (${sign}${diffPct}%)`;
+        const accEl = $("telemetry-accuracy");
+        if (accEl) {
+          accEl.textContent = accText;
+          accEl.hidden = false;
+        }
+        appendLog(accText);
+      }
       if (payload.timestampsText) {
         $("chapters-preview").textContent = payload.timestampsText;
       }

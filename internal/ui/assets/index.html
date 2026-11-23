@@ -412,15 +412,27 @@
                 <li data-step="5"><span class="step-num">[5/5]</span><span class="step-msg">FFmpeg 1080p Mix render</span></li>
               </ol>
 
+              <div class="telemetry-accuracy mono tabular-nums" id="telemetry-accuracy" hidden></div>
+
               <pre class="well log-well mono" id="telemetry-log">Ready to render.</pre>
             </section>
           </div>
         </div>
 
         <div class="render-dock">
+          <div class="estimate-strip" id="estimate-strip" hidden>
+            <div class="estimate-summary-row">
+              <span class="estimate-pill mono tabular-nums" id="estimate-pill">Est. —</span>
+              <span class="estimate-legend mono tabular-nums" id="estimate-legend">Audio 0% · Video 0%</span>
+            </div>
+            <div class="cost-bar" id="estimate-cost-bar" role="img" aria-label="Estimated Audio vs Video build time share">
+              <div class="cost-seg cost-seg-audio" id="cost-seg-audio" style="width: 50%"></div>
+              <div class="cost-seg cost-seg-video" id="cost-seg-video" style="width: 50%"></div>
+            </div>
+          </div>
           <div class="cta-stack">
             <button type="button" class="btn btn-gold" id="render-btn">
-              Render Mix → <span class="mono" id="render-btn-target">output.mp4</span>
+              Render Mix → <span class="mono" id="render-btn-target">output.mp4</span><span class="mono tabular-nums" id="render-btn-est"></span>
             </button>
             <div class="download-bar" id="download-bar" hidden>
               <button type="button" class="btn btn-gold" id="save-lan-folder-btn" hidden>Save to Folder…</button>
