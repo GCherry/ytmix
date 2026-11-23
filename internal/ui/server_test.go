@@ -161,9 +161,9 @@ func TestStaticAssetsAndHealth(t *testing.T) {
 		wantType string
 		wantSub  []string
 	}{
-		{"/", "text/html", []string{"Editorial Mix Studio", "out-dir-input", "browse-out-dir-btn", "browse-audio-dir-btn", "browse-bg-path-btn", "fs-modal", "save-lan-folder-btn", "fs-modal-out-name", "fs-modal-ts-name", "bg-mode-visualizer", "viz-pager", "audition-btn", "darkness-box", "stage-canvas", "left-tab-tracks", "left-tab-studio", "left-pane-studio", "stage-audition-btn", "stage-track-select", "right-tab-chapters", "right-tab-output", "right-tab-telemetry", "render-dock"}},
-		{"/styles.css", "text/css", []string{"[hidden]", ".modal-backdrop", ".fs-root-chip", ".preset-grid", ".preset-pager", ".darkness-box", ".audition-bar", ".studio-tabs-bar", ".dual-studio-grid", ".stage-track-bar", ".render-dock"}},
-		{"/app.js", "javascript", []string{"/api/render", "/api/fs/list", "/api/fs/mkdir", "/api/fs/pick", "pickNativePath", "showDirectoryPicker", "/api/sessions/", "VIZ_PAGE_SIZE", "visualizerBrightness", "fadeToBlackMinutes", "setLeftTab", "setRightTab", "renderStageTrackSelect"}},
+		{"/", "text/html", []string{"Editorial Mix Studio", "out-dir-input", "browse-out-dir-btn", "browse-audio-dir-btn", "browse-bg-path-btn", "fs-modal", "save-lan-folder-btn", "fs-modal-out-name", "fs-modal-ts-name", "bg-mode-visualizer", "viz-pager", "audition-btn", "darkness-box", "stage-canvas", "left-tab-tracks", "left-tab-studio", "left-pane-studio", "stage-audition-btn", "stage-track-select", "right-tab-chapters", "right-tab-output", "right-tab-telemetry", "render-dock", "estimate-strip", "estimate-pill", "cost-seg-audio", "cost-seg-video", "telemetry-accuracy"}},
+		{"/styles.css", "text/css", []string{"[hidden]", ".modal-backdrop", ".fs-root-chip", ".preset-grid", ".preset-pager", ".darkness-box", ".audition-bar", ".studio-tabs-bar", ".dual-studio-grid", ".stage-track-bar", ".render-dock", ".estimate-strip", ".cost-bar", ".cost-seg-audio", ".cost-seg-video", ".telemetry-accuracy"}},
+		{"/app.js", "javascript", []string{"/api/render", "/api/estimate", "/api/fs/list", "/api/fs/mkdir", "/api/fs/pick", "pickNativePath", "showDirectoryPicker", "/api/sessions/", "VIZ_PAGE_SIZE", "visualizerBrightness", "fadeToBlackMinutes", "setLeftTab", "setRightTab", "renderStageTrackSelect", "bgMeta", "remainingSec", "estimatedSec", "actualSec"}},
 	} {
 		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
 		rec := httptest.NewRecorder()
@@ -505,6 +505,12 @@ func TestRenderUploadFlowSSEAndDownloads(t *testing.T) {
 	}
 	if !strings.Contains(rawEvents, "event: progress") || !strings.Contains(rawEvents, `"speed":"2.10x"`) {
 		t.Errorf("expected live SSE progress events with speed:\n%s", rawEvents)
+	}
+	if !strings.Contains(rawEvents, `"remainingSec":`) || !strings.Contains(rawEvents, `"estimatedTotalSec":`) {
+		t.Errorf("expected live SSE progress events with remainingSec and estimatedTotalSec:\n%s", rawEvents)
+	}
+	if !strings.Contains(rawEvents, `"estimatedSec":`) || !strings.Contains(rawEvents, `"actualSec":`) {
+		t.Errorf("expected SSE complete event with estimatedSec and actualSec:\n%s", rawEvents)
 	}
 
 	// Verify latestProgress reconnect snapshot does not bloat job.events history.
@@ -1708,4 +1714,359 @@ func TestNativePickerEndpointAndSessionRoots(t *testing.T) {
 			t.Fatalf("second concurrent pick = %d, want 409", w2.Code)
 		}
 	})
+}
+
+func TestEstimateEndpointAndSecurityGuards(t *testing.T) {
+	ws := t.TempDir()
+	outside := t.TempDir()
+	audioDir := filepath.Join(ws, "tracks")
+	if err := os.Mkdir(audioDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(audioDir, "01_Track.mp3"), []byte("mp3"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(audioDir, "02_Track.mp3"), []byte("mp3"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	loopBG := filepath.Join(ws, "loop.mp4")
+	if err := os.WriteFile(loopBG, []byte("MP4"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	outsideBG := filepath.Join(outside, "escape.mp4")
+	if err := os.WriteFile(outsideBG, []byte("MP4"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var bgProbes atomic.Int32
+	baseRunner := stubPipelineRunner(t, map[string]string{"01_Track": "120.0", "02_Track": "180.0"})
+	runner := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "ffprobe" && len(args) > 0 {
+			target := args[len(args)-1]
+			if strings.Contains(target, "loop.mp4") {
+				bgProbes.Add(1)
+				return []byte(`{"format":{"duration":"12.000000"},"streams":[{"codec_name":"h264","width":1920,"height":1080,"r_frame_rate":"30/1","avg_frame_rate":"30/1","nb_frames":"360","pix_fmt":"yuv420p"}]}`), nil
+			}
+		}
+		return baseRunner(ctx, name, args...)
+	}
+
+	srv, err := NewServer(Config{
+		Host:         "127.0.0.1",
+		Port:         8080,
+		WorkspaceDir: ws,
+		LookPath:     okLookPath,
+		Runner:       runner,
+		GOOS:         "linux",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	// Probe tracks into a session.
+	probeReq := httptest.NewRequest(http.MethodPost, "/api/probe", strings.NewReader(`{"audioDir":`+strconvQuote(audioDir)+`}`))
+	probeReq.Header.Set("Content-Type", "application/json")
+	probeReq.RemoteAddr = "127.0.0.1:50000"
+	probeRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(probeRec, probeReq)
+	if probeRec.Code != http.StatusOK {
+		t.Fatalf("probe failed: %d %s", probeRec.Code, probeRec.Body.String())
+	}
+	var probed probeResponse
+	if err := json.Unmarshal(probeRec.Body.Bytes(), &probed); err != nil {
+		t.Fatal(err)
+	}
+	trackIDs := []string{probed.Tracks[0].ID, probed.Tracks[1].ID}
+
+	postEstimate := func(remoteAddr, contentType string, headers map[string]string, body any) *httptest.ResponseRecorder {
+		raw, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, "/api/estimate", bytes.NewReader(raw))
+		req.Host = "127.0.0.1:8080"
+		req.RemoteAddr = remoteAddr
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	t.Run("local bgMode probes server-side BG and computes Path A and Path B loop cycles", func(t *testing.T) {
+		rec := postEstimate("127.0.0.1:50000", "application/json", nil, map[string]any{
+			"sessionId":     probed.SessionID,
+			"trackIds":      trackIDs,
+			"bgMode":        "local",
+			"bgPath":        loopBG,
+			"overlayTitles": true,
+			"normalize":     true,
+			"crossfade":     3.0,
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 for local estimate, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var est render.MixEstimate
+		if err := json.Unmarshal(rec.Body.Bytes(), &est); err != nil {
+			t.Fatal(err)
+		}
+		if est.Path != render.PathB {
+			t.Fatalf("renderingPath = %q, want Path B", est.Path)
+		}
+		if est.LoopDurationSec != 12.0 || est.LoopFPS != 30.0 || est.LoopCycles <= 0 {
+			t.Fatalf("unexpected loop metadata: dur=%v fps=%v cycles=%d", est.LoopDurationSec, est.LoopFPS, est.LoopCycles)
+		}
+		if est.PointSec <= 0 || est.LowSec <= 0 || est.HighSec <= est.LowSec {
+			t.Fatalf("unexpected estimate bounds: %+v", est)
+		}
+		if est.Weights.Audio <= 0 || est.Weights.Video <= 0 {
+			t.Fatalf("expected positive stage weights, got %+v", est.Weights)
+		}
+		if bgProbes.Load() < 1 {
+			t.Fatalf("expected server-side ProbeBackgroundVisual call for local bgPath")
+		}
+	})
+
+	t.Run("upload bgMode uses client bgMeta without server filesystem access or re-upload", func(t *testing.T) {
+		probesBefore := bgProbes.Load()
+		rec := postEstimate("127.0.0.1:50000", "application/json", nil, map[string]any{
+			"sessionId":     probed.SessionID,
+			"trackIds":      trackIDs,
+			"bgMode":        "upload",
+			"bgName":        "client_loop.mp4",
+			"overlayTitles": false,
+			"bgMeta": map[string]any{
+				"durationSec": 10.0,
+				"fps":         60.0,
+				"width":       1920,
+				"height":      1080,
+			},
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 for upload estimate, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var est render.MixEstimate
+		if err := json.Unmarshal(rec.Body.Bytes(), &est); err != nil {
+			t.Fatal(err)
+		}
+		if est.Path != render.PathA || est.LoopDurationSec != 10.0 || est.LoopFPS != 60.0 || est.LoopCycles != 30 {
+			t.Fatalf("unexpected upload Path A estimate: %+v", est)
+		}
+		if bgProbes.Load() != probesBefore {
+			t.Fatalf("upload estimate must not probe server filesystem")
+		}
+	})
+
+	t.Run("visualizer bgMode (Path D) and trackDurations fallback succeed", func(t *testing.T) {
+		glow := false
+		rec := postEstimate("127.0.0.1:50000", "application/json", nil, map[string]any{
+			"trackDurations":       []float64{60, 120},
+			"bgMode":               "visualizer",
+			"visualizer":           "bars",
+			"visualizerResolution": "1440p",
+			"visualizerGlow":       glow,
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 for visualizer estimate, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var est render.MixEstimate
+		if err := json.Unmarshal(rec.Body.Bytes(), &est); err != nil {
+			t.Fatal(err)
+		}
+		if est.Path != render.PathD || est.PointSec <= 0 {
+			t.Fatalf("unexpected Path D estimate: %+v", est)
+		}
+	})
+
+	t.Run("security guards: same-origin, Content-Type, LAN 403 on local bgPath, path traversal 403, invalid ext/tracks 400", func(t *testing.T) {
+		// Cross-origin blocked.
+		csrfRec := postEstimate("127.0.0.1:50000", "application/json", map[string]string{"Origin": "https://evil.example"}, map[string]any{
+			"sessionId": probed.SessionID,
+			"trackIds":  trackIDs,
+			"bgMode":    "visualizer",
+		})
+		if csrfRec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for cross-origin, got %d", csrfRec.Code)
+		}
+
+		// Non-JSON Content-Type rejected with 415.
+		ctRec := postEstimate("127.0.0.1:50000", "text/plain", nil, map[string]any{
+			"sessionId": probed.SessionID,
+			"trackIds":  trackIDs,
+		})
+		if ctRec.Code != http.StatusUnsupportedMediaType {
+			t.Fatalf("expected 415 for text/plain, got %d", ctRec.Code)
+		}
+
+		// Path traversal blocked with 403.
+		travRec := postEstimate("127.0.0.1:50000", "application/json", nil, map[string]any{
+			"sessionId": probed.SessionID,
+			"trackIds":  trackIDs,
+			"bgMode":    "local",
+			"bgPath":    outsideBG,
+		})
+		if travRec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for path traversal bgPath, got %d: %s", travRec.Code, travRec.Body.String())
+		}
+
+		// Invalid extension rejected with 400.
+		extRec := postEstimate("127.0.0.1:50000", "application/json", nil, map[string]any{
+			"sessionId": probed.SessionID,
+			"trackIds":  trackIDs,
+			"bgMode":    "local",
+			"bgPath":    filepath.Join(ws, "bad.mkv"),
+		})
+		if extRec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for invalid bg ext, got %d: %s", extRec.Code, extRec.Body.String())
+		}
+
+		// Empty tracks rejected with 400.
+		emptyRec := postEstimate("127.0.0.1:50000", "application/json", nil, map[string]any{
+			"sessionId": probed.SessionID,
+			"trackIds":  []string{},
+			"bgMode":    "visualizer",
+		})
+		if emptyRec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for empty tracks, got %d: %s", emptyRec.Code, emptyRec.Body.String())
+		}
+
+		// LAN server blocks bgMode: local with 403 while allowing upload & visualizer.
+		lanSrv, err := NewServer(Config{
+			Host:         "0.0.0.0",
+			Port:         8080,
+			WorkspaceDir: ws,
+			LookPath:     okLookPath,
+			Runner:       runner,
+			GOOS:         "linux",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer lanSrv.Close()
+
+		lanRaw, _ := json.Marshal(map[string]any{
+			"trackDurations": []float64{60},
+			"bgMode":         "local",
+			"bgPath":         loopBG,
+		})
+		lanReq := httptest.NewRequest(http.MethodPost, "/api/estimate", bytes.NewReader(lanRaw))
+		lanReq.Header.Set("Content-Type", "application/json")
+		lanReq.RemoteAddr = "192.168.1.50:50000"
+		lanRec := httptest.NewRecorder()
+		lanSrv.Handler().ServeHTTP(lanRec, lanReq)
+		if lanRec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for LAN local bgPath on /api/estimate, got %d: %s", lanRec.Code, lanRec.Body.String())
+		}
+
+		lanVizRaw, _ := json.Marshal(map[string]any{
+			"trackDurations": []float64{60},
+			"bgMode":         "visualizer",
+			"visualizer":     "bars",
+		})
+		lanVizReq := httptest.NewRequest(http.MethodPost, "/api/estimate", bytes.NewReader(lanVizRaw))
+		lanVizReq.Header.Set("Content-Type", "application/json")
+		lanVizReq.RemoteAddr = "192.168.1.50:50000"
+		lanVizRec := httptest.NewRecorder()
+		lanSrv.Handler().ServeHTTP(lanVizRec, lanVizReq)
+		if lanVizRec.Code != http.StatusOK {
+			t.Fatalf("expected 200 for LAN visualizer /api/estimate, got %d: %s", lanVizRec.Code, lanVizRec.Body.String())
+		}
+	})
+}
+
+func TestRenderSSENormalizeProgressAndCompletionAccuracy(t *testing.T) {
+	ws := t.TempDir()
+	audioDir := filepath.Join(ws, "tracks")
+	if err := os.Mkdir(audioDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(audioDir, "01_A.mp3"), []byte("a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(audioDir, "02_B.mp3"), []byte("b"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	bgPath := filepath.Join(ws, "cover.png")
+	if err := os.WriteFile(bgPath, []byte("PNG"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	baseRunner := stubPipelineRunner(t, map[string]string{"01_A": "30.0", "02_B": "40.0"})
+	streamRunner := func(ctx context.Context, onLine func(string), name string, args ...string) error {
+		if _, err := baseRunner(ctx, name, args...); err != nil {
+			return err
+		}
+		if onLine != nil {
+			onLine("out_time_us=10000000")
+			onLine("speed=10.0x")
+			onLine("progress=continue")
+			onLine("out_time_us=70000000")
+			onLine("speed=10.0x")
+			onLine("progress=end")
+		}
+		return nil
+	}
+
+	srv, err := NewServer(Config{
+		Host:         "127.0.0.1",
+		Port:         8080,
+		WorkspaceDir: ws,
+		LookPath:     okLookPath,
+		Runner:       baseRunner,
+		StreamRunner: streamRunner,
+		GOOS:         "linux",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	probeReq := httptest.NewRequest(http.MethodPost, "/api/probe", strings.NewReader(`{"audioDir":`+strconvQuote(audioDir)+`}`))
+	probeReq.Header.Set("Content-Type", "application/json")
+	probeReq.RemoteAddr = "127.0.0.1:50000"
+	probeRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(probeRec, probeReq)
+	if probeRec.Code != http.StatusOK {
+		t.Fatalf("probe failed: %d %s", probeRec.Code, probeRec.Body.String())
+	}
+	var probed probeResponse
+	if err := json.Unmarshal(probeRec.Body.Bytes(), &probed); err != nil {
+		t.Fatal(err)
+	}
+
+	renderBody, _ := json.Marshal(map[string]any{
+		"sessionId":  probed.SessionID,
+		"trackIds":   []string{probed.Tracks[0].ID, probed.Tracks[1].ID},
+		"bgMode":     "local",
+		"bgPath":     bgPath,
+		"normalize":  true,
+		"out":        filepath.Join(ws, "out.mp4"),
+		"timestamps": filepath.Join(ws, "ts.txt"),
+	})
+	renderReq := httptest.NewRequest(http.MethodPost, "/api/render", bytes.NewReader(renderBody))
+	renderReq.Header.Set("Content-Type", "application/json")
+	renderReq.RemoteAddr = "127.0.0.1:50000"
+	renderRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(renderRec, renderReq)
+	if renderRec.Code != http.StatusAccepted {
+		t.Fatalf("render failed: %d %s", renderRec.Code, renderRec.Body.String())
+	}
+	var started renderStartResponse
+	_ = json.Unmarshal(renderRec.Body.Bytes(), &started)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	evReq := httptest.NewRequest(http.MethodGet, started.EventsURL, nil).WithContext(ctx)
+	evRec := newSSERecorder()
+	srv.Handler().ServeHTTP(evRec, evReq)
+
+	raw := evRec.String()
+	if !strings.Contains(raw, `"substage":"normalize"`) {
+		t.Errorf("expected Step 2 normalize SSE progress event, got:\n%s", raw)
+	}
+	if !strings.Contains(raw, `"estimatedSec":`) || !strings.Contains(raw, `"actualSec":`) {
+		t.Errorf("expected estimatedSec and actualSec in complete event, got:\n%s", raw)
+	}
 }

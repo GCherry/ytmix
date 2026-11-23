@@ -180,22 +180,25 @@ _(write when phase completes)_
 
 ### Phase 2B: Editorial Mix Studio UI Breakdown, Live ETA & Accuracy Readout (`#28`)
 
-Status: Not Started <!-- Not Started | In Progress | Complete | Abandoned -->
+Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 **Triggered by:** Issue [#28](https://github.com/GCherry/ytmix/issues/28)
 
-- [ ] Add `POST /api/estimate` in `internal/ui/server.go` enforcing `requireSameOrigin`, `localPathsAllowed`, and `resolveAllowedPath` for local `--bg`, while accepting client-probed dimensions/duration/FPS for uploaded Background Visuals.
-- [ ] Include `remainingSec` / `estimatedTotalSec` in SSE `"progress"` events and `estimatedSec` / `actualSec` in SSE `"complete"` events (`internal/ui/server.go`, `internal/ui/jobs.go`).
-- [ ] Update `internal/ui/assets/{index.html,styles.css,app.js}` with the segmented Audio/Video cost bar, monospace estimate & speed pill, loop cycle indicator, live ETA telemetry countdown, and `Estimated vs Actual` completion summary (`Anodized Obsidian` / `Studio Paper`, `tabular-nums`, mobile-safe).
-- [ ] Add unit/integration tests in `internal/ui/server_test.go` covering `POST /api/estimate` security boundaries and SSE ETA/completion payloads.
+- [x] Add `POST /api/estimate` in `internal/ui/server.go` enforcing `requireSameOrigin`, `localPathsAllowed`, and `resolveAllowedPath` for local `--bg`, while accepting client-probed dimensions/duration/FPS for uploaded Background Visuals.
+- [x] Include `remainingSec` / `estimatedTotalSec` in SSE `"progress"` events and `estimatedSec` / `actualSec` in SSE `"complete"` events (`internal/ui/server.go`, `internal/ui/jobs.go`).
+- [x] Update `internal/ui/assets/{index.html,styles.css,app.js}` with the segmented Audio/Video cost bar, monospace estimate & speed pill, loop cycle indicator, live ETA telemetry countdown, and `Estimated vs Actual` completion summary (`Anodized Obsidian` / `Studio Paper`, `tabular-nums`, mobile-safe).
+- [x] Add unit/integration tests in `internal/ui/server_test.go` covering `POST /api/estimate` security boundaries and SSE ETA/completion payloads.
 
 #### Verification Plan
 
-- `go vet ./...` and `go test -race ./internal/ui/...` pass.
-- Manual/DOM verification in `ytmix ui` confirms zero horizontal overflow on mobile viewport and zero external font/script requests.
+- `gofmt -l .` -> empty output (`exit 0`).
+- `go vet ./...` -> `exit 0`.
+- `go build ./...` (Windows) and `GOOS=darwin go build ./...` -> `exit 0`.
+- `node --check internal/ui/assets/app.js` -> `exit 0`.
+- `go test -count=1 ./...` -> `exit 0` across all 7 packages (`cmd/ytmix` `0.418s`, `internal/audio` `0.383s`, `internal/mixer` `25.222s`, `internal/probe` `0.372s`, `internal/render` `5.389s`, `internal/subtitle` `0.388s`, `internal/ui` `0.601s`). Note: `-race` requires CGO on Windows and is deferred to Linux CI; live browser visual viewport check was not launched (HTML/CSS/JS responsiveness and asset wiring verified by inspection + `TestStaticAssetsAndHealth` + `node --check`).
 
 #### Phase Summary
 
-_(write when phase completes)_
+Implemented `POST /api/estimate` (`internal/ui/server.go`) enforcing `requireSameOrigin`, `Content-Type: application/json`, `localPathsAllowed` (`403` on LAN/`--host 0.0.0.0` local `bgPath`), `CanonicalBackgroundExt`, and `resolveAllowedPath` (`403` on traversal), probing local Background Visuals via `probe.ProbeBackgroundVisual` + `mixer.EstimateConfig`, accepting client-probed `bgMeta` for `"upload"` mode without server disk access or re-upload (G7), and supporting `"visualizer"` (Path D) and `trackDurations` fallback with cached encoder detection. Updated `internal/ui/jobs.go` (`startedAt`) and `runRenderJob` (`internal/ui/server.go`) to emit `remainingSec` / `estimatedTotalSec` on SSE `"step"` and `"progress"` events (including Step 2 `normalize`) and `estimatedSec` / `actualSec` on `"complete"`. Updated Editorial Mix Studio (`internal/ui/assets/{index.html,styles.css,app.js}`) with client `<video>`/`<img>` metadata probing, debounced `/api/estimate` updates, the `.estimate-strip` segmented Audio/Video cost bar + monospace estimate pill in `.render-dock`, loop-to-mix context in `#stage-fps-meta`, live ETA countdown in `#telemetry-state` and `#telemetry-tab-badge`, and `#telemetry-accuracy` + log comparison on completion, backed by unit/integration tests in `internal/ui/server_test.go`.
 
 ## Wave 3: Full End-to-End Verification & Closure
 

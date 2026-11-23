@@ -23,7 +23,9 @@ import (
 	"time"
 
 	"github.com/GCherry/ytmix/internal/mixer"
+	"github.com/GCherry/ytmix/internal/probe"
 	"github.com/GCherry/ytmix/internal/render"
+	"github.com/GCherry/ytmix/internal/subtitle"
 )
 
 //go:embed assets/*
@@ -54,24 +56,26 @@ type Config struct {
 
 // Server serves the embedded Editorial Mix Studio web UI and REST/SSE endpoints.
 type Server struct {
-	cfg           Config
-	workspaceRoot string
-	homeDir       string
-	rootsMu       sync.RWMutex
-	allowedRoots  []string
-	quickRoots    []fsRootDTO
-	defaultOutDir string
-	pickActive    atomic.Bool
-	baseCtx       context.Context
-	cancel        context.CancelFunc
-	wg            sync.WaitGroup
-	store         *jobStore
-	mux           *http.ServeMux
-	assetsFS      fs.FS
-	encoderOnce   sync.Once
-	cachedEncoder render.EncoderInfo
-	filtersOnce   sync.Once
-	cachedFilters map[string]bool
+	cfg                Config
+	workspaceRoot      string
+	homeDir            string
+	rootsMu            sync.RWMutex
+	allowedRoots       []string
+	quickRoots         []fsRootDTO
+	defaultOutDir      string
+	pickActive         atomic.Bool
+	baseCtx            context.Context
+	cancel             context.CancelFunc
+	wg                 sync.WaitGroup
+	store              *jobStore
+	mux                *http.ServeMux
+	assetsFS           fs.FS
+	encoderOnce        sync.Once
+	cachedEncoder      render.EncoderInfo
+	pathDEncoderOnce   sync.Once
+	cachedPathDEncoder render.EncoderInfo
+	filtersOnce        sync.Once
+	cachedFilters      map[string]bool
 }
 
 type fsRootDTO struct {
@@ -176,6 +180,32 @@ type renderStartResponse struct {
 	JobID         string `json:"jobId"`
 	RenderingPath string `json:"renderingPath"`
 	EventsURL     string `json:"eventsUrl"`
+}
+
+type bgMetaDTO struct {
+	DurationSec float64 `json:"durationSec"`
+	FPS         float64 `json:"fps"`
+	Width       int     `json:"width"`
+	Height      int     `json:"height"`
+	CodecName   string  `json:"codecName"`
+	PixFmt      string  `json:"pixFmt"`
+}
+
+type estimateRequest struct {
+	SessionID            string     `json:"sessionId"`
+	TrackIDs             []string   `json:"trackIds"`
+	TrackDurations       []float64  `json:"trackDurations"`
+	BGMode               string     `json:"bgMode"`
+	BGPath               string     `json:"bgPath"`
+	BGName               string     `json:"bgName"`
+	BGMeta               *bgMetaDTO `json:"bgMeta"`
+	Crossfade            float64    `json:"crossfade"`
+	Normalize            bool       `json:"normalize"`
+	OverlayTitles        bool       `json:"overlayTitles"`
+	Visualizer           string     `json:"visualizer"`
+	VisualizerTheme      string     `json:"visualizerTheme"`
+	VisualizerResolution string     `json:"visualizerResolution"`
+	VisualizerGlow       *bool      `json:"visualizerGlow"`
 }
 
 // NewServer constructs an Editorial Mix Studio Server with validated defaults.
@@ -310,6 +340,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /api/fs/mkdir", s.handleFSMkdir)
 	s.mux.HandleFunc("POST /api/fs/pick", s.handleFSPick)
 	s.mux.HandleFunc("POST /api/probe", s.handleProbe)
+	s.mux.HandleFunc("POST /api/estimate", s.handleEstimate)
 	s.mux.HandleFunc("GET /api/sessions/{sessionId}/tracks/{trackId}/audio", s.handleSessionTrackAudio)
 	s.mux.HandleFunc("POST /api/render", s.handleRender)
 	s.mux.HandleFunc("GET /api/render/{id}/events", s.handleRenderEvents)
@@ -344,6 +375,20 @@ func (s *Server) detectEncoder(ctx context.Context) render.EncoderInfo {
 	return render.EncoderInfo{
 		Name: s.cachedEncoder.Name,
 		Args: append([]string(nil), s.cachedEncoder.Args...),
+	}
+}
+
+func (s *Server) detectPathDEncoder(ctx context.Context, resolution string) render.EncoderInfo {
+	s.pathDEncoderOnce.Do(func() {
+		probeCtx := s.baseCtx
+		if probeCtx == nil {
+			probeCtx = ctx
+		}
+		s.cachedPathDEncoder = render.DetectPathDEncoder(probeCtx, s.cfg.GOOS, resolution, s.cfg.Runner)
+	})
+	return render.EncoderInfo{
+		Name: s.cachedPathDEncoder.Name,
+		Args: append([]string(nil), s.cachedPathDEncoder.Args...),
 	}
 }
 
@@ -655,6 +700,241 @@ func (s *Server) handleProbeLocal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, s.buildProbeResponse(sessID, "local"))
+}
+
+func (s *Server) handleEstimate(w http.ResponseWriter, r *http.Request) {
+	if err := requireSameOrigin(r); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	ct := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
+	if !strings.HasPrefix(ct, "application/json") {
+		writeError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
+		return
+	}
+
+	var req estimateRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON body: %v", err))
+		return
+	}
+	if math.IsNaN(req.Crossfade) || math.IsInf(req.Crossfade, 0) || req.Crossfade < 0 {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("--crossfade must be >= 0 (got %v)", req.Crossfade))
+		return
+	}
+
+	tracks, err := s.resolveEstimateTracks(req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	bgMode := strings.ToLower(strings.TrimSpace(req.BGMode))
+	switch bgMode {
+	case "", "upload", "local", "visualizer":
+	default:
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported bgMode %q (expected upload, local, or visualizer)", req.BGMode))
+		return
+	}
+
+	rawBGPath := strings.TrimSpace(req.BGPath)
+	rawBGName := strings.TrimSpace(req.BGName)
+	rawViz := strings.TrimSpace(req.Visualizer)
+	isVisualizerMode := bgMode == "visualizer" || (bgMode == "" && rawBGPath == "" && rawBGName == "" && rawViz != "")
+
+	if isVisualizerMode {
+		if rawBGPath != "" || rawBGName != "" {
+			writeError(w, http.StatusBadRequest, "--bg and --visualizer cannot be used together")
+			return
+		}
+		vizGlow := true
+		if req.VisualizerGlow != nil {
+			vizGlow = *req.VisualizerGlow
+		}
+		vizCfg, err := render.ValidateVisualizerConfig(render.VisualizerConfig{
+			Preset:     rawViz,
+			Theme:      req.VisualizerTheme,
+			Resolution: req.VisualizerResolution,
+			Glow:       vizGlow,
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		encName := "libx264"
+		if vizCfg.Preset != "black" && s.cfg.Runner != nil {
+			encName = s.detectPathDEncoder(r.Context(), vizCfg.Resolution).Name
+		}
+		est := estimateMixForTracks(render.PathD, encName, req.Crossfade, req.Normalize, req.OverlayTitles, vizCfg, tracks, probe.BackgroundMeta{})
+		writeJSON(w, http.StatusOK, est)
+		return
+	}
+
+	if rawViz != "" {
+		writeError(w, http.StatusBadRequest, "--bg and --visualizer cannot be used together")
+		return
+	}
+
+	if bgMode == "upload" {
+		if rawBGName == "" {
+			writeError(w, http.StatusBadRequest, "bgName is required in upload mode")
+			return
+		}
+		if _, ok := render.CanonicalBackgroundExt(filepath.Ext(rawBGName)); !ok {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported Background Visual extension %q", filepath.Ext(rawBGName)))
+			return
+		}
+		pathKind, err := render.SelectPath(rawBGName, req.OverlayTitles)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		bgMeta := sanitizeBGMeta(req.BGMeta, pathKind)
+		encName := "libx264"
+		if pathKind == render.PathB && s.cfg.Runner != nil {
+			encName = s.detectEncoder(r.Context()).Name
+		}
+		est := estimateMixForTracks(pathKind, encName, req.Crossfade, req.Normalize, req.OverlayTitles, render.VisualizerConfig{}, tracks, bgMeta)
+		writeJSON(w, http.StatusOK, est)
+		return
+	}
+
+	// Local Background Visual path mode: strictly confined to loopback and allowedRoots (ADR-0002).
+	if !s.localPathsAllowed(r) {
+		writeError(w, http.StatusForbidden, "local Background Visual paths are disabled on non-loopback or --host 0.0.0.0 sessions")
+		return
+	}
+	if rawBGPath == "" {
+		writeError(w, http.StatusBadRequest, "bgPath is required in local mode")
+		return
+	}
+	if _, ok := render.CanonicalBackgroundExt(filepath.Ext(rawBGPath)); !ok {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported Background Visual extension %q", filepath.Ext(rawBGPath)))
+		return
+	}
+	safeBG, err := s.resolveAllowedPath(rawBGPath, true)
+	if err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	if err := mixer.ValidateBackgroundFile(safeBG); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	pathKind, err := render.SelectPath(safeBG, req.OverlayTitles)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	var bgMeta probe.BackgroundMeta
+	if (pathKind == render.PathA || pathKind == render.PathB) && s.cfg.Runner != nil {
+		if probed, probeErr := probe.ProbeBackgroundVisual(r.Context(), safeBG, s.cfg.Runner); probeErr == nil {
+			bgMeta = probed
+		}
+	}
+	est, err := mixer.EstimateConfig(r.Context(), mixer.Config{
+		BG:            safeBG,
+		Crossfade:     req.Crossfade,
+		Normalize:     req.Normalize,
+		OverlayTitles: req.OverlayTitles,
+	}, tracks, &bgMeta, s.cfg.LookPath, s.cfg.Runner)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, est)
+}
+
+func (s *Server) resolveEstimateTracks(req estimateRequest) ([]mixer.Track, error) {
+	if strings.TrimSpace(req.SessionID) != "" {
+		return s.store.resolveTracks(req.SessionID, req.TrackIDs)
+	}
+	if len(req.TrackDurations) == 0 {
+		return nil, errors.New("sessionId and trackIds (or trackDurations) are required")
+	}
+	tracks := make([]mixer.Track, len(req.TrackDurations))
+	for i, dur := range req.TrackDurations {
+		if math.IsNaN(dur) || math.IsInf(dur, 0) || dur <= 0 {
+			return nil, fmt.Errorf("trackDurations[%d] must be positive and finite", i)
+		}
+		tracks[i] = mixer.Track{
+			Duration:     dur,
+			DisplayTitle: fmt.Sprintf("Track %d", i+1),
+		}
+	}
+	return tracks, nil
+}
+
+func sanitizeBGMeta(dto *bgMetaDTO, pathKind render.Path) probe.BackgroundMeta {
+	if dto == nil {
+		return probe.BackgroundMeta{}
+	}
+	var out probe.BackgroundMeta
+	if dto.Width > 0 {
+		out.Width = dto.Width
+	}
+	if dto.Height > 0 {
+		out.Height = dto.Height
+	}
+	out.CodecName = strings.TrimSpace(dto.CodecName)
+	out.PixFmt = strings.TrimSpace(dto.PixFmt)
+	if pathKind == render.PathA || pathKind == render.PathB {
+		if !math.IsNaN(dto.DurationSec) && !math.IsInf(dto.DurationSec, 0) && dto.DurationSec > 0 {
+			out.DurationSec = dto.DurationSec
+		}
+		if !math.IsNaN(dto.FPS) && !math.IsInf(dto.FPS, 0) && dto.FPS > 0 && dto.FPS <= 240 {
+			out.FPS = dto.FPS
+		}
+	}
+	return out
+}
+
+func estimateMixForTracks(
+	pathKind render.Path,
+	encName string,
+	crossfade float64,
+	normalize bool,
+	overlayTitles bool,
+	vizCfg render.VisualizerConfig,
+	tracks []mixer.Track,
+	bgMeta probe.BackgroundMeta,
+) render.MixEstimate {
+	var totalAudioSec float64
+	durations := make([]float64, len(tracks))
+	titles := make([]string, len(tracks))
+	for i, tr := range tracks {
+		totalAudioSec += tr.Duration
+		durations[i] = tr.Duration
+		titles[i] = tr.DisplayTitle
+	}
+	mixDurSec := totalAudioSec
+	if len(tracks) > 0 {
+		sched := subtitle.BuildChapterSchedule(titles, durations, crossfade)
+		mixDurSec = sched.TotalDuration
+	}
+	calPath, _ := mixer.DefaultCalibrationPath()
+	cal := mixer.LoadCalibration(calPath)
+	return render.EstimateMix(render.EstimateInput{
+		Path:           pathKind,
+		EncoderName:    encName,
+		MixDurationSec: mixDurSec,
+		TotalAudioSec:  totalAudioSec,
+		TrackCount:     len(tracks),
+		Normalize:      normalize,
+		Crossfade:      crossfade,
+		OverlayTitles:  overlayTitles,
+		Visualizer:     vizCfg,
+		CPUCores:       runtime.NumCPU(),
+		BG: render.BackgroundEstimateInput{
+			DurationSec: bgMeta.DurationSec,
+			FPS:         bgMeta.FPS,
+			Width:       bgMeta.Width,
+			Height:      bgMeta.Height,
+			CodecName:   bgMeta.CodecName,
+			PixFmt:      bgMeta.PixFmt,
+		},
+	}, cal)
 }
 
 func (s *Server) saveSession(source, tempDir string, tracks []mixer.Track) (string, error) {
@@ -1006,24 +1286,48 @@ func (s *Server) runRenderJob(ctx context.Context, job *renderJob, cfg mixer.Con
 	defer s.store.releaseActive(job.id)
 	defer job.cancel()
 
+	jobStart := job.startedAt
+	if jobStart.IsZero() {
+		jobStart = time.Now()
+	}
+
 	var mu sync.Mutex
+	lastStep := 0
 	lastPct := -1
 	var lastProgressAt time.Time
+	var estimatedSec float64
 	sink := func(ev mixer.TelemetryEvent) {
+		if ev.EstimatedTotalSec > 0 {
+			mu.Lock()
+			estimatedSec = ev.EstimatedTotalSec
+			mu.Unlock()
+		}
 		switch ev.Kind {
 		case mixer.EventStep:
-			job.emit("step", map[string]any{
+			stepPayload := map[string]any{
 				"step":     ev.Step,
 				"total":    ev.TotalSteps,
 				"message":  ev.Message,
 				"detail":   ev.Detail,
 				"progress": ev.Progress,
-			})
+			}
+			if ev.EstimatedTotalSec > 0 {
+				stepPayload["estimatedTotalSec"] = ev.EstimatedTotalSec
+				if ev.RemainingSec >= 0 {
+					stepPayload["remainingSec"] = math.Round(ev.RemainingSec)
+				}
+			}
+			job.emit("step", stepPayload)
 		case mixer.EventProgress:
 			mu.Lock()
 			now := time.Now()
-			shouldEmit := ev.Progress != lastPct && (lastPct < 0 || ev.Progress == 99 || ev.Progress-lastPct >= 5 || now.Sub(lastProgressAt) >= 250*time.Millisecond)
+			shouldEmit := lastPct < 0 ||
+				ev.Step != lastStep ||
+				ev.Progress == 99 ||
+				(ev.Progress != lastPct && (ev.Progress-lastPct >= 5 || now.Sub(lastProgressAt) >= 250*time.Millisecond)) ||
+				now.Sub(lastProgressAt) >= time.Second
 			if shouldEmit {
+				lastStep = ev.Step
 				lastPct = ev.Progress
 				lastProgressAt = now
 			}
@@ -1031,14 +1335,20 @@ func (s *Server) runRenderJob(ctx context.Context, job *renderJob, cfg mixer.Con
 			if !shouldEmit {
 				return
 			}
+			remSec := -1.0
+			if ev.EstimatedTotalSec > 0 && ev.RemainingSec >= 0 {
+				remSec = math.Round(ev.RemainingSec)
+			}
 			job.emitProgress(map[string]any{
-				"step":             ev.Step,
-				"total":            ev.TotalSteps,
-				"progress":         ev.Progress,
-				"substage":         ev.Substage,
-				"outTimeSec":       ev.OutTimeSec,
-				"totalDurationSec": ev.TotalDurationSec,
-				"speed":            ev.Speed,
+				"step":              ev.Step,
+				"total":             ev.TotalSteps,
+				"progress":          ev.Progress,
+				"substage":          ev.Substage,
+				"outTimeSec":        ev.OutTimeSec,
+				"totalDurationSec":  ev.TotalDurationSec,
+				"speed":             ev.Speed,
+				"remainingSec":      remSec,
+				"estimatedTotalSec": ev.EstimatedTotalSec,
 			})
 		case mixer.EventDone:
 			job.emit("log", map[string]any{"message": ev.Message})
@@ -1061,6 +1371,11 @@ func (s *Server) runRenderJob(ctx context.Context, job *renderJob, cfg mixer.Con
 		tsText = string(tsBytes)
 	}
 
+	mu.Lock()
+	estSec := estimatedSec
+	mu.Unlock()
+	actualSec := time.Since(jobStart).Seconds()
+
 	job.finish(jobComplete, "", "complete", map[string]any{
 		"jobId":          job.id,
 		"renderingPath":  job.renderingPath,
@@ -1069,6 +1384,8 @@ func (s *Server) runRenderJob(ctx context.Context, job *renderJob, cfg mixer.Con
 		"timestampsUrl":  fmt.Sprintf("/api/render/%s/timestamps", job.id),
 		"outputName":     job.outName,
 		"timestampsName": job.tsName,
+		"estimatedSec":   estSec,
+		"actualSec":      actualSec,
 	})
 }
 

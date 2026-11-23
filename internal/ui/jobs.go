@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/GCherry/ytmix/internal/mixer"
 )
@@ -47,6 +48,7 @@ type renderJob struct {
 	tsPath        string
 	tsName        string
 	renderingPath string
+	startedAt     time.Time
 	cancel        context.CancelFunc
 
 	mu             sync.Mutex
@@ -75,6 +77,7 @@ func newRenderJob(id, dir, outPath, outName, tsPath, tsName, renderingPath strin
 		tsPath:        tsPath,
 		tsName:        tsName,
 		renderingPath: renderingPath,
+		startedAt:     time.Now(),
 		cancel:        cancel,
 		status:        jobRunning,
 		subs:          make(map[chan sseEvent]struct{}),
