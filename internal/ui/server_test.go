@@ -162,7 +162,7 @@ func TestStaticAssetsAndHealth(t *testing.T) {
 		wantSub  []string
 	}{
 		{"/", "text/html", []string{"Editorial Mix Studio", "out-dir-input", "browse-out-dir-btn", "browse-audio-dir-btn", "browse-bg-path-btn", "fs-modal", "save-lan-folder-btn", "fs-modal-out-name", "fs-modal-ts-name", "bg-mode-visualizer", "viz-pager", "audition-btn", "darkness-box", "stage-canvas", "left-tab-tracks", "left-tab-studio", "left-pane-studio", "stage-audition-btn", "stage-track-select", "right-tab-chapters", "right-tab-output", "right-tab-telemetry", "render-dock", "estimate-strip", "estimate-pill", "cost-seg-audio", "cost-seg-video", "telemetry-accuracy"}},
-		{"/styles.css", "text/css", []string{"[hidden]", ".modal-backdrop", ".fs-root-chip", ".preset-grid", ".preset-pager", ".darkness-box", ".audition-bar", ".studio-tabs-bar", ".dual-studio-grid", ".stage-track-bar", ".render-dock", ".estimate-strip", ".cost-bar", ".cost-seg-audio", ".cost-seg-video", ".telemetry-accuracy"}},
+		{"/styles.css", "text/css", []string{"[hidden]", ".modal-backdrop", ".fs-root-chip", ".preset-grid", ".preset-pager", ".darkness-box", ".audition-bar", ".studio-tabs-bar", ".dual-studio-grid", ".stage-track-bar", ".render-dock", ".estimate-strip", ".cost-bar", ".cost-seg-audio", ".cost-seg-video", ".telemetry-accuracy", "#render-btn-target"}},
 		{"/app.js", "javascript", []string{"/api/render", "/api/estimate", "/api/fs/list", "/api/fs/mkdir", "/api/fs/pick", "pickNativePath", "showDirectoryPicker", "/api/sessions/", "VIZ_PAGE_SIZE", "visualizerBrightness", "fadeToBlackMinutes", "setLeftTab", "setRightTab", "renderStageTrackSelect", "bgMeta", "remainingSec", "estimatedSec", "actualSec"}},
 	} {
 		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
@@ -1881,14 +1881,23 @@ func TestEstimateEndpointAndSecurityGuards(t *testing.T) {
 	})
 
 	t.Run("security guards: same-origin, Content-Type, LAN 403 on local bgPath, path traversal 403, invalid ext/tracks 400", func(t *testing.T) {
-		// Cross-origin blocked.
+		// Cross-origin Origin and Sec-Fetch-Site headers blocked.
 		csrfRec := postEstimate("127.0.0.1:50000", "application/json", map[string]string{"Origin": "https://evil.example"}, map[string]any{
 			"sessionId": probed.SessionID,
 			"trackIds":  trackIDs,
 			"bgMode":    "visualizer",
 		})
 		if csrfRec.Code != http.StatusForbidden {
-			t.Fatalf("expected 403 for cross-origin, got %d", csrfRec.Code)
+			t.Fatalf("expected 403 for cross-origin Origin, got %d", csrfRec.Code)
+		}
+
+		sfsRec := postEstimate("127.0.0.1:50000", "application/json", map[string]string{"Sec-Fetch-Site": "cross-site"}, map[string]any{
+			"sessionId": probed.SessionID,
+			"trackIds":  trackIDs,
+			"bgMode":    "visualizer",
+		})
+		if sfsRec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for Sec-Fetch-Site cross-site, got %d", sfsRec.Code)
 		}
 
 		// Non-JSON Content-Type rejected with 415.
@@ -1972,6 +1981,49 @@ func TestEstimateEndpointAndSecurityGuards(t *testing.T) {
 		lanSrv.Handler().ServeHTTP(lanVizRec, lanVizReq)
 		if lanVizRec.Code != http.StatusOK {
 			t.Fatalf("expected 200 for LAN visualizer /api/estimate, got %d: %s", lanVizRec.Code, lanVizRec.Body.String())
+		}
+	})
+
+	t.Run("local bgMode returns 200 with fallback default loop assumptions when ffprobe BG probe fails", func(t *testing.T) {
+		failingBGProbeRunner := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			if name == "ffprobe" && len(args) > 0 && strings.Contains(args[len(args)-1], "loop.mp4") {
+				return nil, errors.New("ffprobe failed on corrupt loop header")
+			}
+			return baseRunner(ctx, name, args...)
+		}
+		fallbackSrv, err := NewServer(Config{
+			Host:         "127.0.0.1",
+			Port:         8080,
+			WorkspaceDir: ws,
+			LookPath:     okLookPath,
+			Runner:       failingBGProbeRunner,
+			GOOS:         "linux",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer fallbackSrv.Close()
+
+		raw, _ := json.Marshal(map[string]any{
+			"trackDurations": []float64{60, 60},
+			"bgMode":         "local",
+			"bgPath":         loopBG,
+			"overlayTitles":  false,
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/estimate", bytes.NewReader(raw))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "127.0.0.1:50000"
+		rec := httptest.NewRecorder()
+		fallbackSrv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 fallback estimate when ffprobe BG fails, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var est render.MixEstimate
+		if err := json.Unmarshal(rec.Body.Bytes(), &est); err != nil {
+			t.Fatal(err)
+		}
+		if est.Path != render.PathA || est.LoopDurationSec != 0 || est.LoopFPS != 30.0 || est.PointSec <= 0 {
+			t.Fatalf("unexpected fallback Path A estimate: %+v", est)
 		}
 	})
 }
