@@ -1,6 +1,6 @@
 # Render Duration Estimation & Live ETA Plan
 
-**Origin:** Nov 22, 2026 — [Issue #7](https://github.com/GCherry/ytmix/issues/7) research report ([`docs/research/render-duration-estimation.md`](../research/render-duration-estimation.md)), broken into scoped follow-up issues [#26](https://github.com/GCherry/ytmix/issues/26), [#27](https://github.com/GCherry/ytmix/issues/27), and [#28](https://github.com/GCherry/ytmix/issues/28).
+**Origin:** Nov 22, 2026 — [Issue #7](https://github.com/GCherry/ytmix/issues/7) research report ([`docs/research/render-duration-estimation.md`](../../research/render-duration-estimation.md)), broken into scoped follow-up issues [#26](https://github.com/GCherry/ytmix/issues/26), [#27](https://github.com/GCherry/ytmix/issues/27), and [#28](https://github.com/GCherry/ytmix/issues/28).
 
 Deliver accurate pre-render Mix build duration estimates (using Background Visual metadata, Track lengths, Rendering Path, active encoder, and a local observed-speed calibration cache), estimate-weighted Step 2–5 progress, and live ETA countdowns across both the `ytmix` CLI (`--estimate` + TTY status) and Editorial Mix Studio (`ytmix ui`), while fixing `DetectEncoder` / `DetectPathDEncoder`'s `64x64` NVENC probe bug.
 
@@ -12,11 +12,11 @@ status; write **Phase Summary**; record **Verification Plan** results. When all
 phases are done, fill **Final Recap** and **Deployment Plan**, then archive this
 file to `docs/plans/archive/render-duration-estimation.md` per the `real-work` skill (Section 3).
 
-**Repo:** `ytmix` (`D:\CodingWorkspace\ytmix\ytmix`) — read [`AGENTS.md`](../../AGENTS.md) before building or testing.
+**Repo:** `ytmix` (`D:\CodingWorkspace\ytmix\ytmix`) — read [`AGENTS.md`](../../../AGENTS.md) before building or testing.
 
 **Branch:** `feature/render-duration-estimation` off `main` (per-issue branches/PRs optional if implementing [#26](https://github.com/GCherry/ytmix/issues/26) → [#27](https://github.com/GCherry/ytmix/issues/27) / [#28](https://github.com/GCherry/ytmix/issues/28) independently).
 
-**Domain docs:** [`GLOSSARY.md`](../../GLOSSARY.md), [`docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md), [`docs/adr/0002-embedded-http-ui-and-sse-telemetry.md`](../adr/0002-embedded-http-ui-and-sse-telemetry.md), [`docs/adr/0003-path-d-ffmpeg-auto-visualizer.md`](../adr/0003-path-d-ffmpeg-auto-visualizer.md), [`docs/specs/ytmix_technical_specification.md`](../specs/ytmix_technical_specification.md), [`docs/research/render-duration-estimation.md`](../research/render-duration-estimation.md).
+**Domain docs:** [`GLOSSARY.md`](../../../GLOSSARY.md), [`docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../../adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md), [`docs/adr/0002-embedded-http-ui-and-sse-telemetry.md`](../../adr/0002-embedded-http-ui-and-sse-telemetry.md), [`docs/adr/0003-path-d-ffmpeg-auto-visualizer.md`](../../adr/0003-path-d-ffmpeg-auto-visualizer.md), [`docs/specs/ytmix_technical_specification.md`](../../specs/ytmix_technical_specification.md), [`docs/research/render-duration-estimation.md`](../../research/render-duration-estimation.md).
 
 **Related skills:** `coordinator`, `real-work`, `tdd`, `code-review`, `domain-modeling`.
 
@@ -110,7 +110,7 @@ Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 - [x] Inspect `internal/{probe,audio,render,mixer,ui}` and `cmd/ytmix/main.go` against #10, #17/#20, #24, and #25 on `main` (`c5d6a37`).
 - [x] Run empirical `ffmpeg 9.0.2` / `ffprobe 9.0.2` benchmarks across Audio (`loudnorm`, `concat`, `acrossfade`) and Video Paths A, B, C, and D (`libx264` + `h264_nvenc`).
 - [x] Investigate and clean accidental unstaged `docs/adr/0002` diff; sync `main` to `c5d6a37`.
-- [x] Write [`docs/research/render-duration-estimation.md`](../research/render-duration-estimation.md) and `docs/plans/render-duration-estimation.md` with `## Grill`.
+- [x] Write [`docs/research/render-duration-estimation.md`](../../research/render-duration-estimation.md) and `docs/plans/render-duration-estimation.md` with `## Grill`.
 - [x] Create scoped follow-up issues [#26](https://github.com/GCherry/ytmix/issues/26), [#27](https://github.com/GCherry/ytmix/issues/27), and [#28](https://github.com/GCherry/ytmix/issues/28) with native `blocked-by` edges, update & close [#7](https://github.com/GCherry/ytmix/issues/7).
 
 #### Verification Plan
@@ -120,7 +120,7 @@ Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 
 #### Phase Summary
 
-Completed empirical FFmpeg benchmarking and codebase audit on `c5d6a37`, documented the `64x64` NVENC probe bug and full estimation/UI architecture in [`docs/research/render-duration-estimation.md`](../research/render-duration-estimation.md), locked all Wave 0 decisions with the user, and split implementation into [#26](https://github.com/GCherry/ytmix/issues/26) (Wave 1), [#27](https://github.com/GCherry/ytmix/issues/27) (Wave 2A), and [#28](https://github.com/GCherry/ytmix/issues/28) (Wave 2B).
+Completed empirical FFmpeg benchmarking and codebase audit on `c5d6a37`, documented the `64x64` NVENC probe bug and full estimation/UI architecture in [`docs/research/render-duration-estimation.md`](../../research/render-duration-estimation.md), locked all Wave 0 decisions with the user, and split implementation into [#26](https://github.com/GCherry/ytmix/issues/26) (Wave 1), [#27](https://github.com/GCherry/ytmix/issues/27) (Wave 2A), and [#28](https://github.com/GCherry/ytmix/issues/28) (Wave 2B).
 
 ## Wave 1: Core Probe, NVENC Fix & Estimator Foundation (`#26`) <!-- serial -->
 
@@ -210,24 +210,26 @@ Implemented `POST /api/estimate` (`internal/ui/server.go`) enforcing `requireSam
 
 ### Phase 3: Full Suite & Archive
 
-Status: Not Started <!-- Not Started | In Progress | Complete | Abandoned -->
+Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 **Triggered by:** Wave 2 completion
 
-- [ ] Run full verification (`gofmt -l .`, `go vet ./...`, `go test -race ./...`, `go build -o ytmix.exe ./cmd/ytmix`, and `TestE2EPipeline` across Paths A, B, C, and D).
-- [ ] Update `Final Recap` and `Deployment Plan`, archive this plan to `docs/plans/archive/render-duration-estimation.md`, update `docs/plans/README.md` and `docs/plans/archive/README.md`, and close `#26`–`#28`.
+- [x] Run full verification (`gofmt -l .`, `go vet ./...`, `go test -race ./...`, `go build -o ytmix.exe ./cmd/ytmix`, and `TestE2EPipeline` across Paths A, B, C, and D).
+- [x] Update `Final Recap` and `Deployment Plan`, archive this plan to `docs/plans/archive/render-duration-estimation.md`, update `docs/plans/README.md` and `docs/plans/archive/README.md`, and close `#26`–`#28`.
 
 #### Verification Plan
 
 - All Go checks and E2E tests pass with zero temp artifact leftovers.
 
+Results on `main` @ `8e5fa2e` (Windows): `gofmt -l .` empty, `go vet ./...` exit 0, `go build -o <tmp>\ytmix-w3.exe ./cmd/ytmix` exit 0, `GOOS=darwin go build ./...` exit 0, `node --check internal/ui/assets/app.js` exit 0, `go test -count=1 ./...` passed all 7 packages. `-race` needs CGO on Windows, and `ffmpeg` is not installed locally, so those ran in GitHub Actions: CI (`ubuntu-latest` `-race`, `windows-latest`, `golangci-lint`, `FFmpeg E2E Pipeline (Paths A, B, C)`) and Security (`CodeQL`, `govulncheck`) succeeded on `8e5fa2e` (run `45108559500` / `45108559496`). Local `TestE2EPipeline` was not exercised.
+
 #### Phase Summary
 
-_(write when phase completes)_
+Verified the merged Wave 1-2 result on `main` and archived this plan.
 
 ## Final Recap
 
-_(write when all phases complete)_
+Shipped in PRs #30 (Wave 1, `#26`: Background Visual probing, NVENC 256x256 probe fix, `render.EstimateMix`, calibration cache, weighted live ETA), #31 (Wave 2A, `#27`: `--estimate`, pre-render summary, TTY ETA) and #32 (Wave 2B, `#28`: `POST /api/estimate`, SSE ETA and accuracy fields, Studio cost bar and ETA UI). Not done: local run of the FFmpeg E2E (covered by CI only) and a live-browser mobile viewport check (CSS verified by inspection).
 
 ## Deployment Plan
 
-_(write when all phases complete)_
+No deployment steps: all changes are already on `main`. Rollback is `git revert` of #32, #31 or #30 (additive flags, endpoint, SSE fields and UI widgets; the calibration cache file is local and safe to delete).
