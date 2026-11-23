@@ -88,13 +88,33 @@ func ParseUIFlags(args []string) (UIConfig, error) {
 	return cfg, nil
 }
 
+// CLIOptions holds auxiliary CLI mode flags outside mixer.Config.
+type CLIOptions struct {
+	ListVisualizers bool
+	Estimate        bool
+}
+
 // NewFlagSet configures the CLI flag definitions for ytmix.
 func NewFlagSet(cfg *mixer.Config, output io.Writer) *flag.FlagSet {
-	return NewCLIFlagSet(cfg, nil, output)
+	return NewCLIFlagSetWithOptions(cfg, nil, output)
 }
 
 // NewCLIFlagSet configures the CLI flag definitions for ytmix, including --list-visualizers.
 func NewCLIFlagSet(cfg *mixer.Config, listVisualizers *bool, output io.Writer) *flag.FlagSet {
+	return newCLIFlagSet(cfg, listVisualizers, nil, output)
+}
+
+// NewCLIFlagSetWithOptions configures the CLI flag definitions for ytmix, including --list-visualizers and --estimate.
+func NewCLIFlagSetWithOptions(cfg *mixer.Config, opts *CLIOptions, output io.Writer) *flag.FlagSet {
+	var dummy CLIOptions
+	target := &dummy
+	if opts != nil {
+		target = opts
+	}
+	return newCLIFlagSet(cfg, &target.ListVisualizers, &target.Estimate, output)
+}
+
+func newCLIFlagSet(cfg *mixer.Config, listVisualizers *bool, estimate *bool, output io.Writer) *flag.FlagSet {
 	fs := flag.NewFlagSet("ytmix", flag.ContinueOnError)
 	fs.SetOutput(output)
 
@@ -123,33 +143,69 @@ func NewCLIFlagSet(cfg *mixer.Config, listVisualizers *bool, output io.Writer) *
 		listTarget = listVisualizers
 	}
 	fs.BoolVar(listTarget, "list-visualizers", false, "List all built-in Path D Auto Visualizer presets and Color Themes and exit.")
+
+	var dummyEstimate bool
+	estimateTarget := &dummyEstimate
+	if estimate != nil {
+		estimateTarget = estimate
+	}
+	fs.BoolVar(estimateTarget, "estimate", false, "Probe Tracks and Background Visual, print the estimated render duration breakdown, and exit without rendering.")
 	return fs
 }
 
 // ParseFlags parses CLI arguments into a mixer.Config.
 func ParseFlags(args []string) (mixer.Config, error) {
-	cfg, _, err := ParseCLIFlags(args)
+	cfg, _, err := ParseCLIOptions(args)
 	return cfg, err
 }
 
 // ParseCLIFlags parses CLI arguments into a mixer.Config and reports whether --list-visualizers was requested.
 func ParseCLIFlags(args []string) (mixer.Config, bool, error) {
+	cfg, opts, err := ParseCLIOptions(args)
+	return cfg, opts.ListVisualizers, err
+}
+
+// ParseCLIOptions parses CLI arguments into a mixer.Config and auxiliary CLIOptions.
+func ParseCLIOptions(args []string) (mixer.Config, CLIOptions, error) {
 	var cfg mixer.Config
-	var listVisualizers bool
-	fs := NewCLIFlagSet(&cfg, &listVisualizers, io.Discard)
+	var opts CLIOptions
+	fs := NewCLIFlagSetWithOptions(&cfg, &opts, io.Discard)
 	if err := fs.Parse(args); err != nil {
-		return mixer.Config{}, false, err
+		return mixer.Config{}, CLIOptions{}, err
 	}
 	if _, ok := render.LookupResolution(cfg.VisualizerResolution); !ok {
-		return mixer.Config{}, false, fmt.Errorf("unknown --visualizer-resolution %q (supported: 1080p, 1440p, 4k)", cfg.VisualizerResolution)
+		return mixer.Config{}, CLIOptions{}, fmt.Errorf("unknown --visualizer-resolution %q (supported: 1080p, 1440p, 4k)", cfg.VisualizerResolution)
 	}
 	if cfg.VisualizerBrightness < render.MinVisualizerBrightness || cfg.VisualizerBrightness > render.MaxVisualizerBrightness {
-		return mixer.Config{}, false, fmt.Errorf("--visualizer-brightness must be between %d and %d (got %d)", render.MinVisualizerBrightness, render.MaxVisualizerBrightness, cfg.VisualizerBrightness)
+		return mixer.Config{}, CLIOptions{}, fmt.Errorf("--visualizer-brightness must be between %d and %d (got %d)", render.MinVisualizerBrightness, render.MaxVisualizerBrightness, cfg.VisualizerBrightness)
 	}
 	if cfg.FadeToBlack < 0 {
-		return mixer.Config{}, false, fmt.Errorf("--fade-to-black must be >= 0 (got %s)", cfg.FadeToBlack)
+		return mixer.Config{}, CLIOptions{}, fmt.Errorf("--fade-to-black must be >= 0 (got %s)", cfg.FadeToBlack)
 	}
-	return cfg, listVisualizers, nil
+	return cfg, opts, nil
+}
+
+// RunEstimate executes a zero-side-effect dry-run estimate without creating output directories or running FFmpeg render.
+func RunEstimate(ctx context.Context, cfg mixer.Config, w io.Writer, lookPath func(string) (string, error), runner mixer.CommandRunner) error {
+	preparedCfg, pathKind, err := mixer.PreflightConfig(cfg, lookPath, false)
+	if err != nil {
+		return err
+	}
+	if pathKind == render.PathD && runner != nil {
+		if err := mixer.ValidateVisualizerFilters(ctx, preparedCfg, runner, nil); err != nil {
+			return err
+		}
+	}
+	tracks, err := mixer.ProbeTracks(ctx, preparedCfg.AudioDir, preparedCfg.Shuffle, nil, runner)
+	if err != nil {
+		return err
+	}
+	est, err := mixer.EstimateConfig(ctx, preparedCfg, tracks, nil, lookPath, runner)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(w, mixer.FormatEstimateReport(preparedCfg, len(tracks), est))
+	return err
 }
 
 // PrintVisualizers prints all built-in Path D Auto Visualizer presets (with live FFmpeg filter availability) and Color Themes.
@@ -224,18 +280,25 @@ func main() {
 		return
 	}
 
-	cfg, listVisualizers, err := ParseCLIFlags(os.Args[1:])
+	cfg, opts, err := ParseCLIOptions(os.Args[1:])
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fs := NewCLIFlagSet(&mixer.Config{}, nil, os.Stderr)
+			fs := NewCLIFlagSetWithOptions(&mixer.Config{}, &CLIOptions{}, os.Stderr)
 			fs.Usage()
 			os.Exit(0)
 		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(2)
 	}
-	if listVisualizers {
+	if opts.ListVisualizers {
 		if err := PrintVisualizers(ctx, os.Stdout, exec.LookPath, mixer.ExecCommandRunner); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if opts.Estimate {
+		if err := RunEstimate(ctx, cfg, os.Stdout, exec.LookPath, mixer.ExecCommandRunner); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}

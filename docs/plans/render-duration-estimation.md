@@ -162,21 +162,25 @@ Implemented `probe.ProbeBackgroundVisual` + `ParseFrameRate`, refactored `Detect
 
 ### Phase 2A: CLI `--estimate` Dry-Run & TTY Live ETA (`#27`)
 
-Status: Not Started <!-- Not Started | In Progress | Complete | Abandoned -->
+Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 **Triggered by:** Issue [#27](https://github.com/GCherry/ytmix/issues/27)
 
-- [ ] Add `Estimate` pre-render event/summary printed right after Step 1 (`[1/5]`) during `mixer.Run`.
-- [ ] Update `mixer.NewCLITelemetry` TTY `\r` status line to render remaining ETA (`[5/5] Rendering Mix... 42% (2.4x · ~1m 12s left)`), keeping non-TTY stdout clean.
-- [ ] Add `--estimate` flag in `cmd/ytmix/main.go` calling `PreflightConfig(..., false)`, probing Tracks + Background Visual, printing breakdown + range, and exiting `0` without writing outputs.
-- [ ] Add unit tests in `cmd/ytmix/main_test.go` and `internal/mixer/mixer_test.go`.
+- [x] Add `Estimate` pre-render event/summary printed right after Step 1 (`[1/5]`) during `mixer.Run`.
+- [x] Update `mixer.NewCLITelemetry` TTY `\r` status line to render remaining ETA (`[5/5] Rendering Mix... 42% (2.4x · ~1m 12s left)`), keeping non-TTY stdout clean.
+- [x] Add `--estimate` flag in `cmd/ytmix/main.go` calling `PreflightConfig(..., false)`, probing Tracks + Background Visual, printing breakdown + range, and exiting `0` without writing outputs.
+- [x] Add unit tests in `cmd/ytmix/main_test.go` and `internal/mixer/mixer_test.go`.
 
 #### Verification Plan
 
-- `go test -race ./cmd/ytmix ./internal/mixer` passes; `ytmix --estimate` verified to leave destination directory untouched.
+- `gofmt -l .` -> empty output (`exit 0`).
+- `go vet ./...` -> `exit 0`.
+- `go build ./...` (Windows) and `GOOS=darwin go build ./...` -> `exit 0`.
+- `go test -count=1 ./...` -> `exit 0` across all 7 packages (`cmd/ytmix` `0.515s`, `internal/audio` `0.419s`, `internal/mixer` `27.908s`, `internal/probe` `0.467s`, `internal/render` `5.750s`, `internal/subtitle` `0.424s`, `internal/ui` `0.609s`). Note: `-race` requires CGO on Windows and runs on Linux CI.
+- `TestRunEstimate` verifies `--estimate` leaves `--out-dir` uncreated and never invokes `ffmpeg` render across Path A and Path D.
 
 #### Phase Summary
 
-_(write when phase completes)_
+Implemented CLI `--estimate` dry-run mode (`cmd/ytmix/main.go`), pre-render Mix estimate readout attached to Step 2 telemetry (`internal/mixer/mixer.go`), and live TTY `\r` ETA countdown formatting with trailing-space clearing and Step 2 normalize progress labels. Added `FormatDurationRange`, `FormatEstimateSummary`, `FormatEstimateReport`, `CLIOptions`, `NewCLIFlagSetWithOptions`, `ParseCLIOptions`, and `RunEstimate`, preserving existing `ParseFlags`/`ParseCLIFlags`/`NewFlagSet`/`NewCLIFlagSet` signatures and non-TTY piped stdout cleanliness. Added unit tests in `cmd/ytmix/main_test.go` and `internal/mixer/mixer_test.go` covering dry-run zero-side-effect guarantees (`prepareOutputs=false`), TTY/non-TTY formatting, and duration range edge cases.
 
 ### Phase 2B: Editorial Mix Studio UI Breakdown, Live ETA & Accuracy Readout (`#28`)
 
