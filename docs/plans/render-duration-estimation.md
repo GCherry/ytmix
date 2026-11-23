@@ -149,12 +149,12 @@ Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
 
 - `gofmt -l .` -> empty output (`exit 0`).
 - `go vet ./...` -> `exit 0`.
-- `go build ./...` (plus `GOOS=darwin go build ./...`) -> `exit 0`.
-- `go test -count=1 ./...` -> all 7 packages (`cmd/ytmix`, `internal/audio`, `internal/mixer` including `TestE2EPipeline`, `internal/probe`, `internal/render`, `internal/subtitle`, `internal/ui`) pass (`exit 0`). Note: `-race` requires CGO on Windows and is verified on Linux CI.
+- `go build ./...` (Windows) and `GOOS=darwin go build ./...` -> `exit 0`.
+- `go test -count=1 ./...` -> `exit 0` across all 7 packages (`cmd/ytmix` `0.458s`, `internal/audio` `0.385s`, `internal/mixer` `24.217s` including `TestE2EPipeline`, `internal/probe` `0.414s`, `internal/render` `4.975s`, `internal/subtitle` `0.408s`, `internal/ui` `0.565s`). Note: `-race` requires CGO on Windows and runs on Linux CI.
 
 #### Phase Summary
 
-Implemented `probe.ProbeBackgroundVisual` + `ParseFrameRate`, refactored `DetectEncoder` and `DetectPathDEncoder` onto a shared `256x256` `probeEncoderArgs` helper, added the zero-dep analytical estimator (`internal/render/estimate.go`) + OS-cache EMA persistence (`internal/mixer/calibration.go`), and wired `EstimateConfig`, weighted Step 2–5 progress (including per-track `--normalize`), and EMA-smoothed live `RemainingSec` ETA into `internal/mixer/mixer.go` on branch `feature/render-duration-estimator`.
+Implemented `probe.ProbeBackgroundVisual` + `ParseFrameRate`, refactored `DetectEncoder` and `DetectPathDEncoder` onto a shared `256x256` `probeEncoderArgs` helper, added the zero-dep analytical estimator (`internal/render/estimate.go`) + OS-cache EMA persistence (`internal/mixer/calibration.go`), and wired `EstimateConfig`, weighted Step 2–5 progress (including per-track `--normalize`), and EMA-smoothed live `RemainingSec` ETA into `internal/mixer/mixer.go` on branch `feature/render-duration-estimator`. Addressed all Round 1 Reviewer findings: recorded `PathA norm_loop`, separated `PathC` `2fps`/`10fps` and `PathD black` calibration keys, normalized calibration speeds against work-unit numerators (`VideoWorkSec`, `PathANormWorkSec`, `TotalAudioSec`) to prevent double-counting FPS/resolution/preset multipliers, fixed headless (`sink == nil`) `--normalize` elapsed split, added `NaN`/`Inf` guards and `NBFrames` inference in `internal/probe`, and isolated `mixer` test calibration paths via `calibrationPathFn`.
 
 ## Wave 2: CLI & Editorial Mix Studio Surfaces (`#27`, `#28`) <!-- parallel: up to 2 tracks -->
 

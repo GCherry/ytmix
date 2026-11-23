@@ -247,6 +247,9 @@ func TestProbeBackgroundVisual(t *testing.T) {
 			{"60", 60},
 			{"0/0", 0},
 			{"N/A", 0},
+			{"NaN", 0},
+			{"Inf", 0},
+			{"+Inf/1", 0},
 			{"300/1", 0},
 			{"-5/1", 0},
 			{"abc/1", 0},
@@ -254,6 +257,30 @@ func TestProbeBackgroundVisual(t *testing.T) {
 			if got := ParseFrameRate(tc.in); got != tc.want {
 				t.Errorf("ParseFrameRate(%q) = %v, want %v", tc.in, got, tc.want)
 			}
+		}
+	})
+
+	t.Run("infers NBFrames when stream nb_frames is omitted and rejects Inf duration", func(t *testing.T) {
+		runner := func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+			return []byte(`{"format":{"duration":"10.0"},"streams":[{"codec_name":"h264","width":1920,"height":1080,"r_frame_rate":"30/1","avg_frame_rate":"30/1"}]}`), nil
+		}
+		meta, err := ProbeBackgroundVisual(context.Background(), "loop.mp4", runner)
+		if err != nil {
+			t.Fatalf("ProbeBackgroundVisual error: %v", err)
+		}
+		if meta.NBFrames != 300 {
+			t.Fatalf("NBFrames = %d, want 300", meta.NBFrames)
+		}
+
+		infRunner := func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+			return []byte(`{"format":{"duration":"Inf"},"streams":[{"codec_name":"h264","width":1920,"height":1080}]}`), nil
+		}
+		infMeta, err := ProbeBackgroundVisual(context.Background(), "inf.mp4", infRunner)
+		if err != nil {
+			t.Fatalf("ProbeBackgroundVisual Inf error: %v", err)
+		}
+		if infMeta.DurationSec != 0 {
+			t.Fatalf("expected Inf duration rejected to 0, got %v", infMeta.DurationSec)
 		}
 	})
 

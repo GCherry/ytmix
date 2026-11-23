@@ -615,7 +615,8 @@ func buildEstimateContext(
 		}
 	}
 
-	calPath, _ := DefaultCalibrationPath()
+	calPathFn := calibrationPathFn
+	calPath, _ := calPathFn()
 	cal := LoadCalibration(calPath)
 
 	est := render.EstimateMix(render.EstimateInput{
@@ -678,14 +679,17 @@ func EstimateConfig(
 	return est, nil
 }
 
+var calibrationPathFn = DefaultCalibrationPath
+
 type etaTracker struct {
-	est           render.MixEstimate
-	mixDuration   float64
-	lastSubstage  string
-	substageStart time.Time
-	emaSpeed      float64
-	muxWallSec    float64
-	renderWallSec float64
+	est             render.MixEstimate
+	mixDuration     float64
+	lastSubstage    string
+	substageStart   time.Time
+	emaSpeed        float64
+	normLoopWallSec float64
+	muxWallSec      float64
+	renderWallSec   float64
 }
 
 func (t *etaTracker) update(u render.ProgressUpdate) float64 {
@@ -696,9 +700,12 @@ func (t *etaTracker) update(u render.ProgressUpdate) float64 {
 		t.emaSpeed = 0
 	}
 	elapsedSub := now.Sub(t.substageStart).Seconds()
-	if u.Substage == "mux" {
+	switch u.Substage {
+	case "norm_loop":
+		t.normLoopWallSec = elapsedSub
+	case "mux":
 		t.muxWallSec = elapsedSub
-	} else if u.Substage == "render" {
+	case "render":
 		t.renderWallSec = elapsedSub
 	}
 
@@ -767,7 +774,11 @@ func recordCalibrationResults(
 	now := time.Now().UTC()
 	changed := false
 	if cfg.Normalize && normElapsed > 0.2 {
-		if RecordObservedSpeed(cal, render.AudioCalibrationKey("loudnorm"), est.MixDurationSec/normElapsed, mixDur, now) {
+		audioWork := est.TotalAudioSec
+		if audioWork <= 0 {
+			audioWork = mixDur
+		}
+		if RecordObservedSpeed(cal, render.AudioCalibrationKey("loudnorm"), audioWork/normElapsed, mixDur, now) {
 			changed = true
 		}
 	}
@@ -781,8 +792,18 @@ func recordCalibrationResults(
 		}
 	}
 
+	videoWork := est.VideoWorkSec
+	if videoWork <= 0 {
+		videoWork = mixDur
+	}
+
 	switch est.Path {
 	case render.PathA:
+		if est.PathANormWorkSec > 0 && tracker.normLoopWallSec > 0.05 {
+			if RecordObservedSpeed(cal, render.CalibrationKey(render.PathA, "norm_loop", render.Resolution1080p), est.PathANormWorkSec/tracker.normLoopWallSec, mixDur, now) {
+				changed = true
+			}
+		}
 		if tracker.muxWallSec > 0.05 {
 			if RecordObservedSpeed(cal, render.CalibrationKey(render.PathA, "mux", render.Resolution1080p), mixDur/tracker.muxWallSec, mixDur, now) {
 				changed = true
@@ -790,7 +811,7 @@ func recordCalibrationResults(
 		}
 	case render.PathB:
 		if tracker.renderWallSec > 0.2 {
-			if RecordObservedSpeed(cal, render.CalibrationKey(render.PathB, est.EncoderName, render.Resolution1080p), mixDur/tracker.renderWallSec, mixDur, now) {
+			if RecordObservedSpeed(cal, render.CalibrationKey(render.PathB, est.EncoderName, render.Resolution1080p), videoWork/tracker.renderWallSec, mixDur, now) {
 				changed = true
 			}
 		}
@@ -800,7 +821,7 @@ func recordCalibrationResults(
 			if cfg.OverlayTitles {
 				tag = "10fps"
 			}
-			if RecordObservedSpeed(cal, render.CalibrationKey(render.PathC, "libx264", tag), mixDur/tracker.renderWallSec, mixDur, now) {
+			if RecordObservedSpeed(cal, render.CalibrationKey(render.PathC, "libx264", tag), videoWork/tracker.renderWallSec, mixDur, now) {
 				changed = true
 			}
 		}
@@ -808,9 +829,12 @@ func recordCalibrationResults(
 		if tracker.renderWallSec > 0.2 {
 			encKey := est.EncoderName
 			if strings.EqualFold(strings.TrimSpace(cfg.Visualizer), "black") {
-				encKey = "black"
+				encKey = "black-2fps"
+				if cfg.OverlayTitles {
+					encKey = "black-10fps"
+				}
 			}
-			if RecordObservedSpeed(cal, render.CalibrationKey(render.PathD, encKey, cfg.VisualizerResolution), mixDur/tracker.renderWallSec, mixDur, now) {
+			if RecordObservedSpeed(cal, render.CalibrationKey(render.PathD, encKey, cfg.VisualizerResolution), videoWork/tracker.renderWallSec, mixDur, now) {
 				changed = true
 			}
 		}
@@ -890,12 +914,12 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, sink Telemetry
 	audioStart := time.Now()
 	var normDoneAt time.Time
 	var onNormProgress func(completed, total int)
-	if sink != nil && cfg.Normalize {
+	if cfg.Normalize {
 		onNormProgress = func(completed, total int) {
 			if completed == total {
 				normDoneAt = time.Now()
 			}
-			if total <= 0 {
+			if sink == nil || total <= 0 {
 				return
 			}
 			normShare := 0.5
@@ -1024,7 +1048,9 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, sink Telemetry
 	if tracker.renderWallSec <= 0 && pathKind != render.PathA {
 		tracker.renderWallSec = time.Since(renderStart).Seconds()
 	}
-	recordCalibrationResults(calPath, cal, cfg, est, sched.TotalDuration, normElapsed, mergeElapsed, tracker)
+	if calPath != "" && sched.TotalDuration >= minCalibratedMixSec {
+		recordCalibrationResults(calPath, cal, cfg, est, sched.TotalDuration, normElapsed, mergeElapsed, tracker)
+	}
 
 	doneMsg := fmt.Sprintf("Done! Rendered %s via %s in %s (audio duration %.2fs, chapters: %s).",
 		cfg.Out, pathKind, time.Since(start).Round(time.Millisecond), sched.TotalDuration, cfg.Timestamps)

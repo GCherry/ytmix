@@ -184,4 +184,76 @@ func TestEstimateMix(t *testing.T) {
 			t.Fatalf("expected narrower spread when calibrated (%v < %v)", calSpread, uncalSpread)
 		}
 	})
+
+	t.Run("CalibrationKey separates PathC 2fps vs 10fps and PathD black tiers", func(t *testing.T) {
+		k2 := CalibrationKey(PathC, "libx264", "2fps")
+		k10 := CalibrationKey(PathC, "libx264", "10fps")
+		if k2 == k10 {
+			t.Fatalf("PathC keys collided: %q == %q", k2, k10)
+		}
+		b2 := CalibrationKey(PathD, "black-2fps", Resolution1080p)
+		b10 := CalibrationKey(PathD, "black-10fps", Resolution1080p)
+		if b2 == b10 {
+			t.Fatalf("PathD black keys collided: %q == %q", b2, b10)
+		}
+	})
+
+	t.Run("PathB 60fps, PathD 4K, and PathA norm_loop+mux converge without double-counting", func(t *testing.T) {
+		inB := EstimateInput{
+			Path:           PathB,
+			EncoderName:    "libx264",
+			MixDurationSec: 600,
+			TotalAudioSec:  600,
+			TrackCount:     2,
+			OverlayTitles:  true,
+			CPUCores:       8,
+			BG:             BackgroundEstimateInput{DurationSec: 10, FPS: 60, Width: 1920, Height: 1080},
+		}
+		preB := EstimateMix(inB, nil)
+		observedWallB := 120.0 // 5.0x realtime -> normalized work speed = VideoWorkSec / 120 = 10.0
+		calB := map[string]CalibrationEntry{
+			CalibrationKey(PathB, "libx264", Resolution1080p): {Speed: preB.VideoWorkSec / observedWallB, Samples: 2},
+		}
+		postB := EstimateMix(inB, calB)
+		if !postB.Calibrated || math.Abs(postB.VideoSec-observedWallB) > 1.0 {
+			t.Fatalf("PathB 60fps converged VideoSec=%v, want ~%v (calibrated=%v)", postB.VideoSec, observedWallB, postB.Calibrated)
+		}
+
+		inD := EstimateInput{
+			Path:           PathD,
+			EncoderName:    "libx264",
+			MixDurationSec: 600,
+			TotalAudioSec:  600,
+			TrackCount:     2,
+			CPUCores:       8,
+			Visualizer:     VisualizerConfig{Preset: "bars", Resolution: Resolution4K, Glow: true},
+		}
+		preD := EstimateMix(inD, nil)
+		observedWallD := 300.0
+		calD := map[string]CalibrationEntry{
+			CalibrationKey(PathD, "libx264", Resolution4K): {Speed: preD.VideoWorkSec / observedWallD, Samples: 2},
+		}
+		postD := EstimateMix(inD, calD)
+		if !postD.Calibrated || math.Abs(postD.VideoSec-observedWallD) > 1.0 {
+			t.Fatalf("PathD 4K converged VideoSec=%v, want ~%v (calibrated=%v)", postD.VideoSec, observedWallD, postD.Calibrated)
+		}
+
+		inA := EstimateInput{
+			Path:           PathA,
+			EncoderName:    "libx264",
+			MixDurationSec: 600,
+			TotalAudioSec:  600,
+			TrackCount:     2,
+			CPUCores:       8,
+			BG:             BackgroundEstimateInput{DurationSec: 12, FPS: 30, Width: 1920, Height: 1080},
+		}
+		calA := map[string]CalibrationEntry{
+			CalibrationKey(PathA, "norm_loop", Resolution1080p): {Speed: 8.0, Samples: 2},
+			CalibrationKey(PathA, "mux", Resolution1080p):       {Speed: 600.0, Samples: 2},
+		}
+		postA := EstimateMix(inA, calA)
+		if !postA.Calibrated {
+			t.Fatalf("expected PathA to be Calibrated=true when norm_loop and mux both have >=2 samples")
+		}
+	})
 }

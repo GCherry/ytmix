@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -681,6 +682,11 @@ func TestProbeTrackFilesAndRunWithTracks(t *testing.T) {
 
 	t.Run("EstimateConfig and weighted progress handle long Path A normalize Mixes", func(t *testing.T) {
 		workDir, audioDir, bgPath := setupStubMixWorkspace(t, "loop.mp4")
+		origCalFn := calibrationPathFn
+		calPath := filepath.Join(workDir, "cache", "calibration.json")
+		calibrationPathFn = func() (string, error) { return calPath, nil }
+		t.Cleanup(func() { calibrationPathFn = origCalFn })
+
 		cfg := Config{
 			AudioDir:   audioDir,
 			BG:         bgPath,
@@ -756,6 +762,64 @@ func TestProbeTrackFilesAndRunWithTracks(t *testing.T) {
 		}
 		if normLoopRem <= muxStartRem {
 			t.Fatalf("expected norm_loop RemainingSec (%v) > mux RemainingSec (%v)", normLoopRem, muxStartRem)
+		}
+	})
+
+	t.Run("recordCalibrationResults records PathA norm_loop+mux, PathC 2fps vs 10fps, PathB/D work speeds, and headless loudnorm", func(t *testing.T) {
+		tmp := t.TempDir()
+		calPath := filepath.Join(tmp, "cal.json")
+		cal := make(map[string]render.CalibrationEntry)
+
+		// Path A norm_loop + mux + headless loudnorm
+		estA := render.MixEstimate{
+			Path:             render.PathA,
+			MixDurationSec:   600,
+			TotalAudioSec:    620,
+			PathANormWorkSec: 12,
+		}
+		recordCalibrationResults(calPath, cal, Config{Normalize: true}, estA, 600, 10.0, 20.0, &etaTracker{
+			normLoopWallSec: 1.5,
+			muxWallSec:      1.0,
+		})
+		if _, ok := cal[render.CalibrationKey(render.PathA, "norm_loop", render.Resolution1080p)]; !ok {
+			t.Fatalf("expected PathA norm_loop calibration entry, got %+v", cal)
+		}
+		if _, ok := cal[render.CalibrationKey(render.PathA, "mux", render.Resolution1080p)]; !ok {
+			t.Fatalf("expected PathA mux calibration entry, got %+v", cal)
+		}
+		if got := cal[render.AudioCalibrationKey("loudnorm")].Speed; math.Abs(got-62.0) > 1e-6 {
+			t.Fatalf("loudnorm speed = %v, want 62.0 (TotalAudioSec/normElapsed)", got)
+		}
+		if got := cal[render.AudioCalibrationKey("concat")].Speed; math.Abs(got-30.0) > 1e-6 {
+			t.Fatalf("concat speed = %v, want 30.0", got)
+		}
+
+		// Path C 2fps vs 10fps distinct keys
+		estC := render.MixEstimate{Path: render.PathC, VideoWorkSec: 600}
+		recordCalibrationResults(calPath, cal, Config{OverlayTitles: false}, estC, 600, 0, 1.0, &etaTracker{renderWallSec: 6.0})
+		recordCalibrationResults(calPath, cal, Config{OverlayTitles: true}, estC, 600, 0, 1.0, &etaTracker{renderWallSec: 15.0})
+		k2 := render.CalibrationKey(render.PathC, "libx264", "2fps")
+		k10 := render.CalibrationKey(render.PathC, "libx264", "10fps")
+		if cal[k2].Speed != 100.0 || cal[k10].Speed != 40.0 {
+			t.Fatalf("unexpected PathC calibration entries: 2fps=%+v 10fps=%+v", cal[k2], cal[k10])
+		}
+
+		// Path B 60fps uses VideoWorkSec (1200) rather than raw MixDurationSec (600)
+		estB := render.MixEstimate{Path: render.PathB, EncoderName: "libx264", VideoWorkSec: 1200}
+		recordCalibrationResults(calPath, cal, Config{OverlayTitles: true}, estB, 600, 0, 1.0, &etaTracker{renderWallSec: 120.0})
+		kB := render.CalibrationKey(render.PathB, "libx264", render.Resolution1080p)
+		if math.Abs(cal[kB].Speed-10.0) > 1e-6 {
+			t.Fatalf("PathB work speed = %v, want 10.0 (VideoWorkSec/renderWallSec)", cal[kB].Speed)
+		}
+
+		// Path D black 2fps vs 10fps distinct keys
+		estD := render.MixEstimate{Path: render.PathD, EncoderName: "libx264", VideoWorkSec: 600}
+		recordCalibrationResults(calPath, cal, Config{Visualizer: "black", VisualizerResolution: render.Resolution1080p, OverlayTitles: false}, estD, 600, 0, 1.0, &etaTracker{renderWallSec: 3.0})
+		recordCalibrationResults(calPath, cal, Config{Visualizer: "black", VisualizerResolution: render.Resolution1080p, OverlayTitles: true}, estD, 600, 0, 1.0, &etaTracker{renderWallSec: 10.0})
+		kd2 := render.CalibrationKey(render.PathD, "black-2fps", render.Resolution1080p)
+		kd10 := render.CalibrationKey(render.PathD, "black-10fps", render.Resolution1080p)
+		if cal[kd2].Speed != 200.0 || cal[kd10].Speed != 60.0 {
+			t.Fatalf("unexpected PathD black entries: 2fps=%+v 10fps=%+v", cal[kd2], cal[kd10])
 		}
 	})
 }

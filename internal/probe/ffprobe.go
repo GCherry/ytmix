@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -167,7 +168,7 @@ func ParseFrameRate(raw string) float64 {
 		}
 		fps = val
 	}
-	if fps <= 0 || fps > 240 {
+	if math.IsNaN(fps) || math.IsInf(fps, 0) || fps <= 0 || fps > 240 {
 		return 0
 	}
 	return fps
@@ -205,7 +206,7 @@ func ProbeBackgroundVisual(ctx context.Context, path string, runner func(ctx con
 	}
 
 	var meta BackgroundMeta
-	if dur, err := strconv.ParseFloat(strings.TrimSpace(parsed.Format.Duration), 64); err == nil && dur > 0 {
+	if dur, err := strconv.ParseFloat(strings.TrimSpace(parsed.Format.Duration), 64); err == nil && !math.IsNaN(dur) && !math.IsInf(dur, 0) && dur > 0 {
 		meta.DurationSec = dur
 	}
 
@@ -227,6 +228,9 @@ func ProbeBackgroundVisual(ctx context.Context, path string, runner func(ctx con
 
 	if meta.DurationSec <= 0 && meta.NBFrames > 0 && meta.FPS > 0 {
 		meta.DurationSec = float64(meta.NBFrames) / meta.FPS
+	}
+	if meta.NBFrames == 0 && meta.DurationSec > 0 && meta.FPS > 0 {
+		meta.NBFrames = int64(math.Round(meta.DurationSec * meta.FPS))
 	}
 
 	return meta, nil

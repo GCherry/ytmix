@@ -23,16 +23,25 @@ func normalizeResolution(res string) string {
 }
 
 // CalibrationKey builds a canonical lookup key for Step 5 video render calibration.
-func CalibrationKey(pathKind Path, encoderName, resolution string) string {
+// For PathD, bucket is normalized as a resolution preset (1080p/1440p/4k);
+// for PathC, bucket preserves distinct fps tiers ("2fps" / "10fps").
+func CalibrationKey(pathKind Path, encoderName, bucket string) string {
 	enc := strings.TrimSpace(encoderName)
 	if enc == "" {
 		enc = "libx264"
 	}
-	res := normalizeResolution(resolution)
-	if pathKind != PathD {
-		res = Resolution1080p
+	b := strings.TrimSpace(bucket)
+	switch pathKind {
+	case PathD:
+		b = normalizeResolution(b)
+	case PathC:
+		if b == "" {
+			b = "2fps"
+		}
+	default:
+		b = Resolution1080p
 	}
-	return fmt.Sprintf("%s|%s|%s", pathKind, enc, res)
+	return fmt.Sprintf("%s|%s|%s", pathKind, enc, b)
 }
 
 // AudioCalibrationKey returns the canonical lookup key for Step 2 audio substages.
@@ -74,23 +83,26 @@ type StageWeights struct {
 
 // MixEstimate summarizes predicted wall-clock seconds, confidence bounds, stage weights, and loop context.
 type MixEstimate struct {
-	Path            Path         `json:"renderingPath"`
-	EncoderName     string       `json:"encoder"`
-	MixDurationSec  float64      `json:"mixDurationSec"`
-	AudioSec        float64      `json:"audioSec"`
-	NormalizeSec    float64      `json:"normalizeSec"`
-	MergeSec        float64      `json:"mergeSec"`
-	VideoSec        float64      `json:"videoSec"`
-	PathANormSec    float64      `json:"pathANormSec,omitempty"`
-	PathAMuxSec     float64      `json:"pathAMuxSec,omitempty"`
-	PointSec        float64      `json:"pointSec"`
-	LowSec          float64      `json:"lowSec"`
-	HighSec         float64      `json:"highSec"`
-	LoopDurationSec float64      `json:"loopDurationSec,omitempty"`
-	LoopFPS         float64      `json:"loopFPS,omitempty"`
-	LoopCycles      int          `json:"loopCycles,omitempty"`
-	Calibrated      bool         `json:"calibrated"`
-	Weights         StageWeights `json:"weights"`
+	Path             Path         `json:"renderingPath"`
+	EncoderName      string       `json:"encoder"`
+	MixDurationSec   float64      `json:"mixDurationSec"`
+	TotalAudioSec    float64      `json:"-"`
+	AudioSec         float64      `json:"audioSec"`
+	NormalizeSec     float64      `json:"normalizeSec"`
+	MergeSec         float64      `json:"mergeSec"`
+	VideoSec         float64      `json:"videoSec"`
+	VideoWorkSec     float64      `json:"-"`
+	PathANormSec     float64      `json:"pathANormSec,omitempty"`
+	PathANormWorkSec float64      `json:"-"`
+	PathAMuxSec      float64      `json:"pathAMuxSec,omitempty"`
+	PointSec         float64      `json:"pointSec"`
+	LowSec           float64      `json:"lowSec"`
+	HighSec          float64      `json:"highSec"`
+	LoopDurationSec  float64      `json:"loopDurationSec,omitempty"`
+	LoopFPS          float64      `json:"loopFPS,omitempty"`
+	LoopCycles       int          `json:"loopCycles,omitempty"`
+	Calibrated       bool         `json:"calibrated"`
+	Weights          StageWeights `json:"weights"`
 }
 
 func cpuScaleFactor(cores int) float64 {
@@ -199,7 +211,7 @@ func EstimateMix(in EstimateInput, cal map[string]CalibrationEntry) MixEstimate 
 		loopCycles = int(math.Ceil(mixDur / loopDur))
 	}
 
-	var videoSec, pathANormSec, pathAMuxSec float64
+	var videoSec, videoWorkSec, pathANormSec, pathANormWorkSec, pathAMuxSec float64
 	var videoCalibrated bool
 
 	switch in.Path {
@@ -213,22 +225,28 @@ func EstimateMix(in EstimateInput, cal map[string]CalibrationEntry) MixEstimate 
 		if in.BG.Width*in.BG.Height >= 3840*2160 {
 			decodePenalty = 1.45
 		}
+		normWork := effectiveLoop * math.Pow(loopFPS/30.0, 0.5) * decodePenalty
+		if !unknownLoopDur {
+			pathANormWorkSec = normWork
+		}
 		priorNormLoop := clampSpeed(7.5*fCPU, 2.5, 20.0)
 		normLoopSpeed, calNorm := lookupCalibratedSpeed(cal, CalibrationKey(PathA, "norm_loop", Resolution1080p), priorNormLoop)
-		pathANormSec = 0.20 + (effectiveLoop*math.Pow(loopFPS/30.0, 0.5)*decodePenalty)/normLoopSpeed
+		pathANormSec = 0.20 + normWork/normLoopSpeed
 
 		priorMux := 500.0
 		muxSpeed, calMux := lookupCalibratedSpeed(cal, CalibrationKey(PathA, "mux", Resolution1080p), priorMux)
 		pathAMuxSec = 0.15 + mixDur/muxSpeed
 		videoSec = pathANormSec + pathAMuxSec
+		videoWorkSec = mixDur
 		videoCalibrated = calNorm && calMux && !unknownLoopDur
 	case PathB:
 		priorB := clampSpeed(12.0*fCPU, 3.0, 32.0)
 		if enc == "h264_nvenc" || enc == "h264_videotoolbox" {
 			priorB = 14.0
 		}
+		videoWorkSec = mixDur * (loopFPS / 30.0)
 		speedB, calB := lookupCalibratedSpeed(cal, CalibrationKey(PathB, enc, Resolution1080p), priorB)
-		videoSec = 0.30 + (mixDur*(loopFPS/30.0))/speedB
+		videoSec = 0.30 + videoWorkSec/speedB
 		videoCalibrated = calB
 	case PathC:
 		priorC := clampSpeed(95.0*fCPU, 25.0, 220.0)
@@ -237,8 +255,9 @@ func EstimateMix(in EstimateInput, cal map[string]CalibrationEntry) MixEstimate 
 			priorC = clampSpeed(36.0*fCPU, 10.0, 90.0)
 			resTag = "10fps"
 		}
+		videoWorkSec = mixDur
 		speedC, calC := lookupCalibratedSpeed(cal, CalibrationKey(PathC, "libx264", resTag), priorC)
-		videoSec = 0.25 + mixDur/speedC
+		videoSec = 0.25 + videoWorkSec/speedC
 		videoCalibrated = calC
 	case PathD:
 		preset := strings.ToLower(strings.TrimSpace(in.Visualizer.Preset))
@@ -248,19 +267,23 @@ func EstimateMix(in EstimateInput, cal map[string]CalibrationEntry) MixEstimate 
 		res := normalizeResolution(in.Visualizer.Resolution)
 		if preset == "black" {
 			priorBlack := clampSpeed(140.0*fCPU, 40.0, 300.0)
+			blackEncKey := "black-2fps"
 			if in.OverlayTitles {
 				priorBlack = clampSpeed(45.0*fCPU, 15.0, 120.0)
+				blackEncKey = "black-10fps"
 			}
-			speedBlack, calBlack := lookupCalibratedSpeed(cal, CalibrationKey(PathD, "black", res), priorBlack)
-			videoSec = 0.25 + (mixDur*math.Sqrt(resolutionMultiplier(res)))/speedBlack
+			videoWorkSec = mixDur * math.Sqrt(resolutionMultiplier(res))
+			speedBlack, calBlack := lookupCalibratedSpeed(cal, CalibrationKey(PathD, blackEncKey, res), priorBlack)
+			videoSec = 0.25 + videoWorkSec/speedBlack
 			videoCalibrated = calBlack
 		} else {
 			priorD := clampSpeed(13.0*fCPU, 3.0, 35.0)
 			if enc == "h264_nvenc" || enc == "h264_videotoolbox" {
 				priorD = 15.0
 			}
+			videoWorkSec = mixDur * resolutionMultiplier(res) * visualizerComplexity(in.Visualizer)
 			speedD, calD := lookupCalibratedSpeed(cal, CalibrationKey(PathD, enc, res), priorD)
-			videoSec = 0.35 + (mixDur*resolutionMultiplier(res)*visualizerComplexity(in.Visualizer))/speedD
+			videoSec = 0.35 + videoWorkSec/speedD
 			videoCalibrated = calD
 		}
 	}
@@ -286,22 +309,25 @@ func EstimateMix(in EstimateInput, cal map[string]CalibrationEntry) MixEstimate 
 	}
 
 	return MixEstimate{
-		Path:            in.Path,
-		EncoderName:     enc,
-		MixDurationSec:  mixDur,
-		AudioSec:        audioSec,
-		NormalizeSec:    normSec,
-		MergeSec:        mergeSec,
-		VideoSec:        videoSec,
-		PathANormSec:    pathANormSec,
-		PathAMuxSec:     pathAMuxSec,
-		PointSec:        pointSec,
-		LowSec:          lowSec,
-		HighSec:         highSec,
-		LoopDurationSec: loopDur,
-		LoopFPS:         loopFPS,
-		LoopCycles:      loopCycles,
-		Calibrated:      videoCalibrated,
-		Weights:         weights,
+		Path:             in.Path,
+		EncoderName:      enc,
+		MixDurationSec:   mixDur,
+		TotalAudioSec:    rawAudio,
+		AudioSec:         audioSec,
+		NormalizeSec:     normSec,
+		MergeSec:         mergeSec,
+		VideoSec:         videoSec,
+		VideoWorkSec:     videoWorkSec,
+		PathANormSec:     pathANormSec,
+		PathANormWorkSec: pathANormWorkSec,
+		PathAMuxSec:      pathAMuxSec,
+		PointSec:         pointSec,
+		LowSec:           lowSec,
+		HighSec:          highSec,
+		LoopDurationSec:  loopDur,
+		LoopFPS:          loopFPS,
+		LoopCycles:       loopCycles,
+		Calibrated:       videoCalibrated,
+		Weights:          weights,
 	}
 }
