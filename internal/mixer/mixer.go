@@ -93,19 +93,186 @@ type TelemetryEvent struct {
 	Speed             string
 	RemainingSec      float64
 	EstimatedTotalSec float64
+	Estimate          *render.MixEstimate
 }
 
 // TelemetrySink receives structured telemetry events during a Mix build.
 type TelemetrySink func(TelemetryEvent)
 
+func formatCompactDuration(sec float64) string {
+	if math.IsNaN(sec) || math.IsInf(sec, 0) || sec <= 0 {
+		return "0s"
+	}
+	total := int(math.Round(sec))
+	if total <= 0 {
+		return "0s"
+	}
+	if total < 60 {
+		return fmt.Sprintf("%ds", total)
+	}
+	if total < 3600 {
+		return fmt.Sprintf("%dm %02ds", total/60, total%60)
+	}
+	return fmt.Sprintf("%dh %02dm %02ds", total/3600, (total%3600)/60, total%60)
+}
+
+// FormatDurationRange formats an estimated [lowSec, highSec] confidence band into a compact range string.
+func FormatDurationRange(lowSec, highSec float64) string {
+	if math.IsNaN(lowSec) || math.IsInf(lowSec, 0) || lowSec < 0 {
+		lowSec = 0
+	}
+	if math.IsNaN(highSec) || math.IsInf(highSec, 0) || highSec < lowSec {
+		highSec = lowSec
+	}
+	lowStr := formatCompactDuration(lowSec)
+	highStr := formatCompactDuration(highSec)
+	if lowStr == highStr {
+		return "~" + lowStr
+	}
+	return fmt.Sprintf("~%s – %s", lowStr, highStr)
+}
+
+// FormatEstimateSummary formats a concise single-line pre-render Mix duration summary.
+func FormatEstimateSummary(est render.MixEstimate) string {
+	enc := strings.TrimSpace(est.EncoderName)
+	if enc == "" {
+		enc = "libx264"
+	}
+	return fmt.Sprintf("Estimated Mix render time: %s (%s · %s · Audio ~%s, Video ~%s)",
+		FormatDurationRange(est.LowSec, est.HighSec),
+		est.Path,
+		enc,
+		formatCompactDuration(est.AudioSec),
+		formatCompactDuration(est.VideoSec),
+	)
+}
+
+func pathDescription(pathKind render.Path) string {
+	switch pathKind {
+	case render.PathA:
+		return "Path A (Stream Copy Loop)"
+	case render.PathB:
+		return "Path B (Hardware-Accelerated Overlay Loop)"
+	case render.PathC:
+		return "Path C (Low-FPS Still Image)"
+	case render.PathD:
+		return "Path D (Auto Visualizer)"
+	default:
+		return string(pathKind)
+	}
+}
+
+// FormatEstimateReport formats a multi-line dry-run breakdown for `ytmix --estimate`.
+func FormatEstimateReport(cfg Config, trackCount int, est render.MixEstimate) string {
+	var b strings.Builder
+	normStatus := "off"
+	if cfg.Normalize {
+		normStatus = "on"
+	}
+
+	b.WriteString("Mix Estimate (--estimate dry-run)\n")
+	fmt.Fprintf(&b, "  Tracks:            %d, Mix duration %s (Loudness Normalization %s, Crossfade %.3gs)\n",
+		trackCount, formatCompactDuration(est.MixDurationSec), normStatus, cfg.Crossfade)
+
+	switch est.Path {
+	case render.PathA, render.PathB:
+		bgName := filepath.Base(strings.TrimSpace(cfg.BG))
+		var metaParts []string
+		if est.LoopDurationSec > 0 {
+			metaParts = append(metaParts, fmt.Sprintf("%.1fs loop", est.LoopDurationSec))
+		} else {
+			metaParts = append(metaParts, "looping video/GIF")
+		}
+		if est.LoopFPS > 0 {
+			metaParts = append(metaParts, fmt.Sprintf("%.4g fps", est.LoopFPS))
+		}
+		if est.LoopCycles > 0 {
+			metaParts = append(metaParts, fmt.Sprintf("%d cycles", est.LoopCycles))
+		}
+		fmt.Fprintf(&b, "  Background Visual: %s (%s)\n", bgName, strings.Join(metaParts, " · "))
+	case render.PathC:
+		bgName := filepath.Base(strings.TrimSpace(cfg.BG))
+		fps := 2
+		if cfg.OverlayTitles {
+			fps = 10
+		}
+		fmt.Fprintf(&b, "  Background Visual: %s (static image · %d fps)\n", bgName, fps)
+	case render.PathD:
+		preset := strings.TrimSpace(cfg.Visualizer)
+		if preset == "" {
+			preset = render.DefaultVisualizerPreset
+		}
+		theme := strings.TrimSpace(cfg.VisualizerTheme)
+		if theme == "" {
+			theme = render.DefaultVisualizerTheme
+		}
+		res := strings.TrimSpace(cfg.VisualizerResolution)
+		if res == "" {
+			res = render.DefaultVisualizerResolution
+		}
+		fmt.Fprintf(&b, "  Background Visual: Auto Visualizer (%s · %s · %s)\n", preset, theme, res)
+	}
+
+	enc := strings.TrimSpace(est.EncoderName)
+	if enc == "" {
+		enc = "libx264"
+	}
+	encLabel := enc
+	if est.Path == render.PathA {
+		encLabel = fmt.Sprintf("%s (norm_loop) + stream copy (mux)", enc)
+	}
+	fmt.Fprintf(&b, "  Rendering Path:    %s\n", pathDescription(est.Path))
+	fmt.Fprintf(&b, "  Encoder:           %s\n", encLabel)
+
+	audioPct := int(math.Round(est.Weights.Audio * 100))
+	videoPct := 100 - audioPct
+	if cfg.Normalize {
+		fmt.Fprintf(&b, "  Audio Stage:       ~%s (normalize ~%s, merge ~%s · %d%%)\n",
+			formatCompactDuration(est.AudioSec),
+			formatCompactDuration(est.NormalizeSec),
+			formatCompactDuration(est.MergeSec),
+			audioPct)
+	} else {
+		fmt.Fprintf(&b, "  Audio Stage:       ~%s (merge ~%s · %d%%)\n",
+			formatCompactDuration(est.AudioSec),
+			formatCompactDuration(est.MergeSec),
+			audioPct)
+	}
+
+	if est.Path == render.PathA {
+		fmt.Fprintf(&b, "  Video Stage:       ~%s (norm_loop ~%s, mux ~%s · %d%%)\n",
+			formatCompactDuration(est.VideoSec),
+			formatCompactDuration(est.PathANormSec),
+			formatCompactDuration(est.PathAMuxSec),
+			videoPct)
+	} else {
+		fmt.Fprintf(&b, "  Video Stage:       ~%s (%d%%)\n",
+			formatCompactDuration(est.VideoSec),
+			videoPct)
+	}
+
+	fmt.Fprintf(&b, "  Estimated Time:    %s (point ~%s)\n",
+		FormatDurationRange(est.LowSec, est.HighSec),
+		formatCompactDuration(est.PointSec))
+
+	calStatus := "uncalibrated (hardware prior)"
+	if est.Calibrated {
+		calStatus = "calibrated (local EMA cache)"
+	}
+	fmt.Fprintf(&b, "  Calibration:       %s", calStatus)
+	return b.String()
+}
+
 // NewCLITelemetry returns a TelemetrySink that formats clean [1/5]–[5/5] milestones for w,
-// overwriting a single Step 5 status line when isTTY is true.
+// overwriting a single live status line with optional speed and remaining ETA when isTTY is true.
 func NewCLITelemetry(w io.Writer, isTTY bool) TelemetrySink {
 	if w == nil {
 		return nil
 	}
 	var dirtyTTY bool
-	var lastPct int
+	var lastLineLen int
+	var lastStep int
+	lastPct := -1
 	var lastEmit time.Time
 	return func(ev TelemetryEvent) {
 		switch ev.Kind {
@@ -113,6 +280,10 @@ func NewCLITelemetry(w io.Writer, isTTY bool) TelemetrySink {
 			if dirtyTTY {
 				fmt.Fprintln(w)
 				dirtyTTY = false
+				lastLineLen = 0
+			}
+			if ev.Estimate != nil {
+				fmt.Fprintln(w, FormatEstimateSummary(*ev.Estimate))
 			}
 			fmt.Fprintln(w, ev.Message)
 		case EventProgress:
@@ -120,21 +291,47 @@ func NewCLITelemetry(w io.Writer, isTTY bool) TelemetrySink {
 				return
 			}
 			now := time.Now()
-			if ev.Progress == lastPct && now.Sub(lastEmit) < 250*time.Millisecond {
+			if ev.Step == lastStep && ev.Progress == lastPct && now.Sub(lastEmit) < 250*time.Millisecond {
 				return
 			}
+			lastStep = ev.Step
 			lastPct = ev.Progress
 			lastEmit = now
-			speedPart := ""
-			if ev.Speed != "" {
-				speedPart = fmt.Sprintf(" (%s)", ev.Speed)
+
+			label := "[5/5] Rendering Mix..."
+			if ev.Step == 2 && ev.Substage == "normalize" {
+				label = "[2/5] Normalizing Tracks..."
 			}
-			fmt.Fprintf(w, "\r[5/5] Rendering Mix... %d%%%s", ev.Progress, speedPart)
+
+			var parts []string
+			if ev.Speed != "" {
+				parts = append(parts, ev.Speed)
+			}
+			if ev.RemainingSec > 0 && !math.IsNaN(ev.RemainingSec) && !math.IsInf(ev.RemainingSec, 0) {
+				rem := ev.RemainingSec
+				if rem < 1 {
+					rem = 1
+				}
+				parts = append(parts, fmt.Sprintf("~%s left", formatCompactDuration(rem)))
+			}
+			suffix := ""
+			if len(parts) > 0 {
+				suffix = fmt.Sprintf(" (%s)", strings.Join(parts, " · "))
+			}
+
+			line := fmt.Sprintf("%s %d%%%s", label, ev.Progress, suffix)
+			pad := ""
+			if len(line) < lastLineLen {
+				pad = strings.Repeat(" ", lastLineLen-len(line))
+			}
+			lastLineLen = len(line)
+			fmt.Fprintf(w, "\r%s%s", line, pad)
 			dirtyTTY = true
 		case EventDone:
 			if dirtyTTY {
 				fmt.Fprintln(w)
 				dirtyTTY = false
+				lastLineLen = 0
 			}
 			fmt.Fprintln(w, ev.Message)
 		}
@@ -924,7 +1121,19 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, sink Telemetry
 		durations[i] = tr.Duration
 	}
 
-	emitStep(sink, 2, 5, bounds.step2Start, est.PointSec, est.PointSec, fmt.Sprintf("Processing & merging %d Track(s) (normalize=%v, crossfade=%.2fs)...", len(tracks), cfg.Normalize, cfg.Crossfade))
+	step2Detail := fmt.Sprintf("Processing & merging %d Track(s) (normalize=%v, crossfade=%.2fs)...", len(tracks), cfg.Normalize, cfg.Crossfade)
+	estCopy := est
+	emitTelemetry(sink, TelemetryEvent{
+		Kind:              EventStep,
+		Step:              2,
+		TotalSteps:        5,
+		Progress:          bounds.step2Start,
+		Message:           fmt.Sprintf("[2/5] %s", step2Detail),
+		Detail:            step2Detail,
+		RemainingSec:      est.PointSec,
+		EstimatedTotalSec: est.PointSec,
+		Estimate:          &estCopy,
+	})
 	audioStart := time.Now()
 	var normDoneAt time.Time
 	var onNormProgress func(completed, total int)

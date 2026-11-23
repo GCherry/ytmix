@@ -3,11 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/GCherry/ytmix/internal/mixer"
 )
 
 func TestIsCharDevice(t *testing.T) {
@@ -98,6 +102,191 @@ func TestParseFlags(t *testing.T) {
 		_, listOnly, err := ParseCLIFlags([]string{"--list-visualizers"})
 		if err != nil || !listOnly {
 			t.Fatalf("expected listOnly=true for --list-visualizers, got (%v, %v)", listOnly, err)
+		}
+
+		_, defOpts, err := ParseCLIOptions(nil)
+		if err != nil || defOpts.Estimate || defOpts.ListVisualizers {
+			t.Fatalf("unexpected default CLIOptions: %+v err=%v", defOpts, err)
+		}
+
+		estCfg, estOpts, err := ParseCLIOptions([]string{"--estimate", "--normalize", "--out-dir", "dry-run-out"})
+		if err != nil || !estOpts.Estimate || estOpts.ListVisualizers || !estCfg.Normalize || estCfg.OutDir != "dry-run-out" {
+			t.Fatalf("unexpected --estimate parse result: cfg=%+v opts=%+v err=%v", estCfg, estOpts, err)
+		}
+	})
+}
+
+func TestRunEstimate(t *testing.T) {
+	okLookPath := func(name string) (string, error) { return "/usr/bin/" + name, nil }
+
+	t.Run("Path A dry-run prints structured breakdown and never creates out-dir or runs ffmpeg render", func(t *testing.T) {
+		workDir := t.TempDir()
+		audioDir := filepath.Join(workDir, "tracks")
+		if err := os.Mkdir(audioDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"01 - Alpha.mp3", "02 - Beta.mp3"} {
+			if err := os.WriteFile(filepath.Join(audioDir, name), []byte("mp3"), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		bgPath := filepath.Join(workDir, "loop.mp4")
+		if err := os.WriteFile(bgPath, []byte("mp4"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		outDir := filepath.Join(workDir, "uncreated-out", "nested")
+
+		cfg := mixer.Config{
+			AudioDir:   audioDir,
+			BG:         bgPath,
+			OutDir:     outDir,
+			Out:        "mix.mp4",
+			Timestamps: "chapters.txt",
+			Crossfade:  2.0,
+		}
+
+		ffmpegRenderCalled := false
+		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "ffprobe" {
+				target := args[len(args)-1]
+				if target == bgPath {
+					return []byte(`{"format":{"duration":"12.0"},"streams":[{"codec_name":"h264","width":1920,"height":1080,"avg_frame_rate":"30/1"}]}`), nil
+				}
+				return []byte(`{"format":{"duration":"180.0"},"streams":[]}`), nil
+			}
+			ffmpegRenderCalled = true
+			return nil, errors.New("unexpected ffmpeg invocation during --estimate")
+		}
+
+		var out bytes.Buffer
+		if err := RunEstimate(context.Background(), cfg, &out, okLookPath, runner); err != nil {
+			t.Fatalf("RunEstimate Path A error: %v", err)
+		}
+		if ffmpegRenderCalled {
+			t.Fatal("expected ffmpeg never to be invoked during Path A --estimate")
+		}
+		if _, err := os.Stat(filepath.Join(workDir, "uncreated-out")); !os.IsNotExist(err) {
+			t.Fatalf("expected --out-dir not to be created on --estimate dry-run, stat err=%v", err)
+		}
+
+		text := out.String()
+		for _, want := range []string{
+			"Tracks:",
+			"2, Mix duration 5m 58s",
+			"Background Visual:",
+			"loop.mp4",
+			"12.0s loop",
+			"30 fps",
+			"30 cycles",
+			"Path A (Stream Copy Loop)",
+			"Encoder:",
+			"Audio Stage:",
+			"Video Stage:",
+			"Estimated Time:",
+			"Calibration:",
+		} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("RunEstimate Path A output missing %q:\n%s", want, text)
+			}
+		}
+	})
+
+	t.Run("Path D dry-run validates filters, detects encoder, prints breakdown, and leaves out-dir uncreated", func(t *testing.T) {
+		workDir := t.TempDir()
+		audioDir := filepath.Join(workDir, "tracks")
+		if err := os.Mkdir(audioDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(audioDir, "01 - Night.mp3"), []byte("mp3"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		outDir := filepath.Join(workDir, "never-created")
+
+		cfg := mixer.Config{
+			AudioDir:             audioDir,
+			OutDir:               outDir,
+			Out:                  "mix.mp4",
+			Timestamps:           "timestamps.txt",
+			Normalize:            true,
+			Visualizer:           "ember",
+			VisualizerTheme:      "oled-ember",
+			VisualizerResolution: "1440p",
+			VisualizerGlow:       true,
+			VisualizerBrightness: 80,
+		}
+
+		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "ffprobe" {
+				return []byte(`{"format":{"duration":"120.0"},"streams":[]}`), nil
+			}
+			joined := strings.Join(args, " ")
+			if strings.Contains(joined, "-filters") {
+				return []byte(" .. showwaves A->V Wave\n TS gblur V->V Blur\n .. scale V->V Scale\n .. color |->V Color\n"), nil
+			}
+			if strings.Contains(joined, "h264_nvenc") {
+				return nil, nil
+			}
+			return nil, errors.New("unexpected ffmpeg command: " + joined)
+		}
+
+		var out bytes.Buffer
+		if err := RunEstimate(context.Background(), cfg, &out, okLookPath, runner); err != nil {
+			t.Fatalf("RunEstimate Path D error: %v", err)
+		}
+		if _, err := os.Stat(outDir); !os.IsNotExist(err) {
+			t.Fatalf("expected --out-dir not to be created on Path D --estimate, stat err=%v", err)
+		}
+
+		text := out.String()
+		for _, want := range []string{
+			"1, Mix duration 2m 00s",
+			"Loudness Normalization on",
+			"Auto Visualizer (ember · oled-ember · 1440p)",
+			"Path D (Auto Visualizer)",
+			"Audio Stage:",
+			"normalize ~",
+			"Video Stage:",
+			"Estimated Time:",
+		} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("RunEstimate Path D output missing %q:\n%s", want, text)
+			}
+		}
+	})
+
+	t.Run("Path D dry-run fails upfront before ffprobe when required visualizer filter is missing", func(t *testing.T) {
+		workDir := t.TempDir()
+		audioDir := filepath.Join(workDir, "tracks")
+		if err := os.Mkdir(audioDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(audioDir, "01 - Track.mp3"), []byte("mp3"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		probed := false
+		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "ffprobe" {
+				probed = true
+				return []byte(`{"format":{"duration":"10.0"}}`), nil
+			}
+			if strings.Contains(strings.Join(args, " "), "-filters") {
+				return []byte(" .. showfreqs A->V Freqs\n"), nil
+			}
+			return nil, nil
+		}
+
+		var out bytes.Buffer
+		err := RunEstimate(context.Background(), mixer.Config{
+			AudioDir:   audioDir,
+			OutDir:     filepath.Join(workDir, "missing"),
+			Visualizer: "3dscope",
+		}, &out, okLookPath, runner)
+		if err == nil || !strings.Contains(err.Error(), "a3dscope") {
+			t.Fatalf("expected missing a3dscope error, got: %v", err)
+		}
+		if probed {
+			t.Fatal("expected missing filter preflight to fail before probing tracks")
 		}
 	})
 }

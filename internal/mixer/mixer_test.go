@@ -263,7 +263,7 @@ func TestRunPipelineSteps1To5(t *testing.T) {
 			cliSink(ev)
 		}
 		logOut := stdout.String()
-		for _, step := range []string{"[1/5]", "[2/5]", "[3/5]", "[4/5]", "[5/5]", "Path A"} {
+		for _, step := range []string{"[1/5]", "Estimated Mix render time:", "[2/5]", "[3/5]", "[4/5]", "[5/5]", "Path A"} {
 			if !strings.Contains(logOut, step) {
 				t.Errorf("expected %q in telemetry output, got:\n%s", step, logOut)
 			}
@@ -276,6 +276,9 @@ func TestRunPipelineSteps1To5(t *testing.T) {
 		}
 		if len(events) != 6 || events[0].Progress != 4 || events[5].Progress != 100 {
 			t.Fatalf("unexpected step events: %+v", events)
+		}
+		if events[1].Step != 2 || events[1].Estimate == nil {
+			t.Fatalf("expected Step 2 event to attach Estimate, got: %+v", events[1])
 		}
 		if events[4].Step != 5 || events[4].Progress >= 100 || events[4].EstimatedTotalSec <= 0 {
 			t.Fatalf("expected Step 5 pre-render estimate and <100%% progress, got: %+v", events[4])
@@ -537,18 +540,28 @@ func TestRunPipelineSteps1To5(t *testing.T) {
 }
 
 func TestCLITelemetryFormatting(t *testing.T) {
-	t.Run("non-TTY suppresses EventProgress and prints milestones cleanly", func(t *testing.T) {
+	t.Run("non-TTY suppresses EventProgress and prints milestones and pre-render estimate cleanly", func(t *testing.T) {
 		var buf bytes.Buffer
 		sink := NewCLITelemetry(&buf, false)
-		sink(TelemetryEvent{Kind: EventStep, Step: 5, TotalSteps: 5, Progress: 20, Message: "[5/5] Rendering Mix video..."})
-		sink(TelemetryEvent{Kind: EventProgress, Step: 5, TotalSteps: 5, Progress: 55, Speed: "2.4x"})
+		est := render.MixEstimate{
+			Path:        render.PathB,
+			EncoderName: "libx264",
+			AudioSec:    35,
+			VideoSec:    50,
+			LowSec:      85,
+			HighSec:     125,
+		}
+		sink(TelemetryEvent{Kind: EventStep, Step: 1, TotalSteps: 5, Progress: 4, Message: "[1/5] Probing Tracks..."})
+		sink(TelemetryEvent{Kind: EventStep, Step: 2, TotalSteps: 5, Progress: 12, Message: "[2/5] Processing & merging 2 Track(s)...", Estimate: &est})
+		sink(TelemetryEvent{Kind: EventStep, Step: 5, TotalSteps: 5, Progress: 45, Message: "[5/5] Rendering Mix video..."})
+		sink(TelemetryEvent{Kind: EventProgress, Step: 5, TotalSteps: 5, Progress: 55, Speed: "2.4x", RemainingSec: 72})
 		sink(TelemetryEvent{Kind: EventDone, Step: 5, TotalSteps: 5, Progress: 100, Message: "Done! Rendered out.mp4."})
 
 		got := buf.String()
-		if strings.Contains(got, "\r") || strings.Contains(got, "55%") {
+		if strings.Contains(got, "\r") || strings.Contains(got, "55%") || strings.Contains(got, "left") {
 			t.Fatalf("non-TTY should not emit \\r or progress spam, got: %q", got)
 		}
-		want := "[5/5] Rendering Mix video...\nDone! Rendered out.mp4.\n"
+		want := "[1/5] Probing Tracks...\nEstimated Mix render time: ~1m 25s – 2m 05s (Path B · libx264 · Audio ~35s, Video ~50s)\n[2/5] Processing & merging 2 Track(s)...\n[5/5] Rendering Mix video...\nDone! Rendered out.mp4.\n"
 		if got != want {
 			t.Fatalf("got %q, want %q", got, want)
 		}
@@ -564,6 +577,93 @@ func TestCLITelemetryFormatting(t *testing.T) {
 		got := buf.String()
 		if !strings.Contains(got, "\r[5/5] Rendering Mix... 55% (2.4x)") || !strings.Contains(got, "\nDone! Rendered out.mp4.\n") {
 			t.Fatalf("unexpected TTY output: %q", got)
+		}
+	})
+
+	t.Run("TTY formats remaining ETA countdown, normalize progress, and clears trailing characters", func(t *testing.T) {
+		var buf bytes.Buffer
+		sink := NewCLITelemetry(&buf, true)
+		sink(TelemetryEvent{Kind: EventStep, Step: 2, TotalSteps: 5, Progress: 4, Message: "[2/5] Processing..."})
+		sink(TelemetryEvent{Kind: EventProgress, Step: 2, TotalSteps: 5, Progress: 18, Substage: "normalize", RemainingSec: 65})
+		sink(TelemetryEvent{Kind: EventStep, Step: 5, TotalSteps: 5, Progress: 40, Message: "[5/5] Rendering Mix video..."})
+		sink(TelemetryEvent{Kind: EventProgress, Step: 5, TotalSteps: 5, Progress: 42, Speed: "2.4x", RemainingSec: 72})
+		sink(TelemetryEvent{Kind: EventProgress, Step: 5, TotalSteps: 5, Progress: 90, Speed: "2.4x", RemainingSec: 9})
+		sink(TelemetryEvent{Kind: EventDone, Step: 5, TotalSteps: 5, Progress: 100, Message: "Done!"})
+
+		got := buf.String()
+		for _, want := range []string{
+			"\r[2/5] Normalizing Tracks... 18% (~1m 05s left)",
+			"\r[5/5] Rendering Mix... 42% (2.4x · ~1m 12s left)",
+			"\r[5/5] Rendering Mix... 90% (2.4x · ~9s left)   ",
+			"\nDone!\n",
+		} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("expected TTY output to contain %q, got %q", want, got)
+			}
+		}
+	})
+}
+
+func TestFormatEstimateHelpers(t *testing.T) {
+	t.Run("FormatDurationRange formats compact bounds across seconds, minutes, hours, and edge values", func(t *testing.T) {
+		cases := []struct {
+			low, high float64
+			want      string
+		}{
+			{12, 24, "~12s – 24s"},
+			{85, 125, "~1m 25s – 2m 05s"},
+			{3665, 4200, "~1h 01m 05s – 1h 10m 00s"},
+			{15.2, 15.4, "~15s"},
+			{math.NaN(), -5, "~0s"},
+		}
+		for _, tc := range cases {
+			if got := FormatDurationRange(tc.low, tc.high); got != tc.want {
+				t.Errorf("FormatDurationRange(%v, %v) = %q, want %q", tc.low, tc.high, got, tc.want)
+			}
+		}
+	})
+
+	t.Run("FormatEstimateReport covers Path A, Path C, and calibrated Path D", func(t *testing.T) {
+		repA := FormatEstimateReport(Config{BG: "/tmp/loop.mp4", Crossfade: 2.5}, 4, render.MixEstimate{
+			Path:            render.PathA,
+			EncoderName:     "libx264",
+			MixDurationSec:  360,
+			AudioSec:        12,
+			MergeSec:        12,
+			VideoSec:        3,
+			PathANormSec:    2,
+			PathAMuxSec:     1,
+			PointSec:        15,
+			LowSec:          10,
+			HighSec:         22,
+			LoopDurationSec: 12,
+			LoopFPS:         30,
+			LoopCycles:      30,
+			Weights:         render.StageWeights{Audio: 0.80, Video: 0.20},
+		})
+		for _, want := range []string{"4, Mix duration 6m 00s", "loop.mp4 (12.0s loop · 30 fps · 30 cycles)", "Path A (Stream Copy Loop)", "norm_loop ~2s, mux ~1s", "uncalibrated (hardware prior)"} {
+			if !strings.Contains(repA, want) {
+				t.Fatalf("Path A report missing %q:\n%s", want, repA)
+			}
+		}
+
+		repC := FormatEstimateReport(Config{BG: "cover.png", OverlayTitles: true}, 2, render.MixEstimate{
+			Path:           render.PathC,
+			EncoderName:    "libx264",
+			MixDurationSec: 90,
+			AudioSec:       5,
+			MergeSec:       5,
+			VideoSec:       4,
+			PointSec:       9,
+			LowSec:         7,
+			HighSec:        11,
+			Calibrated:     true,
+			Weights:        render.StageWeights{Audio: 0.56, Video: 0.44},
+		})
+		for _, want := range []string{"cover.png (static image · 10 fps)", "Path C (Low-FPS Still Image)", "calibrated (local EMA cache)"} {
+			if !strings.Contains(repC, want) {
+				t.Fatalf("Path C report missing %q:\n%s", want, repC)
+			}
 		}
 	})
 }
