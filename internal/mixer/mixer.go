@@ -81,16 +81,18 @@ const (
 
 // TelemetryEvent describes a structured pipeline milestone, live render progress sample, or completion event.
 type TelemetryEvent struct {
-	Kind             EventKind
-	Step             int
-	TotalSteps       int
-	Progress         int
-	Message          string
-	Detail           string
-	Substage         string
-	OutTimeSec       float64
-	TotalDurationSec float64
-	Speed            string
+	Kind              EventKind
+	Step              int
+	TotalSteps        int
+	Progress          int
+	Message           string
+	Detail            string
+	Substage          string
+	OutTimeSec        float64
+	TotalDurationSec  float64
+	Speed             string
+	RemainingSec      float64
+	EstimatedTotalSec float64
 }
 
 // TelemetrySink receives structured telemetry events during a Mix build.
@@ -512,15 +514,311 @@ func prepareRun(ctx context.Context, cfg Config, lookPath func(string) (string, 
 	return ctx, preparedCfg, start, nil
 }
 
-func emitStep(sink TelemetrySink, step, total, progress int, detail string) {
+func emitStep(sink TelemetrySink, step, total, progress int, remainingSec, estTotalSec float64, detail string) {
 	emitTelemetry(sink, TelemetryEvent{
-		Kind:       EventStep,
-		Step:       step,
-		TotalSteps: total,
-		Progress:   progress,
-		Message:    fmt.Sprintf("[%d/%d] %s", step, total, detail),
-		Detail:     detail,
+		Kind:              EventStep,
+		Step:              step,
+		TotalSteps:        total,
+		Progress:          progress,
+		Message:           fmt.Sprintf("[%d/%d] %s", step, total, detail),
+		Detail:            detail,
+		RemainingSec:      remainingSec,
+		EstimatedTotalSec: estTotalSec,
 	})
+}
+
+type stageBounds struct {
+	step2Start int
+	audioSpan  int
+	step3Start int
+	step4Start int
+	step5Start int
+	step5Span  int
+}
+
+func computeStageBounds(weights render.StageWeights) stageBounds {
+	audioSpan := int(math.Round(93.0 * weights.Audio))
+	if audioSpan < 4 {
+		audioSpan = 4
+	}
+	if audioSpan > 89 {
+		audioSpan = 89
+	}
+	step2Start := 4
+	step3Start := step2Start + audioSpan
+	step4Start := step3Start + 1
+	step5Start := step4Start + 1
+	return stageBounds{
+		step2Start: step2Start,
+		audioSpan:  audioSpan,
+		step3Start: step3Start,
+		step4Start: step4Start,
+		step5Start: step5Start,
+		step5Span:  99 - step5Start,
+	}
+}
+
+func buildEstimateContext(
+	ctx context.Context,
+	cfg Config,
+	tracks []Track,
+	bgMeta *probe.BackgroundMeta,
+	runner CommandRunner,
+) (render.MixEstimate, *render.EncoderInfo, string, map[string]render.CalibrationEntry) {
+	pathKind, err := render.SelectPath(cfg.BG, cfg.OverlayTitles)
+	if err != nil {
+		pathKind = render.PathD
+	}
+
+	var totalAudioSec float64
+	durations := make([]float64, len(tracks))
+	titles := make([]string, len(tracks))
+	for i, tr := range tracks {
+		totalAudioSec += tr.Duration
+		durations[i] = tr.Duration
+		titles[i] = tr.DisplayTitle
+	}
+	mixDurSec := totalAudioSec
+	if len(tracks) > 0 {
+		sched := subtitle.BuildChapterSchedule(titles, durations, cfg.Crossfade)
+		mixDurSec = sched.TotalDuration
+	}
+
+	var resolvedBG probe.BackgroundMeta
+	if bgMeta != nil {
+		resolvedBG = *bgMeta
+	} else if runner != nil && strings.TrimSpace(cfg.BG) != "" && (pathKind == render.PathA || pathKind == render.PathB) {
+		if probed, err := probe.ProbeBackgroundVisual(ctx, cfg.BG, runner); err == nil {
+			resolvedBG = probed
+		}
+	}
+
+	vizCfg := cfg.VisualizerConfig()
+	var encPtr *render.EncoderInfo
+	encName := "libx264"
+	switch pathKind {
+	case render.PathB:
+		if runner != nil {
+			enc := render.DetectEncoder(ctx, runtime.GOOS, runner)
+			encPtr = &enc
+			encName = enc.Name
+		}
+	case render.PathD:
+		preset := strings.ToLower(strings.TrimSpace(vizCfg.Preset))
+		if preset == "" {
+			preset = render.DefaultVisualizerPreset
+		}
+		if preset != "black" && runner != nil {
+			enc := render.DetectPathDEncoder(ctx, runtime.GOOS, vizCfg.Resolution, runner)
+			encPtr = &enc
+			encName = enc.Name
+		}
+	}
+
+	calPath, _ := DefaultCalibrationPath()
+	cal := LoadCalibration(calPath)
+
+	est := render.EstimateMix(render.EstimateInput{
+		Path:           pathKind,
+		EncoderName:    encName,
+		MixDurationSec: mixDurSec,
+		TotalAudioSec:  totalAudioSec,
+		TrackCount:     len(tracks),
+		Normalize:      cfg.Normalize,
+		Crossfade:      cfg.Crossfade,
+		OverlayTitles:  cfg.OverlayTitles,
+		Visualizer:     vizCfg,
+		CPUCores:       runtime.NumCPU(),
+		BG: render.BackgroundEstimateInput{
+			DurationSec: resolvedBG.DurationSec,
+			FPS:         resolvedBG.FPS,
+			Width:       resolvedBG.Width,
+			Height:      resolvedBG.Height,
+			CodecName:   resolvedBG.CodecName,
+			PixFmt:      resolvedBG.PixFmt,
+		},
+	}, cal)
+
+	return est, encPtr, calPath, cal
+}
+
+// EstimateConfig computes a pre-render wall-time estimate for cfg and tracks without mutating files.
+func EstimateConfig(
+	ctx context.Context,
+	cfg Config,
+	tracks []Track,
+	bgMeta *probe.BackgroundMeta,
+	lookPath func(string) (string, error),
+	runner CommandRunner,
+) (render.MixEstimate, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	preparedCfg, pathKind, err := PreflightConfig(cfg, lookPath, false)
+	if err != nil {
+		return render.MixEstimate{}, err
+	}
+	if pathKind == render.PathD && runner != nil {
+		if err := ValidateVisualizerFilters(ctx, preparedCfg, runner, nil); err != nil {
+			return render.MixEstimate{}, err
+		}
+	}
+	if len(tracks) < 1 {
+		return render.MixEstimate{}, errors.New("at least one .mp3 Track is required")
+	}
+
+	resolvedBG := bgMeta
+	if resolvedBG == nil && runner != nil && strings.TrimSpace(preparedCfg.BG) != "" {
+		if probed, err := probe.ProbeBackgroundVisual(ctx, preparedCfg.BG, runner); err == nil {
+			resolvedBG = &probed
+		}
+	}
+
+	est, _, _, _ := buildEstimateContext(ctx, preparedCfg, tracks, resolvedBG, runner)
+	return est, nil
+}
+
+type etaTracker struct {
+	est           render.MixEstimate
+	mixDuration   float64
+	lastSubstage  string
+	substageStart time.Time
+	emaSpeed      float64
+	muxWallSec    float64
+	renderWallSec float64
+}
+
+func (t *etaTracker) update(u render.ProgressUpdate) float64 {
+	now := time.Now()
+	if u.Substage != t.lastSubstage {
+		t.lastSubstage = u.Substage
+		t.substageStart = now
+		t.emaSpeed = 0
+	}
+	elapsedSub := now.Sub(t.substageStart).Seconds()
+	if u.Substage == "mux" {
+		t.muxWallSec = elapsedSub
+	} else if u.Substage == "render" {
+		t.renderWallSec = elapsedSub
+	}
+
+	if sp, ok := render.ParseFFmpegSpeed(u.Speed); ok {
+		if t.emaSpeed <= 0 {
+			t.emaSpeed = sp
+		} else {
+			t.emaSpeed = 0.25*sp + 0.75*t.emaSpeed
+		}
+	}
+
+	targetDur := t.mixDuration
+	preSubDur := t.est.VideoSec
+	switch u.Substage {
+	case "norm_loop":
+		if t.est.LoopDurationSec > 0 {
+			targetDur = t.est.LoopDurationSec
+		} else {
+			targetDur = 0
+		}
+		preSubDur = t.est.PathANormSec
+	case "mux":
+		preSubDur = t.est.PathAMuxSec
+	}
+
+	subFrac := 0.0
+	if targetDur > 0 && u.OutTimeSec > 0 {
+		subFrac = u.OutTimeSec / targetDur
+		if subFrac > 1 {
+			subFrac = 1
+		}
+	} else if u.Done {
+		subFrac = 1
+	}
+	preRem := math.Max(0, preSubDur*(1.0-subFrac))
+
+	rem := preRem
+	if t.emaSpeed > 0 && targetDur > 0 {
+		liveRem := math.Max(0, (targetDur-u.OutTimeSec)/t.emaSpeed)
+		rampFloor := math.Max(5.0, 0.05*targetDur)
+		blend := math.Min(1.0, u.OutTimeSec/rampFloor)
+		rem = (1.0-blend)*preRem + blend*liveRem
+	}
+	if u.Substage == "norm_loop" {
+		rem += t.est.PathAMuxSec
+	}
+	if u.Done && u.Substage != "norm_loop" {
+		rem = 0
+	}
+	return rem
+}
+
+func recordCalibrationResults(
+	calPath string,
+	cal map[string]render.CalibrationEntry,
+	cfg Config,
+	est render.MixEstimate,
+	mixDur float64,
+	normElapsed float64,
+	mergeElapsed float64,
+	tracker *etaTracker,
+) {
+	if calPath == "" || cal == nil || mixDur < minCalibratedMixSec {
+		return
+	}
+	now := time.Now().UTC()
+	changed := false
+	if cfg.Normalize && normElapsed > 0.2 {
+		if RecordObservedSpeed(cal, render.AudioCalibrationKey("loudnorm"), est.MixDurationSec/normElapsed, mixDur, now) {
+			changed = true
+		}
+	}
+	if mergeElapsed > 0.2 {
+		mergeKey := "concat"
+		if cfg.Crossfade > 0 {
+			mergeKey = "acrossfade"
+		}
+		if RecordObservedSpeed(cal, render.AudioCalibrationKey(mergeKey), mixDur/mergeElapsed, mixDur, now) {
+			changed = true
+		}
+	}
+
+	switch est.Path {
+	case render.PathA:
+		if tracker.muxWallSec > 0.05 {
+			if RecordObservedSpeed(cal, render.CalibrationKey(render.PathA, "mux", render.Resolution1080p), mixDur/tracker.muxWallSec, mixDur, now) {
+				changed = true
+			}
+		}
+	case render.PathB:
+		if tracker.renderWallSec > 0.2 {
+			if RecordObservedSpeed(cal, render.CalibrationKey(render.PathB, est.EncoderName, render.Resolution1080p), mixDur/tracker.renderWallSec, mixDur, now) {
+				changed = true
+			}
+		}
+	case render.PathC:
+		if tracker.renderWallSec > 0.2 {
+			tag := "2fps"
+			if cfg.OverlayTitles {
+				tag = "10fps"
+			}
+			if RecordObservedSpeed(cal, render.CalibrationKey(render.PathC, "libx264", tag), mixDur/tracker.renderWallSec, mixDur, now) {
+				changed = true
+			}
+		}
+	case render.PathD:
+		if tracker.renderWallSec > 0.2 {
+			encKey := est.EncoderName
+			if strings.EqualFold(strings.TrimSpace(cfg.Visualizer), "black") {
+				encKey = "black"
+			}
+			if RecordObservedSpeed(cal, render.CalibrationKey(render.PathD, encKey, cfg.VisualizerResolution), mixDur/tracker.renderWallSec, mixDur, now) {
+				changed = true
+			}
+		}
+	}
+
+	if changed {
+		_ = SaveCalibration(calPath, cal)
+	}
 }
 
 // Run executes the full 5-step ytmix Mix pipeline from cfg.AudioDir.
@@ -530,7 +828,7 @@ func Run(ctx context.Context, cfg Config, sink TelemetrySink, lookPath func(stri
 		return err
 	}
 
-	emitStep(sink, 1, 5, 5, fmt.Sprintf("Probing Tracks in %s...", cfg.AudioDir))
+	emitStep(sink, 1, 5, 4, -1, 0, fmt.Sprintf("Probing Tracks in %s...", cfg.AudioDir))
 	tracks, err := ProbeTracks(ctx, cfg.AudioDir, cfg.Shuffle, nil, runner)
 	if err != nil {
 		return err
@@ -565,7 +863,7 @@ func RunWithTracks(ctx context.Context, cfg Config, tracks []Track, sink Telemet
 		resolved[i] = tr
 	}
 
-	emitStep(sink, 1, 5, 5, fmt.Sprintf("Using %d selected Track(s)...", len(resolved)))
+	emitStep(sink, 1, 5, 4, -1, 0, fmt.Sprintf("Using %d selected Track(s)...", len(resolved)))
 	return runPipeline(ctx, cfg, resolved, sink, start, runner, streamRunner)
 }
 
@@ -576,6 +874,9 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, sink Telemetry
 	}
 	defer os.RemoveAll(tempDir)
 
+	est, encPtr, calPath, cal := buildEstimateContext(ctx, cfg, tracks, nil, runner)
+	bounds := computeStageBounds(est.Weights)
+
 	paths := make([]string, len(tracks))
 	fileNames := make([]string, len(tracks))
 	durations := make([]float64, len(tracks))
@@ -585,10 +886,51 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, sink Telemetry
 		durations[i] = tr.Duration
 	}
 
-	emitStep(sink, 2, 5, 10, fmt.Sprintf("Processing & merging %d Track(s) (normalize=%v, crossfade=%.2fs)...", len(tracks), cfg.Normalize, cfg.Crossfade))
-	mergedAudioPath, updatedPaths, updatedDurations, err := audio.ProcessAndMerge(ctx, paths, fileNames, durations, tempDir, cfg.Normalize, cfg.Crossfade, runner)
+	emitStep(sink, 2, 5, bounds.step2Start, est.PointSec, est.PointSec, fmt.Sprintf("Processing & merging %d Track(s) (normalize=%v, crossfade=%.2fs)...", len(tracks), cfg.Normalize, cfg.Crossfade))
+	audioStart := time.Now()
+	var normDoneAt time.Time
+	var onNormProgress func(completed, total int)
+	if sink != nil && cfg.Normalize {
+		onNormProgress = func(completed, total int) {
+			if completed == total {
+				normDoneAt = time.Now()
+			}
+			if total <= 0 {
+				return
+			}
+			normShare := 0.5
+			if est.AudioSec > 0 {
+				normShare = est.NormalizeSec / est.AudioSec
+			}
+			pct := bounds.step2Start + int(math.Round(float64(bounds.audioSpan)*normShare*(float64(completed)/float64(total))))
+			if pct > bounds.step3Start-1 {
+				pct = bounds.step3Start - 1
+			}
+			rem := math.Max(0, est.PointSec-time.Since(start).Seconds())
+			emitTelemetry(sink, TelemetryEvent{
+				Kind:              EventProgress,
+				Step:              2,
+				TotalSteps:        5,
+				Progress:          pct,
+				Substage:          "normalize",
+				TotalDurationSec:  est.MixDurationSec,
+				RemainingSec:      rem,
+				EstimatedTotalSec: est.PointSec,
+			})
+		}
+	}
+
+	mergedAudioPath, updatedPaths, updatedDurations, err := audio.ProcessAndMergeWithProgress(ctx, paths, fileNames, durations, tempDir, cfg.Normalize, cfg.Crossfade, runner, onNormProgress)
 	if err != nil {
 		return err
+	}
+	audioDoneAt := time.Now()
+	var normElapsed, mergeElapsed float64
+	if cfg.Normalize && !normDoneAt.IsZero() {
+		normElapsed = normDoneAt.Sub(audioStart).Seconds()
+		mergeElapsed = audioDoneAt.Sub(normDoneAt).Seconds()
+	} else {
+		mergeElapsed = audioDoneAt.Sub(audioStart).Seconds()
 	}
 	for i := range tracks {
 		tracks[i].Path = updatedPaths[i]
@@ -600,7 +942,7 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, sink Telemetry
 		titles[i] = tr.DisplayTitle
 	}
 
-	emitStep(sink, 3, 5, 15, fmt.Sprintf("Writing Chapter Timestamps to %s...", cfg.Timestamps))
+	emitStep(sink, 3, 5, bounds.step3Start, math.Max(0, est.PointSec-time.Since(start).Seconds()), est.PointSec, fmt.Sprintf("Writing Chapter Timestamps to %s...", cfg.Timestamps))
 	sched, err := subtitle.WriteChapters(cfg.Timestamps, titles, updatedDurations, cfg.Crossfade)
 	if err != nil {
 		return err
@@ -609,7 +951,7 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, sink Telemetry
 	var assPath string
 	if cfg.OverlayTitles {
 		assPath = filepath.Join(tempDir, "titles.ass")
-		emitStep(sink, 4, 5, 20, fmt.Sprintf("Generating Title Overlays (.ass) at %s...", assPath))
+		emitStep(sink, 4, 5, bounds.step4Start, math.Max(0, est.PointSec-time.Since(start).Seconds()), est.PointSec, fmt.Sprintf("Generating Title Overlays (.ass) at %s...", assPath))
 		if err := subtitle.WriteASSWithOptions(assPath, titles, sched.Starts, sched.TotalDuration, subtitle.ASSOptions{
 			TitleDuration: cfg.TitleDuration,
 			FontName:      cfg.FontName,
@@ -618,36 +960,48 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, sink Telemetry
 			return err
 		}
 	} else {
-		emitStep(sink, 4, 5, 20, "Skipping Title Overlays (--overlay-titles=false).")
+		emitStep(sink, 4, 5, bounds.step4Start, math.Max(0, est.PointSec-time.Since(start).Seconds()), est.PointSec, "Skipping Title Overlays (--overlay-titles=false).")
 	}
 
-	emitStep(sink, 5, 5, 20, fmt.Sprintf("Rendering Mix video to %s...", cfg.Out))
+	emitStep(sink, 5, 5, bounds.step5Start, math.Max(0, est.VideoSec), est.PointSec, fmt.Sprintf("Rendering Mix video to %s...", cfg.Out))
 	var renderStream render.StreamRunner
 	if streamRunner != nil {
 		renderStream = render.StreamRunner(streamRunner)
 	}
+	tracker := &etaTracker{
+		est:         est,
+		mixDuration: sched.TotalDuration,
+	}
 	var onRenderProgress render.ProgressFunc
-	if sink != nil {
+	if sink != nil || sched.TotalDuration >= minCalibratedMixSec {
 		onRenderProgress = func(u render.ProgressUpdate) {
-			pct := 20 + int(math.Round(u.Fraction*79))
-			if pct < 20 {
-				pct = 20
+			rem := tracker.update(u)
+			if sink == nil {
+				return
+			}
+			pct := bounds.step5Start + int(math.Round(u.Fraction*float64(bounds.step5Span)))
+			if pct < bounds.step5Start {
+				pct = bounds.step5Start
 			}
 			if pct > 99 {
 				pct = 99
 			}
 			emitTelemetry(sink, TelemetryEvent{
-				Kind:             EventProgress,
-				Step:             5,
-				TotalSteps:       5,
-				Progress:         pct,
-				Substage:         u.Substage,
-				OutTimeSec:       u.OutTimeSec,
-				TotalDurationSec: sched.TotalDuration,
-				Speed:            u.Speed,
+				Kind:              EventProgress,
+				Step:              5,
+				TotalSteps:        5,
+				Progress:          pct,
+				Substage:          u.Substage,
+				OutTimeSec:        u.OutTimeSec,
+				TotalDurationSec:  sched.TotalDuration,
+				Speed:             u.Speed,
+				RemainingSec:      rem,
+				EstimatedTotalSec: est.PointSec,
 			})
 		}
 	}
+
+	renderStart := time.Now()
 	pathKind, err := render.RenderWithOptions(ctx, render.RenderOptions{
 		BGPath:          cfg.BG,
 		MergedAudioPath: mergedAudioPath,
@@ -658,6 +1012,8 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, sink Telemetry
 		TotalDuration:   sched.TotalDuration,
 		GOOS:            runtime.GOOS,
 		Visualizer:      cfg.VisualizerConfig(),
+		Encoder:         encPtr,
+		NormWeight:      est.Weights.PathANormSub,
 		Runner:          runner,
 		StreamRunner:    renderStream,
 		OnProgress:      onRenderProgress,
@@ -665,16 +1021,22 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, sink Telemetry
 	if err != nil {
 		return err
 	}
+	if tracker.renderWallSec <= 0 && pathKind != render.PathA {
+		tracker.renderWallSec = time.Since(renderStart).Seconds()
+	}
+	recordCalibrationResults(calPath, cal, cfg, est, sched.TotalDuration, normElapsed, mergeElapsed, tracker)
 
 	doneMsg := fmt.Sprintf("Done! Rendered %s via %s in %s (audio duration %.2fs, chapters: %s).",
 		cfg.Out, pathKind, time.Since(start).Round(time.Millisecond), sched.TotalDuration, cfg.Timestamps)
 	emitTelemetry(sink, TelemetryEvent{
-		Kind:             EventDone,
-		Step:             5,
-		TotalSteps:       5,
-		Progress:         100,
-		Message:          doneMsg,
-		TotalDurationSec: sched.TotalDuration,
+		Kind:              EventDone,
+		Step:              5,
+		TotalSteps:        5,
+		Progress:          100,
+		Message:           doneMsg,
+		TotalDurationSec:  sched.TotalDuration,
+		RemainingSec:      0,
+		EstimatedTotalSec: est.PointSec,
 	})
 	return nil
 }

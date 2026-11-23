@@ -148,3 +148,127 @@ func TestTitleAndTrackDiscovery(t *testing.T) {
 		}
 	})
 }
+
+func TestProbeBackgroundVisual(t *testing.T) {
+	t.Run("parses video loop dimensions, fractional avg_frame_rate, codec, and duration", func(t *testing.T) {
+		var gotArgs []string
+		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name != "ffprobe" {
+				t.Fatalf("unexpected binary %q", name)
+			}
+			gotArgs = args
+			return []byte(`{
+				"format": {"duration": "12.500000"},
+				"streams": [{
+					"codec_name": "h264",
+					"width": 1920,
+					"height": 1080,
+					"r_frame_rate": "30/1",
+					"avg_frame_rate": "30000/1001",
+					"nb_frames": "375",
+					"pix_fmt": "yuv420p"
+				}]
+			}`), nil
+		}
+
+		meta, err := ProbeBackgroundVisual(context.Background(), "loop.mp4", runner)
+		if err != nil {
+			t.Fatalf("ProbeBackgroundVisual error: %v", err)
+		}
+		if len(gotArgs) == 0 || gotArgs[len(gotArgs)-1] != "loop.mp4" {
+			t.Fatalf("unexpected ffprobe args: %v", gotArgs)
+		}
+		if meta.Width != 1920 || meta.Height != 1080 || meta.CodecName != "h264" || meta.PixFmt != "yuv420p" {
+			t.Fatalf("unexpected stream metadata: %+v", meta)
+		}
+		if meta.DurationSec != 12.5 || meta.NBFrames != 375 {
+			t.Fatalf("unexpected duration/frames: %+v", meta)
+		}
+		if meta.FPS < 29.96 || meta.FPS > 29.98 {
+			t.Fatalf("FPS = %v, want ~29.97", meta.FPS)
+		}
+	})
+
+	t.Run("infers GIF duration from nb_frames and FPS when format.duration is N/A", func(t *testing.T) {
+		runner := func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+			return []byte(`{
+				"format": {"duration": "N/A"},
+				"streams": [{
+					"codec_name": "gif",
+					"width": 1280,
+					"height": 720,
+					"r_frame_rate": "15/1",
+					"avg_frame_rate": "15/1",
+					"nb_frames": "75",
+					"pix_fmt": "bgra"
+				}]
+			}`), nil
+		}
+
+		meta, err := ProbeBackgroundVisual(context.Background(), "anim.gif", runner)
+		if err != nil {
+			t.Fatalf("ProbeBackgroundVisual GIF error: %v", err)
+		}
+		if meta.DurationSec != 5.0 || meta.FPS != 15.0 || meta.NBFrames != 75 || meta.CodecName != "gif" {
+			t.Fatalf("unexpected GIF meta: %+v", meta)
+		}
+	})
+
+	t.Run("handles GIF with unknown duration and static image cleanly", func(t *testing.T) {
+		gifRunner := func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+			return []byte(`{"format":{"duration":"N/A"},"streams":[{"codec_name":"gif","width":800,"height":600,"r_frame_rate":"12/1","avg_frame_rate":"0/0"}]}`), nil
+		}
+		gifMeta, err := ProbeBackgroundVisual(context.Background(), "anim.gif", gifRunner)
+		if err != nil {
+			t.Fatalf("unknown duration GIF error: %v", err)
+		}
+		if gifMeta.DurationSec != 0 || gifMeta.FPS != 12.0 {
+			t.Fatalf("unexpected unknown-duration GIF meta: %+v", gifMeta)
+		}
+
+		imgRunner := func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+			return []byte(`{"format":{"duration":"N/A"},"streams":[{"codec_name":"png","width":1920,"height":1080,"r_frame_rate":"25/1","avg_frame_rate":"0/0","pix_fmt":"rgb24"}]}`), nil
+		}
+		imgMeta, err := ProbeBackgroundVisual(context.Background(), "cover.png", imgRunner)
+		if err != nil {
+			t.Fatalf("image probe error: %v", err)
+		}
+		if imgMeta.Width != 1920 || imgMeta.Height != 1080 || imgMeta.DurationSec != 0 {
+			t.Fatalf("unexpected image meta: %+v", imgMeta)
+		}
+	})
+
+	t.Run("ParseFrameRate handles invalid and fractional rates", func(t *testing.T) {
+		for _, tc := range []struct {
+			in   string
+			want float64
+		}{
+			{"30/1", 30},
+			{"60", 60},
+			{"0/0", 0},
+			{"N/A", 0},
+			{"300/1", 0},
+			{"-5/1", 0},
+			{"abc/1", 0},
+		} {
+			if got := ParseFrameRate(tc.in); got != tc.want {
+				t.Errorf("ParseFrameRate(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		}
+	})
+
+	t.Run("stops on cancelled context and propagates runner errors", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := ProbeBackgroundVisual(ctx, "loop.mp4", func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+			t.Fatal("runner should not run on cancelled ctx")
+			return nil, nil
+		}); !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+
+		if _, err := ProbeBackgroundVisual(context.Background(), "loop.mp4", nil); err == nil {
+			t.Fatal("expected error for nil runner")
+		}
+	})
+}

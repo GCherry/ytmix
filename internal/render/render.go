@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -94,6 +95,23 @@ func ParseProgressLine(line string, sample *ProgressSample) bool {
 		return true
 	}
 	return false
+}
+
+// ParseFFmpegSpeed parses an FFmpeg -progress speed value (e.g. "2.45x", "1.44e+03x")
+// into a positive multiplier, returning false for empty or "N/A" values.
+func ParseFFmpegSpeed(raw string) (float64, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" || strings.EqualFold(s, "N/A") {
+		return 0, false
+	}
+	if strings.HasSuffix(s, "x") || strings.HasSuffix(s, "X") {
+		s = strings.TrimSpace(s[:len(s)-1])
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil || v <= 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, false
+	}
+	return v, true
 }
 
 // BackgroundKind identifies whether a Background Visual is a static image or looping video/GIF.
@@ -188,38 +206,38 @@ type EncoderInfo struct {
 	Args []string
 }
 
+func probeEncoderArgs(ctx context.Context, runner func(ctx context.Context, name string, args ...string) ([]byte, error), extraArgs ...string) bool {
+	if runner == nil || ctx.Err() != nil {
+		return false
+	}
+	args := []string{
+		"-v", "error",
+		"-f", "lavfi",
+		"-i", "color=c=black:s=256x256:d=0.1",
+	}
+	args = append(args, extraArgs...)
+	args = append(args, "-f", "null", "-")
+	_, err := runner(ctx, "ffmpeg", args...)
+	return err == nil
+}
+
 // DetectEncoder probes hardware H.264 encoder usability via a 1-frame null encode
 // and returns structured encoder metadata with libx264 software fallback.
 func DetectEncoder(ctx context.Context, goos string, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) EncoderInfo {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	probeEncoder := func(encoder string) bool {
-		if runner == nil || ctx.Err() != nil {
-			return false
-		}
-		_, err := runner(
-			ctx,
-			"ffmpeg",
-			"-v", "error",
-			"-f", "lavfi",
-			"-i", "color=c=black:s=64x64:d=0.1",
-			"-c:v", encoder,
-			"-f", "null", "-",
-		)
-		return err == nil
-	}
 
 	switch goos {
 	case "darwin":
-		if probeEncoder("h264_videotoolbox") {
+		if probeEncoderArgs(ctx, runner, "-c:v", "h264_videotoolbox") {
 			return EncoderInfo{
 				Name: "h264_videotoolbox",
 				Args: []string{"-c:v", "h264_videotoolbox", "-b:v", "6000k"},
 			}
 		}
 	case "windows", "linux":
-		if probeEncoder("h264_nvenc") {
+		if probeEncoderArgs(ctx, runner, "-c:v", "h264_nvenc") {
 			return EncoderInfo{
 				Name: "h264_nvenc",
 				Args: []string{"-c:v", "h264_nvenc", "-preset", "p4", "-cq", "20"},
@@ -256,37 +274,23 @@ func DetectPathDEncoder(ctx context.Context, goos, resolution string, runner fun
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	probeWithArgs := func(extraArgs ...string) bool {
-		if runner == nil || ctx.Err() != nil {
-			return false
-		}
-		args := []string{
-			"-v", "error",
-			"-f", "lavfi",
-			"-i", "color=c=black:s=64x64:d=0.1",
-		}
-		args = append(args, extraArgs...)
-		args = append(args, "-f", "null", "-")
-		_, err := runner(ctx, "ffmpeg", args...)
-		return err == nil
-	}
 
 	switch goos {
 	case "darwin":
-		if probeWithArgs("-c:v", "h264_videotoolbox", "-q:v", "65", "-profile:v", "high") {
+		if probeEncoderArgs(ctx, runner, "-c:v", "h264_videotoolbox", "-q:v", "65", "-profile:v", "high") {
 			return EncoderInfo{
 				Name: "h264_videotoolbox",
 				Args: []string{"-c:v", "h264_videotoolbox", "-q:v", "65", "-profile:v", "high"},
 			}
 		}
-		if probeWithArgs("-c:v", "h264_videotoolbox") {
+		if probeEncoderArgs(ctx, runner, "-c:v", "h264_videotoolbox") {
 			return EncoderInfo{
 				Name: "h264_videotoolbox",
 				Args: []string{"-c:v", "h264_videotoolbox", "-b:v", videoToolboxFallbackBitrate(resolution), "-profile:v", "high"},
 			}
 		}
 	case "windows", "linux":
-		if probeWithArgs("-c:v", "h264_nvenc") {
+		if probeEncoderArgs(ctx, runner, "-c:v", "h264_nvenc") {
 			return EncoderInfo{
 				Name: "h264_nvenc",
 				Args: []string{"-c:v", "h264_nvenc", "-preset", "p4", "-cq", "18"},
@@ -474,6 +478,8 @@ type RenderOptions struct {
 	TotalDuration   float64
 	GOOS            string
 	Visualizer      VisualizerConfig
+	Encoder         *EncoderInfo
+	NormWeight      float64
 	Runner          func(ctx context.Context, name string, args ...string) ([]byte, error)
 	StreamRunner    StreamRunner
 	OnProgress      ProgressFunc
@@ -533,15 +539,24 @@ func RenderWithOptions(ctx context.Context, opts RenderOptions) (Path, error) {
 		if opts.StreamRunner != nil {
 			bgDuration = probeMediaDuration(ctx, opts.BGPath, opts.Runner)
 		}
+		normWeight := PathANormWeight
+		if opts.NormWeight > 0.05 && opts.NormWeight < 0.95 {
+			normWeight = opts.NormWeight
+		}
 		normLoopPath := filepath.Join(opts.TempDir, "norm_loop.mp4")
-		if err := runFFmpegRender(ctx, "norm_loop", BuildPathANormalizeArgs(opts.BGPath, normLoopPath), bgDuration, 0, PathANormWeight, opts.Runner, opts.StreamRunner, opts.OnProgress); err != nil {
+		if err := runFFmpegRender(ctx, "norm_loop", BuildPathANormalizeArgs(opts.BGPath, normLoopPath), bgDuration, 0, normWeight, opts.Runner, opts.StreamRunner, opts.OnProgress); err != nil {
 			return "", fmt.Errorf("normalize background loop (%s): %w", PathA, err)
 		}
-		if err := runFFmpegRender(ctx, "mux", BuildPathAMuxArgs(normLoopPath, opts.MergedAudioPath, opts.OutPath), opts.TotalDuration, PathANormWeight, 1.0, opts.Runner, opts.StreamRunner, opts.OnProgress); err != nil {
+		if err := runFFmpegRender(ctx, "mux", BuildPathAMuxArgs(normLoopPath, opts.MergedAudioPath, opts.OutPath), opts.TotalDuration, normWeight, 1.0, opts.Runner, opts.StreamRunner, opts.OnProgress); err != nil {
 			return "", fmt.Errorf("mux background loop (%s): %w", PathA, err)
 		}
 	case PathB:
-		encoder := DetectEncoder(ctx, opts.GOOS, opts.Runner)
+		encoder := EncoderInfo{}
+		if opts.Encoder != nil && len(opts.Encoder.Args) > 0 {
+			encoder = *opts.Encoder
+		} else {
+			encoder = DetectEncoder(ctx, opts.GOOS, opts.Runner)
+		}
 		if err := runFFmpegRender(ctx, "render", BuildPathBArgs(opts.BGPath, opts.MergedAudioPath, opts.ASSPath, opts.OutPath, encoder.Args), opts.TotalDuration, 0, 1.0, opts.Runner, opts.StreamRunner, opts.OnProgress); err != nil {
 			return "", fmt.Errorf("render overlay loop (%s): %w", PathB, err)
 		}
@@ -560,7 +575,12 @@ func RenderWithOptions(ctx context.Context, opts RenderOptions) (Path, error) {
 				return "", fmt.Errorf("render blackout screen (%s): %w", PathD, err)
 			}
 		} else {
-			encoder := DetectPathDEncoder(ctx, opts.GOOS, vizCfg.Resolution, opts.Runner)
+			encoder := EncoderInfo{}
+			if opts.Encoder != nil && len(opts.Encoder.Args) > 0 {
+				encoder = *opts.Encoder
+			} else {
+				encoder = DetectPathDEncoder(ctx, opts.GOOS, vizCfg.Resolution, opts.Runner)
+			}
 			args, err := BuildPathDArgs(opts.MergedAudioPath, opts.ASSPath, opts.OutPath, opts.OverlayTitles, opts.TotalDuration, vizCfg, encoder.Args)
 			if err != nil {
 				return "", err

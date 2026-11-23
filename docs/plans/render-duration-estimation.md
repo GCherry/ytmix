@@ -124,36 +124,37 @@ Completed empirical FFmpeg benchmarking and codebase audit on `c5d6a37`, documen
 
 ## Wave 1: Core Probe, NVENC Fix & Estimator Foundation (`#26`) <!-- serial -->
 
-**Triggered by:** Parent plan — Nov 22, 2026 09:22:00 PM EST
+**Triggered by:** User — Nov 22, 2026 09:36:32 PM EST
 
 ### Phase 1A: Background Visual Probing & `256x256` Encoder Probe Fix
 
-Status: Not Started <!-- Not Started | In Progress | Complete | Abandoned -->
-**Triggered by:** Issue [#26](https://github.com/GCherry/ytmix/issues/26)
+Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
+**Triggered by:** Issue [#26](https://github.com/GCherry/ytmix/issues/26) — Nov 22, 2026 09:36:32 PM EST
 
-- [ ] Add `BackgroundMeta` struct and `ProbeBackgroundVisual(ctx, path, runner)` in `internal/probe/ffprobe.go` extracting duration, FPS (`avg_frame_rate` / `r_frame_rate`), dimensions, codec, pixel format, and frame count with GIF/`N/A` fallback.
-- [ ] Add table-driven unit tests in `internal/probe/ffprobe_test.go` covering `.mp4`, VFR/GIF `N/A` duration, fractional frame rates (`30000/1001`), and static images.
-- [ ] Update `DetectEncoder` and `DetectPathDEncoder` (`internal/render/render.go:206,266`) from `s=64x64` to `s=256x256` and update `internal/render/render_test.go`.
+- [x] Add `BackgroundMeta` struct and `ProbeBackgroundVisual(ctx, path, runner)` in `internal/probe/ffprobe.go` extracting duration, FPS (`avg_frame_rate` / `r_frame_rate`), dimensions, codec, pixel format, and frame count with GIF/`N/A` fallback.
+- [x] Add table-driven unit tests in `internal/probe/ffprobe_test.go` covering `.mp4`, VFR/GIF `N/A` duration, fractional frame rates (`30000/1001`), and static images.
+- [x] Update `DetectEncoder` and `DetectPathDEncoder` (`internal/render/render.go:206,266`) from `s=64x64` to `s=256x256` and update `internal/render/render_test.go`.
 
 ### Phase 1B: Analytical Estimator, Calibration Cache & Live Weighted ETA
 
-Status: Not Started <!-- Not Started | In Progress | Complete | Abandoned -->
-**Triggered by:** Issue [#26](https://github.com/GCherry/ytmix/issues/26)
+Status: Complete <!-- Not Started | In Progress | Complete | Abandoned -->
+**Triggered by:** Issue [#26](https://github.com/GCherry/ytmix/issues/26) — Nov 22, 2026 09:36:32 PM EST
 
-- [ ] Implement pure analytical duration estimator covering Step 2 (`--normalize`, `concat`, `acrossfade`) and Step 5 (Paths A, B, C, D across `1080p`/`1440p`/`4k`, `black` vs reactive presets, `glow` modifier) returning `LowSec`, `HighSec`, `PointSec`, stage breakdown, and loop cycles.
-- [ ] Implement local calibration store (`os.UserCacheDir()/ytmix/calibration.json`) with EMA updates (`T_mix >= 10s`, clamped speeds, atomic write).
-- [ ] Replace static Step 2–5 progress weights in `internal/mixer/mixer.go` with estimate-proportional weights (including per-track `--normalize` progress) and add `RemainingSec` / `EstimatedTotalSec` to `TelemetryEvent` via EMA-smoothed `-progress pipe:1` speed handoff.
-- [ ] Add unit tests in `internal/mixer/mixer_test.go` and `internal/render/render_test.go` covering all 4 paths, calibration bounds, monotonic Path A ETA, and weighted progress.
+- [x] Implement pure analytical duration estimator covering Step 2 (`--normalize`, `concat`, `acrossfade`) and Step 5 (Paths A, B, C, D across `1080p`/`1440p`/`4k`, `black` vs reactive presets, `glow` modifier) returning `LowSec`, `HighSec`, `PointSec`, stage breakdown, and loop cycles.
+- [x] Implement local calibration store (`os.UserCacheDir()/ytmix/calibration.json`) with EMA updates (`T_mix >= 10s`, clamped speeds, atomic write).
+- [x] Replace static Step 2–5 progress weights in `internal/mixer/mixer.go` with estimate-proportional weights (including per-track `--normalize` progress) and add `RemainingSec` / `EstimatedTotalSec` to `TelemetryEvent` via EMA-smoothed `-progress pipe:1` speed handoff.
+- [x] Add unit tests in `internal/mixer/mixer_test.go` and `internal/render/render_test.go` covering all 4 paths, calibration bounds, monotonic Path A ETA, and weighted progress.
 
 #### Verification Plan
 
-- `gofmt -l .` produces empty output.
-- `go vet ./...` and `go test -race ./...` exit `0`.
-- `go test -v ./internal/mixer -run TestE2EPipeline` passes across Paths A–D.
+- `gofmt -l .` -> empty output (`exit 0`).
+- `go vet ./...` -> `exit 0`.
+- `go build ./...` (plus `GOOS=darwin go build ./...`) -> `exit 0`.
+- `go test -count=1 ./...` -> all 7 packages (`cmd/ytmix`, `internal/audio`, `internal/mixer` including `TestE2EPipeline`, `internal/probe`, `internal/render`, `internal/subtitle`, `internal/ui`) pass (`exit 0`). Note: `-race` requires CGO on Windows and is verified on Linux CI.
 
 #### Phase Summary
 
-_(write when phase completes)_
+Implemented `probe.ProbeBackgroundVisual` + `ParseFrameRate`, refactored `DetectEncoder` and `DetectPathDEncoder` onto a shared `256x256` `probeEncoderArgs` helper, added the zero-dep analytical estimator (`internal/render/estimate.go`) + OS-cache EMA persistence (`internal/mixer/calibration.go`), and wired `EstimateConfig`, weighted Step 2–5 progress (including per-track `--normalize`), and EMA-smoothed live `RemainingSec` ETA into `internal/mixer/mixer.go` on branch `feature/render-duration-estimator`.
 
 ## Wave 2: CLI & Editorial Mix Studio Surfaces (`#27`, `#28`) <!-- parallel: up to 2 tracks -->
 

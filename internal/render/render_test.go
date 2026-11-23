@@ -169,7 +169,7 @@ func TestDetectEncoderArgs(t *testing.T) {
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("got %v, want %v", got, want)
 		}
-		wantProbe := []string{"-v", "error", "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1", "-c:v", "h264_videotoolbox", "-f", "null", "-"}
+		wantProbe := []string{"-v", "error", "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.1", "-c:v", "h264_videotoolbox", "-f", "null", "-"}
 		if !reflect.DeepEqual(probedArgs, wantProbe) {
 			t.Fatalf("probedArgs = %v, want %v", probedArgs, wantProbe)
 		}
@@ -187,7 +187,7 @@ func TestDetectEncoderArgs(t *testing.T) {
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("%s: got %v, want %v", goos, got, want)
 			}
-			wantProbe := []string{"-v", "error", "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1", "-c:v", "h264_nvenc", "-f", "null", "-"}
+			wantProbe := []string{"-v", "error", "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.1", "-c:v", "h264_nvenc", "-f", "null", "-"}
 			if !reflect.DeepEqual(probedArgs, wantProbe) {
 				t.Fatalf("%s: probedArgs = %v, want %v", goos, probedArgs, wantProbe)
 			}

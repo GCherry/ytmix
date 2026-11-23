@@ -75,6 +75,12 @@ func ValidateCrossfade(fileNames []string, durations []float64, crossfade float6
 
 // NormalizeTracks transcodes each Track to a temporary -14 LUFS .wav file and re-probes its duration.
 func NormalizeTracks(ctx context.Context, paths []string, fileNames []string, tempDir string, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) ([]string, []float64, error) {
+	return NormalizeTracksWithProgress(ctx, paths, fileNames, tempDir, runner, nil)
+}
+
+// NormalizeTracksWithProgress transcodes each Track to a temporary -14 LUFS .wav file,
+// re-probes its duration, and reports completed Track counts via onProgress when non-nil.
+func NormalizeTracksWithProgress(ctx context.Context, paths []string, fileNames []string, tempDir string, runner func(ctx context.Context, name string, args ...string) ([]byte, error), onProgress func(completed, total int)) ([]string, []float64, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -111,12 +117,20 @@ func NormalizeTracks(ctx context.Context, paths []string, fileNames []string, te
 
 		normPaths[i] = wavPath
 		normDurations[i] = newDur
+		if onProgress != nil {
+			onProgress(i+1, len(paths))
+		}
 	}
 	return normPaths, normDurations, nil
 }
 
 // ProcessAndMerge optionally normalizes Tracks and merges them into tempDir/merged_audio.m4a.
 func ProcessAndMerge(ctx context.Context, paths []string, fileNames []string, durations []float64, tempDir string, normalize bool, crossfade float64, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) (string, []string, []float64, error) {
+	return ProcessAndMergeWithProgress(ctx, paths, fileNames, durations, tempDir, normalize, crossfade, runner, nil)
+}
+
+// ProcessAndMergeWithProgress optionally normalizes Tracks (reporting progress per Track) and merges them into tempDir/merged_audio.m4a.
+func ProcessAndMergeWithProgress(ctx context.Context, paths []string, fileNames []string, durations []float64, tempDir string, normalize bool, crossfade float64, runner func(ctx context.Context, name string, args ...string) ([]byte, error), onNormalizeProgress func(completed, total int)) (string, []string, []float64, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -134,7 +148,7 @@ func ProcessAndMerge(ctx context.Context, paths []string, fileNames []string, du
 	workingDurations := durations
 	if normalize {
 		var err error
-		workingPaths, workingDurations, err = NormalizeTracks(ctx, paths, fileNames, tempDir, runner)
+		workingPaths, workingDurations, err = NormalizeTracksWithProgress(ctx, paths, fileNames, tempDir, runner, onNormalizeProgress)
 		if err != nil {
 			return "", nil, nil, err
 		}

@@ -268,14 +268,16 @@ func TestRunPipelineSteps1To5(t *testing.T) {
 			}
 		}
 
-		wantStepProgress := []int{5, 10, 15, 20, 20, 100}
-		if len(events) != len(wantStepProgress) {
-			t.Fatalf("expected %d events, got %d: %+v", len(wantStepProgress), len(events), events)
-		}
-		for i, wantPct := range wantStepProgress {
-			if events[i].Progress != wantPct {
-				t.Errorf("event[%d].Progress = %d, want %d (%+v)", i, events[i].Progress, wantPct, events[i])
+		for i := 1; i < len(events); i++ {
+			if events[i].Progress < events[i-1].Progress {
+				t.Errorf("progress went backwards at %d: %d < %d (%+v)", i, events[i].Progress, events[i-1].Progress, events)
 			}
+		}
+		if len(events) != 6 || events[0].Progress != 4 || events[5].Progress != 100 {
+			t.Fatalf("unexpected step events: %+v", events)
+		}
+		if events[4].Step != 5 || events[4].Progress >= 100 || events[4].EstimatedTotalSec <= 0 {
+			t.Fatalf("expected Step 5 pre-render estimate and <100%% progress, got: %+v", events[4])
 		}
 
 		tsBytes, err := os.ReadFile(tsPath)
@@ -395,14 +397,24 @@ func TestRunPipelineSteps1To5(t *testing.T) {
 			t.Fatalf("expected Path C streamed args, got: %s", joined)
 		}
 
-		var progressVals []int
+		var step5Start int
+		var progressEvents []TelemetryEvent
 		for _, ev := range events {
+			if ev.Kind == EventStep && ev.Step == 5 {
+				step5Start = ev.Progress
+			}
 			if ev.Kind == EventProgress {
-				progressVals = append(progressVals, ev.Progress)
+				progressEvents = append(progressEvents, ev)
 			}
 		}
-		if !reflect.DeepEqual(progressVals, []int{60, 99}) {
-			t.Fatalf("Step 5 EventProgress = %v, want [60 99] (events: %+v)", progressVals, events)
+		if len(progressEvents) != 2 {
+			t.Fatalf("expected 2 Step 5 EventProgress events, got %d (%+v)", len(progressEvents), events)
+		}
+		if progressEvents[0].Progress <= step5Start || progressEvents[0].Progress >= 99 || progressEvents[0].RemainingSec < 0 {
+			t.Fatalf("unexpected mid Step 5 progress event: %+v (step5Start=%d)", progressEvents[0], step5Start)
+		}
+		if progressEvents[1].Progress != 99 {
+			t.Fatalf("expected final Step 5 progress = 99, got %+v", progressEvents[1])
 		}
 		if events[len(events)-1].Kind != EventDone || events[len(events)-1].Progress != 100 || !strings.Contains(events[len(events)-1].Message, "Path C") {
 			t.Fatalf("unexpected final event: %+v", events[len(events)-1])
@@ -664,6 +676,86 @@ func TestProbeTrackFilesAndRunWithTracks(t *testing.T) {
 		}, nil)
 		if err == nil {
 			t.Fatal("expected error for empty track slice")
+		}
+	})
+
+	t.Run("EstimateConfig and weighted progress handle long Path A normalize Mixes", func(t *testing.T) {
+		workDir, audioDir, bgPath := setupStubMixWorkspace(t, "loop.mp4")
+		cfg := Config{
+			AudioDir:   audioDir,
+			BG:         bgPath,
+			Out:        filepath.Join(workDir, "out_long.mp4"),
+			Timestamps: filepath.Join(workDir, "timestamps.txt"),
+			Normalize:  true,
+		}
+		tracks := []Track{
+			{Path: filepath.Join(audioDir, "01_First.mp3"), FileName: "01_First.mp3", Duration: 1800, DisplayTitle: "First"},
+			{Path: filepath.Join(audioDir, "02_Second.mp3"), FileName: "02_Second.mp3", Duration: 1800, DisplayTitle: "Second"},
+		}
+		runner := func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "ffprobe" {
+				return []byte(`{"format":{"duration":"12.0"},"streams":[{"width":1920,"height":1080,"r_frame_rate":"30/1"}]}`), nil
+			}
+			return nil, nil
+		}
+
+		est, err := EstimateConfig(context.Background(), cfg, tracks, nil, okLookPath, runner)
+		if err != nil {
+			t.Fatalf("EstimateConfig error: %v", err)
+		}
+		if est.Path != render.PathA || est.LoopCycles != 300 || est.Weights.Audio <= 0.75 {
+			t.Fatalf("unexpected long Path A estimate: %+v", est)
+		}
+
+		var events []TelemetryEvent
+		streamRunner := func(_ context.Context, onLine func(string), _ string, args ...string) error {
+			joined := strings.Join(args, " ")
+			if strings.Contains(joined, "norm_loop.mp4") && !strings.Contains(joined, "-stream_loop") {
+				onLine("out_time_us=6000000")
+				onLine("speed=10.0x")
+				onLine("progress=continue")
+				onLine("out_time_us=12000000")
+				onLine("speed=10.0x")
+				onLine("progress=end")
+			} else {
+				onLine("out_time_us=1800000000")
+				onLine("speed=500.0x")
+				onLine("progress=continue")
+				onLine("out_time_us=3600000000")
+				onLine("speed=500.0x")
+				onLine("progress=end")
+			}
+			return nil
+		}
+		if err := RunWithTracks(context.Background(), cfg, tracks, func(ev TelemetryEvent) { events = append(events, ev) }, okLookPath, runner, streamRunner); err != nil {
+			t.Fatalf("RunWithTracks long Path A error: %v", err)
+		}
+
+		var sawNormProgress bool
+		var normLoopRem, muxStartRem float64
+		var step5Start int
+		for _, ev := range events {
+			if ev.Kind == EventProgress && ev.Step == 2 && ev.Substage == "normalize" {
+				sawNormProgress = true
+			}
+			if ev.Kind == EventStep && ev.Step == 5 {
+				step5Start = ev.Progress
+			}
+			if ev.Kind == EventProgress && ev.Substage == "norm_loop" && normLoopRem == 0 {
+				normLoopRem = ev.RemainingSec
+			}
+			if ev.Kind == EventProgress && ev.Substage == "mux" && muxStartRem == 0 {
+				muxStartRem = ev.RemainingSec
+			}
+		}
+		if !sawNormProgress {
+			t.Fatalf("expected per-track normalize EventProgress events: %+v", events)
+		}
+		if step5Start < 70 {
+			t.Fatalf("expected long Path A --normalize to allocate >=70%% before Step 5, got step5Start=%d", step5Start)
+		}
+		if normLoopRem <= muxStartRem {
+			t.Fatalf("expected norm_loop RemainingSec (%v) > mux RemainingSec (%v)", normLoopRem, muxStartRem)
 		}
 	})
 }

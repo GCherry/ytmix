@@ -500,8 +500,8 @@ func TestRenderUploadFlowSSEAndDownloads(t *testing.T) {
 			t.Errorf("missing SSE step %s in:\n%s", step, rawEvents)
 		}
 	}
-	if !strings.Contains(rawEvents, `"detail":"Rendering Mix video to `) || !strings.Contains(rawEvents, `"progress":20,"step":5,"total":5}`) {
-		t.Errorf("expected Step 5 step event to report progress=20 (not 100):\n%s", rawEvents)
+	if !strings.Contains(rawEvents, `"detail":"Rendering Mix video to `) || !strings.Contains(rawEvents, `"step":5,"total":5`) || strings.Contains(rawEvents, `"progress":100,"step":5`) {
+		t.Errorf("expected Step 5 step event to report <100 progress:\n%s", rawEvents)
 	}
 	if !strings.Contains(rawEvents, "event: progress") || !strings.Contains(rawEvents, `"speed":"2.10x"`) {
 		t.Errorf("expected live SSE progress events with speed:\n%s", rawEvents)
