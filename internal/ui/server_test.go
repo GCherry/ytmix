@@ -376,9 +376,15 @@ func TestProbeUploadValidationAndOpaqueTokens(t *testing.T) {
 func TestRenderUploadFlowSSEAndDownloads(t *testing.T) {
 	outDir := t.TempDir()
 	baseRunner := stubPipelineRunner(t, map[string]string{"track_0002": "10.0", "track_0001": "6.0"})
+	sseReady := make(chan struct{})
 	streamRunner := func(ctx context.Context, onLine func(string), name string, args ...string) error {
 		if _, err := baseRunner(ctx, name, args...); err != nil {
 			return err
+		}
+		select {
+		case <-sseReady:
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 		for _, line := range []string{
 			"out_time_us=3500000",
@@ -481,6 +487,22 @@ func TestRenderUploadFlowSSEAndDownloads(t *testing.T) {
 		defer close(doneCh)
 		srv.Handler().ServeHTTP(evRec, evReq)
 	}()
+
+	renderJob, ok := srv.store.getJob(started.JobID)
+	if !ok {
+		t.Fatalf("expected job %q in store", started.JobID)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		renderJob.mu.Lock()
+		subCount := len(renderJob.subs)
+		renderJob.mu.Unlock()
+		if subCount > 0 {
+			break
+		}
+		time.Sleep(1 * time.Millisecond)
+	}
+	close(sseReady)
 
 	select {
 	case <-doneCh:

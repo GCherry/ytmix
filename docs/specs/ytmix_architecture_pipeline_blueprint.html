@@ -43,7 +43,7 @@
     <header class="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-6">
       <div>
         <div class="flex flex-wrap items-center gap-2.5">
-          <span class="px-2.5 py-1 text-xs font-semibold tracking-wider uppercase bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded-full mono">Go 1.24+ Stdlib</span>
+          <span class="px-2.5 py-1 text-xs font-semibold tracking-wider uppercase bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded-full mono">Go 1.24+ Pure Go</span>
           <span class="px-2.5 py-1 text-xs font-semibold tracking-wider uppercase bg-indigo-500/10 text-indigo-400 border border-indigo-500/30 rounded-full mono">FFmpeg + FFprobe</span>
           <span class="px-2.5 py-1 text-xs font-semibold tracking-wider uppercase bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 rounded-full mono">Paths A–D + ytmix ui</span>
         </div>
@@ -380,15 +380,15 @@
     <section class="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 space-y-4">
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
         <h2 class="text-lg font-bold text-white">4. Package Dependency Graph &amp; Embedded Studio (`ytmix ui`)</h2>
-        <span class="text-xs text-slate-400 mono">Acyclic stdlib-only Go packages</span>
+        <span class="text-xs text-slate-400 mono">Acyclic pure-Go packages (minimal vetted deps)</span>
       </div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-5 text-xs text-slate-300">
         <div class="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-2 mono">
           <div class="text-slate-400 uppercase tracking-wider text-[11px]">Package Ownership &amp; Imports</div>
           <div><span class="text-indigo-300">cmd/ytmix</span> ──&gt; <span class="text-emerald-300">internal/mixer</span>, <span class="text-cyan-300">internal/ui</span>, <span class="text-amber-300">internal/render</span></div>
-          <div><span class="text-cyan-300">internal/ui</span> ──&gt; <span class="text-emerald-300">internal/mixer</span>, <span class="text-amber-300">internal/render</span>, <span class="text-slate-300">internal/audio</span></div>
+          <div><span class="text-cyan-300">internal/ui</span> ──&gt; <span class="text-emerald-300">internal/mixer</span>, <span class="text-amber-300">internal/render</span>, <span class="text-slate-300">internal/subtitle</span></div>
           <div><span class="text-emerald-300">internal/mixer</span> ──&gt; <span class="text-slate-300">probe</span>, <span class="text-slate-300">audio</span>, <span class="text-slate-300">subtitle</span>, <span class="text-amber-300">render</span></div>
-          <div class="text-slate-500 pt-1">Leaf packages (`probe`, `audio`, `subtitle`, `render`) never import siblings or `mixer`/`ui`.</div>
+          <div class="text-slate-500 pt-1">Leaf packages (`probe`, `subtitle`, `render`) never import internal packages; `audio` imports `probe` only.</div>
         </div>
         <div class="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-1.5">
           <div class="text-slate-400 uppercase tracking-wider text-[11px] mono">Editorial Mix Studio (Variant A)</div>

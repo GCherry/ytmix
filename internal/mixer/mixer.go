@@ -23,12 +23,7 @@ import (
 
 // Track represents a single discovered .mp3 audio file, its probed duration in seconds,
 // and its resolved Display Title.
-type Track struct {
-	Path         string
-	FileName     string
-	Duration     float64
-	DisplayTitle string
-}
+type Track = probe.Track
 
 // Config holds the parsed CLI flags for a ytmix Mix build.
 type Config struct {
@@ -495,96 +490,22 @@ func ValidateVisualizerFilters(ctx context.Context, cfg Config, runner CommandRu
 	return nil
 }
 
+// NamedTrackFile pairs a local .mp3 file path with its original display filename.
+type NamedTrackFile = probe.NamedTrackFile
+
 // ProbeTracks discovers .mp3 files in audioDir and probes each Track's duration and Display Title.
 func ProbeTracks(ctx context.Context, audioDir string, shuffle bool, shuffleFn func(n int, swap func(i, j int)), runner CommandRunner) ([]Track, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	files, err := probe.DiscoverAudioFiles(audioDir, shuffle, shuffleFn)
-	if err != nil {
-		return nil, err
-	}
-	return probeFiles(ctx, files, runner)
-}
-
-func validateTrackFile(path string) error {
-	if strings.TrimSpace(path) == "" {
-		return errors.New("track file path is empty")
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return fmt.Errorf("cannot access Track %q: %w", path, err)
-	}
-	if info.IsDir() {
-		return fmt.Errorf("track path %q is a directory, expected an .mp3 file", path)
-	}
-	if !strings.EqualFold(filepath.Ext(path), ".mp3") {
-		return fmt.Errorf("unsupported Track extension %q for %q (expected .mp3)", filepath.Ext(path), filepath.Base(path))
-	}
-	return nil
-}
-
-// NamedTrackFile pairs a local .mp3 file path with its original display filename.
-type NamedTrackFile struct {
-	Path     string
-	FileName string
+	return probe.ProbeTracks(ctx, audioDir, shuffle, shuffleFn, runner)
 }
 
 // ProbeTrackFiles probes an ordered list of .mp3 file paths without re-scanning or re-sorting a directory.
 func ProbeTrackFiles(ctx context.Context, files []string, runner CommandRunner) ([]Track, error) {
-	named := make([]NamedTrackFile, len(files))
-	for i, p := range files {
-		named[i] = NamedTrackFile{Path: p, FileName: filepath.Base(p)}
-	}
-	return ProbeNamedTrackFiles(ctx, named, runner)
+	return probe.ProbeTrackFiles(ctx, files, runner)
 }
 
 // ProbeNamedTrackFiles probes an ordered list of .mp3 files while resolving Display Titles from FileName.
 func ProbeNamedTrackFiles(ctx context.Context, files []NamedTrackFile, runner CommandRunner) ([]Track, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if len(files) < 1 {
-		return nil, errors.New("at least one .mp3 Track is required")
-	}
-	for _, f := range files {
-		if err := validateTrackFile(f.Path); err != nil {
-			return nil, err
-		}
-	}
-	return probeNamedFiles(ctx, files, runner)
-}
-
-func probeFiles(ctx context.Context, files []string, runner CommandRunner) ([]Track, error) {
-	named := make([]NamedTrackFile, len(files))
-	for i, p := range files {
-		named[i] = NamedTrackFile{Path: p, FileName: filepath.Base(p)}
-	}
-	return probeNamedFiles(ctx, named, runner)
-}
-
-func probeNamedFiles(ctx context.Context, files []NamedTrackFile, runner CommandRunner) ([]Track, error) {
-	tracks := make([]Track, 0, len(files))
-	for _, f := range files {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		dur, id3Title, err := probe.ProbeFile(ctx, f.Path, runner)
-		if err != nil {
-			return nil, err
-		}
-		displaySource := f.FileName
-		if strings.TrimSpace(displaySource) == "" {
-			displaySource = filepath.Base(f.Path)
-		}
-		tracks = append(tracks, Track{
-			Path:         f.Path,
-			FileName:     displaySource,
-			Duration:     dur,
-			DisplayTitle: probe.ResolveDisplayTitle(id3Title, displaySource),
-		})
-	}
-	return tracks, nil
+	return probe.ProbeNamedTrackFiles(ctx, files, runner)
 }
 
 // ResolveOutputPaths resolves effective --out and --timestamps file paths using --out-dir when set.
@@ -755,6 +676,17 @@ func computeStageBounds(weights render.StageWeights) stageBounds {
 	}
 }
 
+func toChapterTracks(tracks []Track) []subtitle.ChapterTrack {
+	out := make([]subtitle.ChapterTrack, len(tracks))
+	for i, tr := range tracks {
+		out[i] = subtitle.ChapterTrack{
+			Title:    tr.DisplayTitle,
+			Duration: tr.Duration,
+		}
+	}
+	return out
+}
+
 func buildEstimateContext(
 	ctx context.Context,
 	cfg Config,
@@ -768,16 +700,12 @@ func buildEstimateContext(
 	}
 
 	var totalAudioSec float64
-	durations := make([]float64, len(tracks))
-	titles := make([]string, len(tracks))
-	for i, tr := range tracks {
+	for _, tr := range tracks {
 		totalAudioSec += tr.Duration
-		durations[i] = tr.Duration
-		titles[i] = tr.DisplayTitle
 	}
 	mixDurSec := totalAudioSec
 	if len(tracks) > 0 {
-		sched := subtitle.BuildChapterSchedule(titles, durations, cfg.Crossfade)
+		sched := subtitle.BuildChapterSchedule(toChapterTracks(tracks), cfg.Crossfade)
 		mixDurSec = sched.TotalDuration
 	}
 
@@ -1083,17 +1011,17 @@ func RunWithTracks(ctx context.Context, cfg Config, tracks []Track, sink Telemet
 
 	resolved := make([]Track, len(tracks))
 	for i, tr := range tracks {
-		if err := validateTrackFile(tr.Path); err != nil {
+		if err := probe.ValidateTrackFile(tr.Path); err != nil {
 			return fmt.Errorf("track %d: %w", i+1, err)
 		}
-		if tr.FileName == "" {
+		if strings.TrimSpace(tr.FileName) == "" {
 			tr.FileName = filepath.Base(tr.Path)
 		}
 		if tr.Duration <= 0 || math.IsNaN(tr.Duration) || math.IsInf(tr.Duration, 0) {
 			return fmt.Errorf("track %q must have a positive duration (got %v)", tr.FileName, tr.Duration)
 		}
 		if strings.TrimSpace(tr.DisplayTitle) == "" {
-			tr.DisplayTitle = probe.ResolveDisplayTitle("", tr.Path)
+			tr.DisplayTitle = probe.ResolveDisplayTitle("", tr.FileName)
 		}
 		resolved[i] = tr
 	}
@@ -1111,15 +1039,6 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, sink Telemetry
 
 	est, encPtr, calPath, cal := buildEstimateContext(ctx, cfg, tracks, nil, runner)
 	bounds := computeStageBounds(est.Weights)
-
-	paths := make([]string, len(tracks))
-	fileNames := make([]string, len(tracks))
-	durations := make([]float64, len(tracks))
-	for i, tr := range tracks {
-		paths[i] = tr.Path
-		fileNames[i] = tr.FileName
-		durations[i] = tr.Duration
-	}
 
 	step2Detail := fmt.Sprintf("Processing & merging %d Track(s) (normalize=%v, crossfade=%.2fs)...", len(tracks), cfg.Normalize, cfg.Crossfade)
 	estCopy := est
@@ -1167,7 +1086,7 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, sink Telemetry
 		}
 	}
 
-	mergedAudioPath, updatedPaths, updatedDurations, err := audio.ProcessAndMergeWithProgress(ctx, paths, fileNames, durations, tempDir, cfg.Normalize, cfg.Crossfade, runner, onNormProgress)
+	mergedAudioPath, updatedTracks, err := audio.ProcessAndMergeWithProgress(ctx, tracks, tempDir, cfg.Normalize, cfg.Crossfade, runner, onNormProgress)
 	if err != nil {
 		return err
 	}
@@ -1179,18 +1098,9 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, sink Telemetry
 	} else {
 		mergeElapsed = audioDoneAt.Sub(audioStart).Seconds()
 	}
-	for i := range tracks {
-		tracks[i].Path = updatedPaths[i]
-		tracks[i].Duration = updatedDurations[i]
-	}
-
-	titles := make([]string, len(tracks))
-	for i, tr := range tracks {
-		titles[i] = tr.DisplayTitle
-	}
 
 	emitStep(sink, 3, 5, bounds.step3Start, math.Max(0, est.PointSec-time.Since(start).Seconds()), est.PointSec, fmt.Sprintf("Writing Chapter Timestamps to %s...", cfg.Timestamps))
-	sched, err := subtitle.WriteChapters(cfg.Timestamps, titles, updatedDurations, cfg.Crossfade)
+	sched, err := subtitle.WriteChapters(cfg.Timestamps, toChapterTracks(updatedTracks), cfg.Crossfade)
 	if err != nil {
 		return err
 	}
@@ -1199,7 +1109,7 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, sink Telemetry
 	if cfg.OverlayTitles {
 		assPath = filepath.Join(tempDir, "titles.ass")
 		emitStep(sink, 4, 5, bounds.step4Start, math.Max(0, est.PointSec-time.Since(start).Seconds()), est.PointSec, fmt.Sprintf("Generating Title Overlays (.ass) at %s...", assPath))
-		if err := subtitle.WriteASSWithOptions(assPath, titles, sched.Starts, sched.TotalDuration, subtitle.ASSOptions{
+		if err := subtitle.WriteASSWithOptions(assPath, sched.Cues, sched.TotalDuration, subtitle.ASSOptions{
 			TitleDuration: cfg.TitleDuration,
 			FontName:      cfg.FontName,
 			DimTitles:     cfg.DimTitles,

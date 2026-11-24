@@ -2,12 +2,17 @@ package audio
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/GCherry/ytmix/internal/probe"
 )
@@ -19,6 +24,17 @@ var concatPathEscaper = strings.NewReplacer(
 
 func escapeConcatPath(path string) string {
 	return concatPathEscaper.Replace(path)
+}
+
+func normalizeConcurrencyLimit() int {
+	return max(1, min(runtime.GOMAXPROCS(0), 4))
+}
+
+func trackLabel(tr probe.Track) string {
+	if strings.TrimSpace(tr.FileName) != "" {
+		return tr.FileName
+	}
+	return filepath.Base(tr.Path)
 }
 
 // BuildConcatList formats an FFmpeg concat demuxer file list for paths.
@@ -55,125 +71,141 @@ func BuildAcrossfadeFilter(trackCount int, crossfade float64) string {
 }
 
 // ValidateCrossfade verifies crossfade is non-negative and strictly less than every Track duration when merging multiple Tracks.
-func ValidateCrossfade(fileNames []string, durations []float64, crossfade float64) error {
+func ValidateCrossfade(tracks []probe.Track, crossfade float64) error {
 	if math.IsNaN(crossfade) || math.IsInf(crossfade, 0) || crossfade < 0 {
 		return fmt.Errorf("--crossfade must be >= 0 (got %v)", crossfade)
 	}
-	if crossfade == 0 || len(durations) <= 1 {
+	if crossfade == 0 || len(tracks) <= 1 {
 		return nil
 	}
-	if len(fileNames) != len(durations) {
-		return fmt.Errorf("mismatched Track fileNames (%d) and durations (%d)", len(fileNames), len(durations))
-	}
-	for i, dur := range durations {
-		if dur <= crossfade {
-			return fmt.Errorf("track %q duration (%.2fs) must exceed --crossfade (%.2fs)", fileNames[i], dur, crossfade)
+	for _, tr := range tracks {
+		if tr.Duration <= crossfade {
+			return fmt.Errorf("track %q duration (%.2fs) must exceed --crossfade (%.2fs)", trackLabel(tr), tr.Duration, crossfade)
 		}
 	}
 	return nil
 }
 
 // NormalizeTracks transcodes each Track to a temporary -14 LUFS .wav file and re-probes its duration.
-func NormalizeTracks(ctx context.Context, paths []string, fileNames []string, tempDir string, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) ([]string, []float64, error) {
-	return NormalizeTracksWithProgress(ctx, paths, fileNames, tempDir, runner, nil)
+func NormalizeTracks(ctx context.Context, tracks []probe.Track, tempDir string, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) ([]probe.Track, error) {
+	return NormalizeTracksWithProgress(ctx, tracks, tempDir, runner, nil)
 }
 
-// NormalizeTracksWithProgress transcodes each Track to a temporary -14 LUFS .wav file,
-// re-probes its duration, and reports completed Track counts via onProgress when non-nil.
-func NormalizeTracksWithProgress(ctx context.Context, paths []string, fileNames []string, tempDir string, runner func(ctx context.Context, name string, args ...string) ([]byte, error), onProgress func(completed, total int)) ([]string, []float64, error) {
+// NormalizeTracksWithProgress transcodes each Track concurrently to a temporary -14 LUFS .wav file,
+// re-probes its duration, preserves input Track order, and reports monotonic completed Track counts via onProgress.
+func NormalizeTracksWithProgress(ctx context.Context, tracks []probe.Track, tempDir string, runner func(ctx context.Context, name string, args ...string) ([]byte, error), onProgress func(completed, total int)) ([]probe.Track, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if len(paths) != len(fileNames) {
-		return nil, nil, fmt.Errorf("mismatched Track paths (%d) and fileNames (%d)", len(paths), len(fileNames))
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(tracks) == 0 {
+		return []probe.Track{}, nil
+	}
+	if runner == nil {
+		return nil, errors.New("ffmpeg runner is nil")
 	}
 
-	normPaths := make([]string, len(paths))
-	normDurations := make([]float64, len(paths))
-	for i, p := range paths {
-		if err := ctx.Err(); err != nil {
-			return nil, nil, err
-		}
-		wavPath := filepath.Join(tempDir, fmt.Sprintf("norm_%04d.wav", i))
-		if _, err := runner(
-			ctx,
-			"ffmpeg",
-			"-y",
-			"-hide_banner",
-			"-loglevel", "error",
-			"-i", p,
-			"-c:a", "pcm_s16le",
-			"-ar", "48000",
-			"-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
-			wavPath,
-		); err != nil {
-			return nil, nil, fmt.Errorf("normalize Track %q: %w", fileNames[i], err)
-		}
+	normalized := make([]probe.Track, len(tracks))
+	var progressMu sync.Mutex
+	completed := 0
 
-		newDur, _, err := probe.ProbeFile(ctx, wavPath, runner)
-		if err != nil {
-			return nil, nil, fmt.Errorf("re-probe normalized Track %q: %w", fileNames[i], err)
-		}
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(normalizeConcurrencyLimit())
+	for i, tr := range tracks {
+		g.Go(func() error {
+			wavPath := filepath.Join(tempDir, fmt.Sprintf("norm_%04d.wav", i))
+			if _, err := runner(
+				gctx,
+				"ffmpeg",
+				"-y",
+				"-hide_banner",
+				"-loglevel", "error",
+				"-i", tr.Path,
+				"-c:a", "pcm_s16le",
+				"-ar", "48000",
+				"-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
+				wavPath,
+			); err != nil {
+				return fmt.Errorf("normalize Track %q: %w", trackLabel(tr), err)
+			}
 
-		normPaths[i] = wavPath
-		normDurations[i] = newDur
-		if onProgress != nil {
-			onProgress(i+1, len(paths))
-		}
+			newDur, _, err := probe.ProbeFile(gctx, wavPath, runner)
+			if err != nil {
+				return fmt.Errorf("re-probe normalized Track %q: %w", trackLabel(tr), err)
+			}
+
+			updated := tr
+			updated.Path = wavPath
+			updated.Duration = newDur
+			normalized[i] = updated
+
+			if onProgress != nil {
+				progressMu.Lock()
+				completed++
+				onProgress(completed, len(tracks))
+				progressMu.Unlock()
+			}
+			return nil
+		})
 	}
-	return normPaths, normDurations, nil
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	return normalized, nil
 }
 
 // ProcessAndMerge optionally normalizes Tracks and merges them into tempDir/merged_audio.m4a.
-func ProcessAndMerge(ctx context.Context, paths []string, fileNames []string, durations []float64, tempDir string, normalize bool, crossfade float64, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) (string, []string, []float64, error) {
-	return ProcessAndMergeWithProgress(ctx, paths, fileNames, durations, tempDir, normalize, crossfade, runner, nil)
+func ProcessAndMerge(ctx context.Context, tracks []probe.Track, tempDir string, normalize bool, crossfade float64, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) (string, []probe.Track, error) {
+	return ProcessAndMergeWithProgress(ctx, tracks, tempDir, normalize, crossfade, runner, nil)
 }
 
 // ProcessAndMergeWithProgress optionally normalizes Tracks (reporting progress per Track) and merges them into tempDir/merged_audio.m4a.
-func ProcessAndMergeWithProgress(ctx context.Context, paths []string, fileNames []string, durations []float64, tempDir string, normalize bool, crossfade float64, runner func(ctx context.Context, name string, args ...string) ([]byte, error), onNormalizeProgress func(completed, total int)) (string, []string, []float64, error) {
+func ProcessAndMergeWithProgress(ctx context.Context, tracks []probe.Track, tempDir string, normalize bool, crossfade float64, runner func(ctx context.Context, name string, args ...string) ([]byte, error), onNormalizeProgress func(completed, total int)) (string, []probe.Track, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
-		return "", nil, nil, err
+		return "", nil, err
 	}
-	if len(paths) == 0 {
-		return "", nil, nil, fmt.Errorf("cannot merge 0 Tracks")
+	if len(tracks) == 0 {
+		return "", nil, fmt.Errorf("cannot merge 0 Tracks")
 	}
-	if len(paths) != len(fileNames) || len(paths) != len(durations) {
-		return "", nil, nil, fmt.Errorf("mismatched Track slices: paths=%d fileNames=%d durations=%d", len(paths), len(fileNames), len(durations))
+	if runner == nil {
+		return "", nil, errors.New("ffmpeg runner is nil")
 	}
 
-	workingPaths := paths
-	workingDurations := durations
+	working := make([]probe.Track, len(tracks))
+	copy(working, tracks)
 	if normalize {
 		var err error
-		workingPaths, workingDurations, err = NormalizeTracksWithProgress(ctx, paths, fileNames, tempDir, runner, onNormalizeProgress)
+		working, err = NormalizeTracksWithProgress(ctx, working, tempDir, runner, onNormalizeProgress)
 		if err != nil {
-			return "", nil, nil, err
+			return "", nil, err
 		}
 	}
 
-	if err := ValidateCrossfade(fileNames, workingDurations, crossfade); err != nil {
-		return "", nil, nil, err
+	if err := ValidateCrossfade(working, crossfade); err != nil {
+		return "", nil, err
 	}
 	if err := ctx.Err(); err != nil {
-		return "", nil, nil, err
+		return "", nil, err
 	}
 
 	mergedPath := filepath.Join(tempDir, "merged_audio.m4a")
-	if crossfade == 0 || len(workingPaths) == 1 {
-		concatPaths := make([]string, len(workingPaths))
-		for i, p := range workingPaths {
-			absPath, err := filepath.Abs(p)
+	if crossfade == 0 || len(working) == 1 {
+		concatPaths := make([]string, len(working))
+		for i, tr := range working {
+			absPath, err := filepath.Abs(tr.Path)
 			if err != nil {
-				absPath = p
+				absPath = tr.Path
 			}
 			concatPaths[i] = absPath
 		}
 		concatPath := filepath.Join(tempDir, "concat_list.txt")
 		if err := os.WriteFile(concatPath, []byte(BuildConcatList(concatPaths)), 0600); err != nil {
-			return "", nil, nil, fmt.Errorf("write concat_list.txt: %w", err)
+			return "", nil, fmt.Errorf("write concat_list.txt: %w", err)
 		}
 		if _, err := runner(
 			ctx,
@@ -189,18 +221,18 @@ func ProcessAndMergeWithProgress(ctx context.Context, paths []string, fileNames 
 			"-ar", "48000",
 			mergedPath,
 		); err != nil {
-			return "", nil, nil, fmt.Errorf("concat merge audio: %w", err)
+			return "", nil, fmt.Errorf("concat merge audio: %w", err)
 		}
-		return mergedPath, workingPaths, workingDurations, nil
+		return mergedPath, working, nil
 	}
 
 	args := []string{"-y", "-hide_banner", "-loglevel", "error"}
-	for _, p := range workingPaths {
-		args = append(args, "-i", p)
+	for _, tr := range working {
+		args = append(args, "-i", tr.Path)
 	}
 	args = append(
 		args,
-		"-filter_complex", BuildAcrossfadeFilter(len(workingPaths), crossfade),
+		"-filter_complex", BuildAcrossfadeFilter(len(working), crossfade),
 		"-map", "[aout]",
 		"-c:a", "aac",
 		"-b:a", "320k",
@@ -208,7 +240,7 @@ func ProcessAndMergeWithProgress(ctx context.Context, paths []string, fileNames 
 		mergedPath,
 	)
 	if _, err := runner(ctx, "ffmpeg", args...); err != nil {
-		return "", nil, nil, fmt.Errorf("acrossfade merge audio: %w", err)
+		return "", nil, fmt.Errorf("acrossfade merge audio: %w", err)
 	}
-	return mergedPath, workingPaths, workingDurations, nil
+	return mergedPath, working, nil
 }

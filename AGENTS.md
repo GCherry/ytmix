@@ -4,7 +4,7 @@ Instructions for coding agents working in `ytmix`.
 
 ## Project Overview
 
-`ytmix` is a zero-dependency Go (`1.24+`) CLI tool that wraps `ffmpeg` and `ffprobe` to compile a directory of `.mp3` audio files and a background visual (static image or looping video/GIF) into a 1080p `.mp4` video with YouTube chapter timestamps (`timestamps.txt`).
+`ytmix` is a minimal-dependency Go (`1.24+`) CLI tool (pure Go, zero CGo) that wraps `ffmpeg` and `ffprobe` to compile a directory of `.mp3` audio files and a background visual (static image or looping video/GIF) into a 1080p `.mp4` video with YouTube chapter timestamps (`timestamps.txt`).
 
 ## Source-of-Truth Docs
 
@@ -31,11 +31,11 @@ go test ./...
 
 1. **Directory Boundaries & Acyclic Dependencies**:
    - `cmd/ytmix/main.go`: CLI flag parsing, signal handling (`context.Context`), and top-level execution ONLY. No business logic or FFmpeg filter strings in `main`.
-   - `internal/mixer`: Orchestrates the workflow and holds core domain structs (`Track`, `Config`). Imports `internal/probe`, `internal/audio`, `internal/subtitle` (and `internal/render` in Phase 2).
-   - `internal/probe`: Wraps `ffprobe` execution and JSON output parsing. Leaf package (no internal imports).
-   - `internal/audio`: Pure functions for building FFmpeg audio filtergraphs (`acrossfade`, `loudnorm`) and concat lists, plus normalization/merge execution. Imports `internal/probe` only.
-   - `internal/subtitle`: Generates YouTube chapter timestamps and `.ass` subtitle files for track overlays. Leaf package (no internal imports).
-   - `internal/render`: Constructs and executes the final `ffmpeg` command.
+   - `internal/mixer`: Orchestrates the workflow, holds `Config` and telemetry/calibration, and aliases `probe.Track` / `probe.NamedTrackFile`. Imports `internal/probe`, `internal/audio`, `internal/subtitle`, and `internal/render`.
+   - `internal/probe`: Owns `Track` / `NamedTrackFile`, `.mp3` validation, bounded-parallel `ffprobe` Track/Background Visual probing, and `Display Title` resolution. Leaf package (no internal imports).
+   - `internal/audio`: Pure functions for building FFmpeg audio filtergraphs (`acrossfade`, `loudnorm`) and concat lists, plus bounded-parallel normalization and merge execution over `[]probe.Track`. Imports `internal/probe` only.
+   - `internal/subtitle`: Generates YouTube chapter timestamps and `.ass` subtitle files from cohesive `ChapterTrack` / `TitleCue` inputs. Leaf package (no internal imports).
+   - `internal/render`: Constructs and executes the final `ffmpeg` command. Leaf package (no internal imports).
 
 2. **Anti-Bloat Rules (Strict)**:
    - Do NOT create a `pkg/`, `utils/`, `common/`, or `helpers/` package. Put functions in the domain package that uses them.
@@ -48,7 +48,7 @@ go test ./...
 
 ## Architectural & Coding Conventions
 
-- **Zero external Go dependencies:** Use Go standard library packages only (`os/exec`, `flag`, `path/filepath`, `runtime`, `fmt`, `strings`, `math/rand`, `encoding/json`, `regexp`, `os`). Shell out to `ffmpeg` and `ffprobe` via `os/exec` rather than adding CGo bindings.
+- **Minimal, vetted pure-Go dependencies:** Prefer Go standard library packages; any external dependency must be pure Go (zero CGo), vetted, and explicitly allowlisted in `.golangci.yml` (`depguard`, currently `golang.org/x/sync/errgroup`). Shell out to `ffmpeg` and `ffprobe` via `os/exec` rather than adding CGo bindings.
 - **Deterministic temp workspace:** Create a per-run temp directory (`os.MkdirTemp("", "ytmix-*")`) for intermediate files (`merged_audio.m4a`, `concat_list.txt`, `norm_loop.mp4`, `titles.ass`, normalized tracks) and always clean it up with `defer os.RemoveAll(tempDir)`.
 - **Subtitle overlays:** Generate `.ass` subtitle files (`titles.ass`) for `--overlay-titles` instead of `drawtext` filters to avoid shell/filter escaping bugs.
 - **Stream mapping:** Explicitly pass `-map 0:v:0 -map 1:a:0` on final video mux/encode commands so stray audio streams in background videos are stripped.

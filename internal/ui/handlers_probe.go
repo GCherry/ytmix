@@ -486,16 +486,17 @@ func estimateMixForTracks(
 	bgMeta probe.BackgroundMeta,
 ) render.MixEstimate {
 	var totalAudioSec float64
-	durations := make([]float64, len(tracks))
-	titles := make([]string, len(tracks))
+	chapters := make([]subtitle.ChapterTrack, len(tracks))
 	for i, tr := range tracks {
 		totalAudioSec += tr.Duration
-		durations[i] = tr.Duration
-		titles[i] = tr.DisplayTitle
+		chapters[i] = subtitle.ChapterTrack{
+			Title:    tr.DisplayTitle,
+			Duration: tr.Duration,
+		}
 	}
 	mixDurSec := totalAudioSec
 	if len(tracks) > 0 {
-		sched := subtitle.BuildChapterSchedule(titles, durations, crossfade)
+		sched := subtitle.BuildChapterSchedule(chapters, crossfade)
 		mixDurSec = sched.TotalDuration
 	}
 	calPath, _ := mixer.DefaultCalibrationPath()

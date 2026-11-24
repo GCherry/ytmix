@@ -1,12 +1,12 @@
 # Technical Specification: `ytmix` — Automated YouTube Mix & Compilation Builder CLI
 
 ## 1. Overview & Objective
-`ytmix` is a high-performance, zero-dependency Go CLI tool (with an embedded stdlib web studio `ytmix ui`) that wraps `ffmpeg` and `ffprobe` to compile a directory of `.mp3` audio files and either a Background Visual (static image or looping video/GIF) or an Auto Visualizer (`Path D`) into a 1080p `.mp4` video ready for YouTube upload. Alongside the video, it calculates exact Track start times and outputs a YouTube-formatted chapter file (`timestamps.txt`).
+`ytmix` is a high-performance, minimal-dependency Go CLI tool (with an embedded stdlib web studio `ytmix ui`) that wraps `ffmpeg` and `ffprobe` to compile a directory of `.mp3` audio files and either a Background Visual (static image or looping video/GIF) or an Auto Visualizer (`Path D`) into a 1080p `.mp4` video ready for YouTube upload. Alongside the video, it calculates exact Track start times and outputs a YouTube-formatted chapter file (`timestamps.txt`).
 
 ---
 
 ## 2. System & Architectural Constraints
-- **Language:** Go (`1.24+`), utilizing standard library packages only (`go.mod` enforced by `depguard`).
+- **Language:** Go (`1.24+`), utilizing the Go standard library plus minimal, vetted pure-Go dependencies (`golang.org/x/sync/errgroup`, explicitly allowlisted in `.golangci.yml` `depguard`, zero CGo).
 - **External Dependencies:** `ffmpeg` and `ffprobe` must be available on the system `PATH`. Do not use heavy CGo bindings or in-memory audio/video processing libraries; shell out directly via `os/exec`.
 - **Hardware Acceleration Detection (`render.DetectEncoder` / `render.DetectPathDEncoder`):** Inspect `runtime.GOOS` and probe via a 1-frame null encode to select the optimal H.264 encoder when video re-encoding is required:
   - `darwin`: `h264_videotoolbox` (`-b:v 6000k` for Path B; Path D probes `-q:v 65 -profile:v high` for Apple Silicon and falls back to resolution-scaled `-b:v` `12000k`/`18000k`/`28000k` `-profile:v high` for Intel Macs)
