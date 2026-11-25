@@ -489,6 +489,10 @@ func runMCPServer(
 		LookPath: lookPath,
 		Runner:   runner,
 	})
+	mcp.RegisterResourcesAndPrompts(srv.Registry, mcp.ResourcesPromptsDeps{
+		LookPath: lookPath,
+		Runner:   runner,
+	})
 	mgr := mcp.RegisterRenderTools(srv.Registry, mcp.RenderDeps{
 		LookPath:     lookPath,
 		Runner:       runner,
