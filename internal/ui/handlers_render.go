@@ -610,6 +610,8 @@ func buildEstimateSegments(
 				layerMode = render.LayerArtCard
 			case resolved.isID3:
 				layerMode = render.LayerArtCard
+			case (resolved.effSource == "upload" || resolved.effSource == "local") && tm.layerMode != "" && tm.layerMode != render.LayerBackdrop:
+				layerMode = tm.layerMode
 			case tm.defaultLayerMode != "" && tm.defaultLayerMode != render.LayerBackdrop:
 				layerMode = tm.defaultLayerMode
 			default:

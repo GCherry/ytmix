@@ -1069,10 +1069,6 @@ func decodeImageDimensions(path string) (int, int) {
 	return cfg.Width, cfg.Height
 }
 
-func resolveAutoLayerMode(isEmbeddedID3 bool, width, height int) render.TrackLayerMode {
-	return render.ResolveAutoTrackLayerMode(isEmbeddedID3, width, height)
-}
-
 func effectiveTrackLayout(cfg Config, manifest TrackMediaManifest) (TrackMediaLayout, error) {
 	cliLayout, err := ValidateTrackMediaLayout(cfg.TrackMediaLayout)
 	if err != nil {
