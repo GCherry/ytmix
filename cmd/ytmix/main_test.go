@@ -438,8 +438,10 @@ func TestRunMCPServer(t *testing.T) {
 			t.Fatalf("stdout line %d is not valid JSON: %q", i, line)
 		}
 	}
-	if !strings.Contains(lines[1], `"get_capabilities"`) {
-		t.Fatalf("tools/list missing get_capabilities: %s", lines[1])
+	for _, toolName := range []string{"get_capabilities", "inspect_background", "inspect_tracks"} {
+		if !strings.Contains(lines[1], `"`+toolName+`"`) {
+			t.Fatalf("tools/list missing %s: %s", toolName, lines[1])
+		}
 	}
 	if !strings.Contains(lines[2], `"libx264"`) || !strings.Contains(lines[2], `"studio-mint"`) {
 		t.Fatalf("get_capabilities response missing expected fields: %s", lines[2])

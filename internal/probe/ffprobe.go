@@ -19,11 +19,12 @@ import (
 )
 
 // Track represents a single discovered .mp3 audio file, its probed duration in seconds,
-// and its resolved Display Title.
+// its optional trimmed ID3 title tag, and its resolved Display Title.
 type Track struct {
 	Path         string
 	FileName     string
 	Duration     float64
+	RawID3Title  string
 	DisplayTitle string
 }
 
@@ -150,7 +151,7 @@ func ProbeFile(ctx context.Context, path string, runner func(ctx context.Context
 	}
 
 	dur, err := strconv.ParseFloat(strings.TrimSpace(parsed.Format.Duration), 64)
-	if err != nil || dur <= 0 {
+	if err != nil || math.IsNaN(dur) || math.IsInf(dur, 0) || dur <= 0 {
 		return 0, "", fmt.Errorf("invalid duration %q for %q", parsed.Format.Duration, path)
 	}
 
@@ -220,6 +221,7 @@ func ProbeNamedTrackFiles(ctx context.Context, files []NamedTrackFile, runner fu
 				Path:         f.Path,
 				FileName:     displaySource,
 				Duration:     dur,
+				RawID3Title:  strings.TrimSpace(id3Title),
 				DisplayTitle: ResolveDisplayTitle(id3Title, displaySource),
 			}
 			return nil
@@ -240,6 +242,7 @@ type BackgroundMeta struct {
 	CodecName   string  `json:"codecName"`
 	PixFmt      string  `json:"pixFmt"`
 	NBFrames    int64   `json:"nbFrames"`
+	HasAudio    bool    `json:"hasAudio"`
 }
 
 type ffprobeBGOutput struct {
@@ -247,6 +250,7 @@ type ffprobeBGOutput struct {
 		Duration string `json:"duration"`
 	} `json:"format"`
 	Streams []struct {
+		CodecType    string `json:"codec_type"`
 		CodecName    string `json:"codec_name"`
 		Width        int    `json:"width"`
 		Height       int    `json:"height"`
@@ -286,7 +290,7 @@ func ParseFrameRate(raw string) float64 {
 }
 
 // ProbeBackgroundVisual runs ffprobe on a Background Visual file to extract dimensions, frame rate,
-// codec, pixel format, frame count, and duration (inferring GIF duration from nb_frames/FPS when N/A).
+// codec, pixel format, frame count, audio stream presence, and duration (inferring GIF duration from nb_frames/FPS when N/A).
 func ProbeBackgroundVisual(ctx context.Context, path string, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) (BackgroundMeta, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -302,8 +306,7 @@ func ProbeBackgroundVisual(ctx context.Context, path string, runner func(ctx con
 		ctx,
 		"ffprobe",
 		"-v", "error",
-		"-select_streams", "v:0",
-		"-show_entries", "format=duration:stream=codec_name,width,height,r_frame_rate,avg_frame_rate,nb_frames,pix_fmt",
+		"-show_entries", "format=duration:stream=codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,nb_frames,pix_fmt",
 		"-of", "json",
 		path,
 	)
@@ -321,8 +324,26 @@ func ProbeBackgroundVisual(ctx context.Context, path string, runner func(ctx con
 		meta.DurationSec = dur
 	}
 
-	if len(parsed.Streams) > 0 {
-		st := parsed.Streams[0]
+	videoIdx := -1
+	fallbackIdx := -1
+	for i, st := range parsed.Streams {
+		codecType := strings.ToLower(strings.TrimSpace(st.CodecType))
+		if codecType == "audio" {
+			meta.HasAudio = true
+		}
+		if videoIdx < 0 && codecType == "video" {
+			videoIdx = i
+		}
+		if fallbackIdx < 0 && codecType == "" {
+			fallbackIdx = i
+		}
+	}
+	if videoIdx < 0 {
+		videoIdx = fallbackIdx
+	}
+
+	if videoIdx >= 0 {
+		st := parsed.Streams[videoIdx]
 		meta.CodecName = strings.TrimSpace(st.CodecName)
 		meta.Width = st.Width
 		meta.Height = st.Height

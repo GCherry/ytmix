@@ -132,6 +132,15 @@ func TestTitleAndTrackDiscovery(t *testing.T) {
 		if ResolveDisplayTitle(title2, p2) != "Second" || dur2 != 90.25 {
 			t.Fatalf("p2 = (%v, %q)", dur2, title2)
 		}
+
+		for _, badDur := range []string{"NaN", "Inf", "+Inf", "-Inf", "0", "-1.5"} {
+			_, _, err := ProbeFile(context.Background(), p1, func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+				return []byte(`{"format":{"duration":"` + badDur + `","tags":{}}}`), nil
+			})
+			if err == nil {
+				t.Fatalf("expected error for invalid duration %q", badDur)
+			}
+		}
 	})
 
 	t.Run("stops immediately when context is cancelled", func(t *testing.T) {
@@ -181,14 +190,97 @@ func TestProbeBackgroundVisual(t *testing.T) {
 		if len(gotArgs) == 0 || gotArgs[len(gotArgs)-1] != "loop.mp4" {
 			t.Fatalf("unexpected ffprobe args: %v", gotArgs)
 		}
+		if strings.Contains(strings.Join(gotArgs, " "), "-select_streams") {
+			t.Fatalf("expected ProbeBackgroundVisual not to pass -select_streams so audio streams are detected, got %v", gotArgs)
+		}
 		if meta.Width != 1920 || meta.Height != 1080 || meta.CodecName != "h264" || meta.PixFmt != "yuv420p" {
 			t.Fatalf("unexpected stream metadata: %+v", meta)
 		}
-		if meta.DurationSec != 12.5 || meta.NBFrames != 375 {
-			t.Fatalf("unexpected duration/frames: %+v", meta)
+		if meta.DurationSec != 12.5 || meta.NBFrames != 375 || meta.HasAudio {
+			t.Fatalf("unexpected duration/frames/hasAudio: %+v", meta)
 		}
 		if meta.FPS < 29.96 || meta.FPS > 29.98 {
 			t.Fatalf("FPS = %v, want ~29.97", meta.FPS)
+		}
+	})
+
+	t.Run("detects HasAudio across stream orders and selects first video stream", func(t *testing.T) {
+		cases := []struct {
+			name         string
+			payload      string
+			wantHasAudio bool
+			wantWidth    int
+			wantHeight   int
+			wantCodec    string
+		}{
+			{
+				name: "audio stream before video stream",
+				payload: `{
+					"format": {"duration": "8.0"},
+					"streams": [
+						{"codec_type": "audio", "codec_name": "aac"},
+						{"codec_type": "video", "codec_name": "h264", "width": 1280, "height": 720, "avg_frame_rate": "24/1", "pix_fmt": "yuv420p"}
+					]
+				}`,
+				wantHasAudio: true,
+				wantWidth:    1280,
+				wantHeight:   720,
+				wantCodec:    "h264",
+			},
+			{
+				name: "video stream before audio stream",
+				payload: `{
+					"format": {"duration": "15.0"},
+					"streams": [
+						{"codec_type": "video", "codec_name": "hevc", "width": 1920, "height": 1080, "avg_frame_rate": "30/1", "pix_fmt": "yuv420p"},
+						{"codec_type": "audio", "codec_name": "aac"}
+					]
+				}`,
+				wantHasAudio: true,
+				wantWidth:    1920,
+				wantHeight:   1080,
+				wantCodec:    "hevc",
+			},
+			{
+				name: "video stream only",
+				payload: `{
+					"format": {"duration": "10.0"},
+					"streams": [
+						{"codec_type": "video", "codec_name": "h264", "width": 1920, "height": 1080, "avg_frame_rate": "30/1"}
+					]
+				}`,
+				wantHasAudio: false,
+				wantWidth:    1920,
+				wantHeight:   1080,
+				wantCodec:    "h264",
+			},
+			{
+				name: "audio stream only leaves video dimensions zero",
+				payload: `{
+					"format": {"duration": "10.0"},
+					"streams": [
+						{"codec_type": "audio", "codec_name": "mp3"}
+					]
+				}`,
+				wantHasAudio: true,
+				wantWidth:    0,
+				wantHeight:   0,
+				wantCodec:    "",
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				meta, err := ProbeBackgroundVisual(context.Background(), "bg.mp4", func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+					return []byte(tc.payload), nil
+				})
+				if err != nil {
+					t.Fatalf("ProbeBackgroundVisual error: %v", err)
+				}
+				if meta.HasAudio != tc.wantHasAudio || meta.Width != tc.wantWidth || meta.Height != tc.wantHeight || meta.CodecName != tc.wantCodec {
+					t.Fatalf("got %+v, want hasAudio=%v width=%d height=%d codec=%q", meta, tc.wantHasAudio, tc.wantWidth, tc.wantHeight, tc.wantCodec)
+				}
+			})
 		}
 	})
 
@@ -357,9 +449,9 @@ func TestTrackIntakeAndConcurrency(t *testing.T) {
 				return []byte(`{"format":{"duration":"10.0","tags":{}}}`), nil
 			case p2:
 				time.Sleep(5 * time.Millisecond)
-				return []byte(`{"format":{"duration":"20.0","tags":{"title":"Tagged Two"}}}`), nil
+				return []byte(`{"format":{"duration":"20.0","tags":{"title":"  Tagged Two  "}}}`), nil
 			default:
-				return []byte(`{"format":{"duration":"30.0","tags":{}}}`), nil
+				return []byte(`{"format":{"duration":"30.0","tags":{"title":"   \t "}}}`), nil
 			}
 		}
 
@@ -374,13 +466,13 @@ func TestTrackIntakeAndConcurrency(t *testing.T) {
 		if len(tracks) != 3 {
 			t.Fatalf("expected 3 tracks, got %d", len(tracks))
 		}
-		if tracks[0].Path != p1 || tracks[0].FileName != "01 - Uploaded First.mp3" || tracks[0].DisplayTitle != "Uploaded First" || tracks[0].Duration != 10.0 {
+		if tracks[0].Path != p1 || tracks[0].FileName != "01 - Uploaded First.mp3" || tracks[0].RawID3Title != "" || tracks[0].DisplayTitle != "Uploaded First" || tracks[0].Duration != 10.0 {
 			t.Fatalf("tracks[0] = %+v", tracks[0])
 		}
-		if tracks[1].Path != p2 || tracks[1].FileName != "02 - Uploaded Second.mp3" || tracks[1].DisplayTitle != "Tagged Two" || tracks[1].Duration != 20.0 {
+		if tracks[1].Path != p2 || tracks[1].FileName != "02 - Uploaded Second.mp3" || tracks[1].RawID3Title != "Tagged Two" || tracks[1].DisplayTitle != "Tagged Two" || tracks[1].Duration != 20.0 {
 			t.Fatalf("tracks[1] = %+v", tracks[1])
 		}
-		if tracks[2].Path != p3 || tracks[2].FileName != "03 - Direct.mp3" || tracks[2].DisplayTitle != "Direct" || tracks[2].Duration != 30.0 {
+		if tracks[2].Path != p3 || tracks[2].FileName != "03 - Direct.mp3" || tracks[2].RawID3Title != "" || tracks[2].DisplayTitle != "Direct" || tracks[2].Duration != 30.0 {
 			t.Fatalf("tracks[2] = %+v", tracks[2])
 		}
 	})
