@@ -405,6 +405,8 @@ func TestRunMCPServer(t *testing.T) {
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
 		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_capabilities","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"resources/list"}`,
+		`{"jsonrpc":"2.0","id":5,"method":"prompts/list"}`,
 	}, "\n") + "\n"
 
 	var out, errOut bytes.Buffer
@@ -430,8 +432,8 @@ func TestRunMCPServer(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("expected 3 JSON lines on stdout, got %d:\n%s", len(lines), out.String())
+	if len(lines) != 5 {
+		t.Fatalf("expected 5 JSON lines on stdout, got %d:\n%s", len(lines), out.String())
 	}
 	for i, line := range lines {
 		if !json.Valid([]byte(line)) {
@@ -455,5 +457,22 @@ func TestRunMCPServer(t *testing.T) {
 	}
 	if !strings.Contains(lines[2], `"libx264"`) || !strings.Contains(lines[2], `"studio-mint"`) {
 		t.Fatalf("get_capabilities response missing expected fields: %s", lines[2])
+	}
+	for _, uri := range []string{
+		"ytmix://presets",
+		"ytmix://themes",
+		"ytmix://resolutions",
+	} {
+		if !strings.Contains(lines[3], `"`+uri+`"`) {
+			t.Fatalf("resources/list missing %s: %s", uri, lines[3])
+		}
+	}
+	for _, promptName := range []string{
+		"create-sleep-mix",
+		"clean-youtube-release",
+	} {
+		if !strings.Contains(lines[4], `"`+promptName+`"`) {
+			t.Fatalf("prompts/list missing %s: %s", promptName, lines[4])
+		}
 	}
 }
