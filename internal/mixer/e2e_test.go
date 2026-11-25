@@ -510,10 +510,11 @@ func TestE2ESegmentedPerTrackMedia(t *testing.T) {
 			if parseErr != nil {
 				t.Fatalf("parse stream %s duration %q: %v", s.CodecType, s.Duration, parseErr)
 			}
-			if s.CodecType == "video" {
+			switch s.CodecType {
+			case "video":
 				videoDur = d
 				videoAvgFPS = s.AvgFrameRate
-			} else if s.CodecType == "audio" {
+			case "audio":
 				audioDur = d
 			}
 		}

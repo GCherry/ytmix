@@ -480,14 +480,22 @@ func (s *Server) handleSessionTrackMediaMultipart(w http.ResponseWriter, r *http
 
 	var (
 		uploadedPath string
+		uploadedFile string
 		uploadedName string
 		uploadedKind render.BackgroundKind
 		rawLayerMode string
 	)
-	cleanupUpload := func() {
-		if uploadedPath != "" {
-			_ = os.Remove(uploadedPath)
+	removeInTemp := func(relName string) {
+		if relName == "" {
+			return
 		}
+		if root, rootErr := os.OpenRoot(tempDir); rootErr == nil {
+			_ = root.Remove(relName)
+			_ = root.Close()
+		}
+	}
+	cleanupUpload := func() {
+		removeInTemp(uploadedFile)
 	}
 
 	for {
@@ -532,11 +540,11 @@ func (s *Server) handleSessionTrackMediaMultipart(w http.ResponseWriter, r *http
 				return
 			}
 			seq := s.store.mediaSeq.Add(1)
-			dstName := fmt.Sprintf("media_%s_%d%s", trackID, seq, literalExt)
+			dstName := fmt.Sprintf("media_%d%s", seq, literalExt)
 			dstPath := filepath.Join(tempDir, dstName)
 			if _, err := saveUploadedPartInDir(tempDir, dstName, part, s.cfg.MaxUploadBytes); err != nil {
 				_ = part.Close()
-				_ = os.Remove(dstPath)
+				removeInTemp(dstName)
 				cleanupUpload()
 				status := http.StatusBadRequest
 				if isPayloadTooLarge(err) {
@@ -548,6 +556,7 @@ func (s *Server) handleSessionTrackMediaMultipart(w http.ResponseWriter, r *http
 			_ = part.Close()
 			cleanupUpload()
 			uploadedPath = dstPath
+			uploadedFile = dstName
 			uploadedName = safeName
 			uploadedKind = kind
 		default:

@@ -268,27 +268,6 @@ func (st *jobStore) addSession(sess *sessionState) {
 	}
 }
 
-func (st *jobStore) resolveTracks(sessionID string, trackIDs []string) ([]mixer.Track, error) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	sess, ok := st.sessions[sessionID]
-	if !ok {
-		return nil, errors.New("unknown or expired sessionId; re-probe Tracks first")
-	}
-	if len(trackIDs) == 0 {
-		return nil, errors.New("at least one Track must be selected")
-	}
-	tracks := make([]mixer.Track, 0, len(trackIDs))
-	for _, id := range trackIDs {
-		tr, exists := sess.tracks[id]
-		if !exists {
-			return nil, fmt.Errorf("unknown trackId %q in session", id)
-		}
-		tracks = append(tracks, tr)
-	}
-	return tracks, nil
-}
-
 func (st *jobStore) resolveTrackWithDir(sessionID, trackID string) (mixer.Track, string, string, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
