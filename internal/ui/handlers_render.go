@@ -16,36 +16,43 @@ import (
 
 	"github.com/GCherry/ytmix/internal/mixer"
 	"github.com/GCherry/ytmix/internal/render"
+	"github.com/GCherry/ytmix/internal/subtitle"
 )
 
 type renderConfigRequest struct {
-	SessionID            string   `json:"sessionId"`
-	TrackIDs             []string `json:"trackIds"`
-	AudioDir             string   `json:"audioDir"`
-	BGMode               string   `json:"bgMode"`
-	BGPath               string   `json:"bgPath"`
-	OutDir               string   `json:"outDir"`
-	Out                  string   `json:"out"`
-	Timestamps           string   `json:"timestamps"`
-	Crossfade            float64  `json:"crossfade"`
-	Normalize            bool     `json:"normalize"`
-	OverlayTitles        bool     `json:"overlayTitles"`
-	TitleDuration        int      `json:"titleDuration"`
-	FontName             string   `json:"fontName"`
-	Shuffle              bool     `json:"shuffle"`
-	Visualizer           string   `json:"visualizer"`
-	VisualizerTheme      string   `json:"visualizerTheme"`
-	VisualizerResolution string   `json:"visualizerResolution"`
-	VisualizerGlow       *bool    `json:"visualizerGlow"`
-	VisualizerBrightness *int     `json:"visualizerBrightness"`
-	FadeToBlackMinutes   float64  `json:"fadeToBlackMinutes"`
-	DimTitles            bool     `json:"dimTitles"`
+	SessionID            string             `json:"sessionId"`
+	TrackIDs             []string           `json:"trackIds"`
+	AudioDir             string             `json:"audioDir"`
+	BGMode               string             `json:"bgMode"`
+	Layer0Mode           string             `json:"layer0Mode"`
+	BGPath               string             `json:"bgPath"`
+	OutDir               string             `json:"outDir"`
+	Out                  string             `json:"out"`
+	Timestamps           string             `json:"timestamps"`
+	Crossfade            float64            `json:"crossfade"`
+	Normalize            bool               `json:"normalize"`
+	OverlayTitles        bool               `json:"overlayTitles"`
+	TitleDuration        int                `json:"titleDuration"`
+	FontName             string             `json:"fontName"`
+	Shuffle              bool               `json:"shuffle"`
+	Visualizer           string             `json:"visualizer"`
+	VisualizerTheme      string             `json:"visualizerTheme"`
+	VisualizerResolution string             `json:"visualizerResolution"`
+	VisualizerGlow       *bool              `json:"visualizerGlow"`
+	VisualizerBrightness *int               `json:"visualizerBrightness"`
+	FadeToBlackMinutes   float64            `json:"fadeToBlackMinutes"`
+	DimTitles            bool               `json:"dimTitles"`
+	Segmented            *bool              `json:"segmented"`
+	TrackTransition      string             `json:"trackTransition"`
+	TrackMediaLayout     string             `json:"trackMediaLayout"`
+	TrackOverrides       []trackOverrideDTO `json:"trackOverrides"`
 }
 
 type renderStartResponse struct {
 	JobID         string `json:"jobId"`
 	RenderingPath string `json:"renderingPath"`
 	EventsURL     string `json:"eventsUrl"`
+	Segmented     bool   `json:"segmented,omitempty"`
 }
 
 func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
@@ -72,24 +79,36 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 	}
 
 	localAllowed := s.localPathsAllowed(r)
-	bgMode := strings.ToLower(strings.TrimSpace(req.BGMode))
-	switch bgMode {
-	case "", "upload", "local", "visualizer":
-	default:
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported bgMode %q (expected upload, local, or visualizer)", req.BGMode))
+	bgMode, err := resolveEffectiveBGMode(req.BGMode, req.Layer0Mode)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
+	isBlackMode := bgMode == "black"
 	isVisualizerMode := bgMode == "visualizer" || (bgMode == "" && uploadedBGPath == "" && strings.TrimSpace(req.BGPath) == "" && strings.TrimSpace(req.Visualizer) != "")
 
 	bgPath := uploadedBGPath
-	if isVisualizerMode {
+	effectiveVisualizer := req.Visualizer
+	switch {
+	case isBlackMode:
+		if bgPath != "" || strings.TrimSpace(req.BGPath) != "" {
+			writeError(w, http.StatusBadRequest, "--bg cannot be used with black backdrop mode")
+			return
+		}
+		if strings.TrimSpace(effectiveVisualizer) != "" && !strings.EqualFold(strings.TrimSpace(effectiveVisualizer), "black") {
+			writeError(w, http.StatusBadRequest, "black backdrop mode conflicts with non-black visualizer preset")
+			return
+		}
+		bgPath = ""
+		effectiveVisualizer = "black"
+	case isVisualizerMode:
 		if bgPath != "" || strings.TrimSpace(req.BGPath) != "" {
 			writeError(w, http.StatusBadRequest, "--bg and --visualizer cannot be used together")
 			return
 		}
 		bgPath = ""
-	} else {
+	default:
 		if strings.TrimSpace(req.Visualizer) != "" {
 			writeError(w, http.StatusBadRequest, "--bg and --visualizer cannot be used together")
 			return
@@ -149,15 +168,23 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var tracks []mixer.Track
+	var (
+		tracks    []mixer.Track
+		sessMedia []sessionTrackMedia
+		tempDir   string
+	)
 	if strings.TrimSpace(req.SessionID) != "" {
-		tracks, err = s.store.resolveTracks(req.SessionID, req.TrackIDs)
+		tracks, sessMedia, _, tempDir, err = s.store.resolveTracksWithMedia(req.SessionID, req.TrackIDs)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	} else if localAllowed && safeAudioDir != "" {
-		tracks, err = mixer.ProbeTracks(r.Context(), safeAudioDir, req.Shuffle, nil, s.cfg.Runner)
+		if resolveIsSegmented(req.Segmented, req.TrackOverrides, nil) {
+			tracks, err = mixer.ProbeTracksWithArt(r.Context(), safeAudioDir, req.Shuffle, nil, s.cfg.Runner)
+		} else {
+			tracks, err = mixer.ProbeTracks(r.Context(), safeAudioDir, req.Shuffle, nil, s.cfg.Runner)
+		}
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -165,6 +192,47 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 	} else {
 		writeError(w, http.StatusBadRequest, "sessionId and trackIds are required (probe Tracks first)")
 		return
+	}
+
+	if strings.TrimSpace(req.TrackTransition) != "" {
+		if _, err := render.ValidateTrackTransition(render.TrackTransition(req.TrackTransition)); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if _, err := mixer.ValidateTrackMediaLayout(req.TrackMediaLayout); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	isSegmented := resolveIsSegmented(req.Segmented, req.TrackOverrides, sessMedia)
+	var (
+		trackMediaMode string
+		trackOverrides []mixer.TrackMediaOverride
+	)
+	if isSegmented {
+		if strings.TrimSpace(req.SessionID) == "" && len(req.TrackOverrides) > 0 {
+			writeError(w, http.StatusBadRequest, "sessionId is required when trackOverrides are specified")
+			return
+		}
+		trackMediaMode = string(mixer.TrackMediaAuto)
+		if strings.TrimSpace(req.SessionID) != "" {
+			var ovStatus int
+			trackOverrides, ovStatus, err = s.resolveRenderTrackOverrides(
+				r.Context(),
+				req.SessionID,
+				req.TrackIDs,
+				tracks,
+				sessMedia,
+				tempDir,
+				req.TrackOverrides,
+				localAllowed,
+			)
+			if err != nil {
+				writeError(w, ovStatus, err.Error())
+				return
+			}
+		}
 	}
 
 	outName := sanitizeBaseName(req.Out, s.cfg.Out)
@@ -214,13 +282,18 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 		TitleDuration:        req.TitleDuration,
 		FontName:             fontName,
 		Shuffle:              req.Shuffle,
-		Visualizer:           req.Visualizer,
+		Visualizer:           effectiveVisualizer,
 		VisualizerTheme:      req.VisualizerTheme,
 		VisualizerResolution: req.VisualizerResolution,
 		VisualizerGlow:       vizGlow,
 		VisualizerBrightness: vizBrightness,
 		FadeToBlack:          fadeToBlack,
 		DimTitles:            req.DimTitles,
+		TrackMedia:           trackMediaMode,
+		TrackMediaLayout:     req.TrackMediaLayout,
+		TrackTransition:      req.TrackTransition,
+		TrackOverrides:       trackOverrides,
+		Segmented:            isSegmented,
 	}
 
 	preparedCfg, pathKind, err := mixer.PreflightConfig(mixCfg, s.cfg.LookPath, false)
@@ -276,7 +349,342 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 		JobID:         jobID,
 		RenderingPath: string(pathKind),
 		EventsURL:     fmt.Sprintf("/api/render/%s/events", jobID),
+		Segmented:     mixCfg.Segmented,
 	})
+}
+
+func resolveEffectiveBGMode(bgModeRaw, layer0ModeRaw string) (string, error) {
+	bgMode := strings.ToLower(strings.TrimSpace(bgModeRaw))
+	switch bgMode {
+	case "", "black", "upload", "local", "visualizer":
+	default:
+		return "", fmt.Errorf("unsupported bgMode %q (expected black, upload, local, or visualizer)", bgModeRaw)
+	}
+	l0Mode := strings.ToLower(strings.TrimSpace(layer0ModeRaw))
+	switch l0Mode {
+	case "", "black", "upload", "local", "visualizer":
+	default:
+		return "", fmt.Errorf("unsupported layer0Mode %q (expected black, upload, local, or visualizer)", layer0ModeRaw)
+	}
+	if bgMode != "" && l0Mode != "" && bgMode != l0Mode {
+		return "", fmt.Errorf("conflicting bgMode %q and layer0Mode %q", bgModeRaw, layer0ModeRaw)
+	}
+	if l0Mode != "" {
+		return l0Mode, nil
+	}
+	return bgMode, nil
+}
+
+func hasSessionMediaOverrides(media []sessionTrackMedia) bool {
+	for _, tm := range media {
+		if tm.source == "upload" || tm.source == "local" || tm.explicitEmpty || tm.layerPinned {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveIsSegmented(segmented *bool, overrides []trackOverrideDTO, sessMedia []sessionTrackMedia) bool {
+	if segmented != nil {
+		if !*segmented && len(overrides) == 0 {
+			return false
+		}
+		return *segmented || len(overrides) > 0
+	}
+	return len(overrides) > 0 || hasSessionMediaOverrides(sessMedia)
+}
+
+func validateOverrideSource(raw string) (string, error) {
+	norm := strings.ToLower(strings.TrimSpace(raw))
+	switch norm {
+	case "", "upload", "local", "sidecar", "id3", "inherit", "backdrop", "auto":
+		return norm, nil
+	default:
+		return "", fmt.Errorf("unsupported track override source %q", raw)
+	}
+}
+
+func indexTrackOverrides(trackIDs []string, overrides []trackOverrideDTO) (map[string]trackOverrideDTO, error) {
+	if len(overrides) == 0 {
+		return nil, nil
+	}
+	validIDs := make(map[string]struct{}, len(trackIDs))
+	for _, id := range trackIDs {
+		validIDs[id] = struct{}{}
+	}
+	byID := make(map[string]trackOverrideDTO, len(overrides))
+	for _, ov := range overrides {
+		tid := strings.TrimSpace(ov.TrackID)
+		if tid == "" {
+			return nil, errors.New("trackOverrides[].trackId is required")
+		}
+		if len(trackIDs) > 0 {
+			if _, ok := validIDs[tid]; !ok {
+				return nil, fmt.Errorf("unknown trackId %q in trackOverrides", tid)
+			}
+		}
+		if _, err := validateOverrideSource(ov.Source); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(ov.LayerMode) != "" {
+			if _, err := render.ValidateTrackLayerMode(render.TrackLayerMode(ov.LayerMode)); err != nil {
+				return nil, err
+			}
+		}
+		byID[tid] = ov
+	}
+	return byID, nil
+}
+
+func resolveTrackSourceAndLayer(
+	tm sessionTrackMedia,
+	ov trackOverrideDTO,
+	hasOv bool,
+) (effSource string, effLayer render.TrackLayerMode, err error) {
+	if tm.layerPinned {
+		effLayer = tm.layerMode
+	}
+	if hasOv && strings.TrimSpace(ov.LayerMode) != "" {
+		effLayer, err = render.ValidateTrackLayerMode(render.TrackLayerMode(ov.LayerMode))
+		if err != nil {
+			return "", "", err
+		}
+	}
+	effSource = tm.source
+	if effSource == "" {
+		effSource = "inherit"
+	}
+	if hasOv && strings.TrimSpace(ov.Source) != "" {
+		effSource, err = validateOverrideSource(ov.Source)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	return effSource, effLayer, nil
+}
+
+type resolvedUITrack struct {
+	mediaPath     string
+	mediaKind     render.BackgroundKind
+	layerMode     render.TrackLayerMode
+	explicitEmpty bool
+	isID3         bool
+	effSource     string
+}
+
+func resolveUITrackItem(
+	tr mixer.Track,
+	tm sessionTrackMedia,
+	ov trackOverrideDTO,
+	hasOv bool,
+	localAllowed bool,
+	tempDir string,
+	checkUploadFile bool,
+) (resolvedUITrack, int, error) {
+	effSource, effLayer, err := resolveTrackSourceAndLayer(tm, ov, hasOv)
+	if err != nil {
+		return resolvedUITrack{}, http.StatusBadRequest, err
+	}
+
+	isExplicitEmpty := effLayer == render.LayerBackdrop ||
+		effSource == "backdrop" ||
+		(tm.explicitEmpty && (!hasOv || (strings.TrimSpace(ov.Source) == "" && strings.TrimSpace(ov.LayerMode) == "")))
+
+	res := resolvedUITrack{
+		layerMode: effLayer,
+		effSource: effSource,
+	}
+
+	switch {
+	case isExplicitEmpty:
+		res.layerMode = render.LayerBackdrop
+		res.explicitEmpty = true
+	case effSource == "upload":
+		if tm.source != "upload" || tm.filePath == "" || (checkUploadFile && tempDir == "") {
+			return resolvedUITrack{}, http.StatusBadRequest, fmt.Errorf("track %q has no uploaded visual media", tr.DisplayTitle)
+		}
+		if checkUploadFile {
+			f, openErr := openFileInDir(tempDir, tm.filePath)
+			if openErr != nil {
+				return resolvedUITrack{}, http.StatusBadRequest, fmt.Errorf("track %q uploaded visual unavailable: %w", tr.DisplayTitle, openErr)
+			}
+			_ = f.Close()
+		}
+		res.mediaKind = tm.mediaKind
+		res.mediaPath = tm.filePath
+	case effSource == "local":
+		if !localAllowed {
+			return resolvedUITrack{}, http.StatusForbidden, errors.New("local Track media is disabled on non-loopback or --host 0.0.0.0 sessions")
+		}
+		if tm.source != "local" || tm.filePath == "" {
+			return resolvedUITrack{}, http.StatusBadRequest, fmt.Errorf("track %q has no local visual media", tr.DisplayTitle)
+		}
+		res.mediaKind = tm.mediaKind
+		res.mediaPath = tm.filePath
+	case effSource == "sidecar":
+		if !localAllowed {
+			return resolvedUITrack{}, http.StatusForbidden, errors.New("local sidecar media is disabled on non-loopback or --host 0.0.0.0 sessions")
+		}
+		if tm.sidecarPath == "" {
+			return resolvedUITrack{}, http.StatusBadRequest, fmt.Errorf("track %q has no sidecar media", tr.DisplayTitle)
+		}
+		res.mediaKind = tm.sidecarKind
+		res.mediaPath = tm.sidecarPath
+	case effSource == "id3":
+		if !tr.HasEmbeddedArt {
+			return resolvedUITrack{}, http.StatusBadRequest, fmt.Errorf("track %q has no embedded ID3 art", tr.DisplayTitle)
+		}
+		res.mediaKind = render.BackgroundKindImage
+		res.isID3 = true
+	default:
+		if tm.defaultMediaSource == "sidecar" && tm.sidecarPath != "" && localAllowed {
+			res.mediaKind = tm.sidecarKind
+			res.mediaPath = tm.sidecarPath
+		} else if tm.defaultMediaSource == "id3" && tr.HasEmbeddedArt {
+			res.mediaKind = render.BackgroundKindImage
+			res.isID3 = true
+		} else {
+			if effLayer == render.LayerFullscreen || effLayer == render.LayerArtCard {
+				return resolvedUITrack{}, http.StatusBadRequest, fmt.Errorf("track %q requires visual media for layer mode %q", tr.DisplayTitle, effLayer)
+			}
+			res.layerMode = render.LayerBackdrop
+			res.explicitEmpty = true
+		}
+	}
+
+	return res, http.StatusOK, nil
+}
+
+func buildEstimateSegments(
+	tracks []mixer.Track,
+	trackIDs []string,
+	sessMedia []sessionTrackMedia,
+	overrides []trackOverrideDTO,
+	layoutMode mixer.TrackMediaLayout,
+	crossfade float64,
+	overlayTitles bool,
+	localAllowed bool,
+) ([]render.TrackSegmentSpec, []render.SegmentEstimateInput, int, error) {
+	byID, err := indexTrackOverrides(trackIDs, overrides)
+	if err != nil {
+		return nil, nil, http.StatusBadRequest, err
+	}
+
+	chapters := make([]subtitle.ChapterTrack, len(tracks))
+	for i, tr := range tracks {
+		chapters[i] = subtitle.ChapterTrack{
+			Title:    tr.DisplayTitle,
+			Duration: tr.Duration,
+		}
+	}
+	sched := subtitle.BuildChapterSchedule(chapters, crossfade)
+
+	segs := make([]render.TrackSegmentSpec, len(tracks))
+	segInputs := make([]render.SegmentEstimateInput, len(tracks))
+
+	for i, tr := range tracks {
+		slotDur := tr.Duration
+		if i < len(tracks)-1 {
+			slotDur = sched.Starts[i+1] - sched.Starts[i]
+		}
+		var tm sessionTrackMedia
+		if i < len(sessMedia) {
+			tm = sessMedia[i]
+		}
+		var tid string
+		if i < len(trackIDs) {
+			tid = trackIDs[i]
+		}
+		ov, hasOv := byID[tid]
+		resolved, status, err := resolveUITrackItem(tr, tm, ov, hasOv, localAllowed, "", false)
+		if err != nil {
+			return nil, nil, status, err
+		}
+
+		layerMode := resolved.layerMode
+		if layerMode == "" {
+			switch {
+			case layoutMode == mixer.TrackMediaLayoutFullscreen:
+				layerMode = render.LayerFullscreen
+			case layoutMode == mixer.TrackMediaLayoutCard:
+				layerMode = render.LayerArtCard
+			case resolved.isID3:
+				layerMode = render.LayerArtCard
+			case (resolved.effSource == "upload" || resolved.effSource == "local") && tm.layerMode != "" && tm.layerMode != render.LayerBackdrop:
+				layerMode = tm.layerMode
+			case tm.defaultLayerMode != "" && tm.defaultLayerMode != render.LayerBackdrop:
+				layerMode = tm.defaultLayerMode
+			default:
+				layerMode = render.LayerFullscreen
+			}
+		}
+
+		segs[i] = render.TrackSegmentSpec{
+			Index:         i,
+			StartSec:      sched.Starts[i],
+			SlotDuration:  slotDur,
+			MediaPath:     resolved.mediaPath,
+			MediaKind:     resolved.mediaKind,
+			LayerMode:     layerMode,
+			OverlayTitles: overlayTitles,
+		}
+		segInputs[i] = render.SegmentEstimateInput{
+			SlotDurationSec: slotDur,
+			LayerMode:       layerMode,
+			MediaKind:       resolved.mediaKind,
+			OverlayTitles:   overlayTitles,
+		}
+	}
+
+	return segs, segInputs, http.StatusOK, nil
+}
+
+func (s *Server) resolveRenderTrackOverrides(
+	ctx context.Context,
+	sessionID string,
+	trackIDs []string,
+	tracks []mixer.Track,
+	sessMedia []sessionTrackMedia,
+	tempDir string,
+	overrides []trackOverrideDTO,
+	localAllowed bool,
+) ([]mixer.TrackMediaOverride, int, error) {
+	byID, err := indexTrackOverrides(trackIDs, overrides)
+	if err != nil {
+		return nil, http.StatusBadRequest, err
+	}
+
+	out := make([]mixer.TrackMediaOverride, len(tracks))
+	for i, tr := range tracks {
+		tid := trackIDs[i]
+		var tm sessionTrackMedia
+		if i < len(sessMedia) {
+			tm = sessMedia[i]
+		}
+		ov, hasOv := byID[tid]
+		resolved, status, err := resolveUITrackItem(tr, tm, ov, hasOv, localAllowed, tempDir, true)
+		if err != nil {
+			return nil, status, err
+		}
+
+		mediaPath := resolved.mediaPath
+		if resolved.isID3 && resolved.effSource == "id3" {
+			_, artPath, extractErr := s.ensureSessionTrackExtractedArt(ctx, sessionID, tid, tr, tm)
+			if extractErr != nil {
+				return nil, http.StatusInternalServerError, fmt.Errorf("extract embedded ID3 art for %q: %w", tr.DisplayTitle, extractErr)
+			}
+			mediaPath = artPath
+		}
+
+		out[i] = mixer.TrackMediaOverride{
+			TrackIndex:    i,
+			MediaPath:     mediaPath,
+			MediaKind:     resolved.mediaKind,
+			LayerMode:     resolved.layerMode,
+			ExplicitEmpty: resolved.explicitEmpty,
+		}
+	}
+	return out, http.StatusOK, nil
 }
 
 func (s *Server) parseRenderRequest(w http.ResponseWriter, r *http.Request, jobDir string) (renderConfigRequest, string, int, error) {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/GCherry/ytmix/internal/render"
+	"github.com/GCherry/ytmix/internal/subtitle"
 )
 
 type ffprobeMediaInfo struct {
@@ -368,6 +369,250 @@ func TestE2EPipeline(t *testing.T) {
 		media := assertOutputMP4WithDimensionsAndTimestamps(t, outMP4, tsPath, 2560, 1440, 8.0, "00:00 Sine_One\n00:04 Sine_Two\n")
 		if media.Streams[0].CodecType == "video" && media.Streams[0].ColorSpace != "bt709" {
 			t.Errorf("expected bt709 color_space on 1440p Path D output, got %q", media.Streams[0].ColorSpace)
+		}
+	})
+}
+
+func TestE2ESegmentedPerTrackMedia(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skipf("skipping segmented E2E test: ffmpeg not on PATH (%v)", err)
+	}
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		t.Skipf("skipping segmented E2E test: ffprobe not on PATH (%v)", err)
+	}
+
+	ctx := context.Background()
+
+	t.Run("Test A mixed-media segmented dual-layer mix with crossfade overlays and dip", func(t *testing.T) {
+		workDir := t.TempDir()
+		audioDir := filepath.Join(workDir, "tracks")
+		if err := os.MkdirAll(audioDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		// 4 Tracks (~4s each) -> 3s, 3s, 3s, 4s slots with 1s crossfade (~13.0s total):
+		//   Track 1: sidecar 16:9 PNG (Fullscreen image)
+		//   Track 2: sidecar 16:9 MP4 (Fullscreen looping video)
+		//   Track 3: sidecar 1:1 PNG  (Art Card over Path D bars Layer 0)
+		//   Track 4: no media         (L0 Only fallback to Path D bars Layer 0)
+		track1 := filepath.Join(audioDir, "01_Alpha.mp3")
+		track2 := filepath.Join(audioDir, "02_Beta.mp3")
+		track3 := filepath.Join(audioDir, "03_Gamma.mp3")
+		track4 := filepath.Join(audioDir, "04_Delta.mp3")
+
+		widePNG := filepath.Join(audioDir, "01_Alpha.png")
+		loopMP4 := filepath.Join(audioDir, "02_Beta.mp4")
+		squarePNG := filepath.Join(audioDir, "03_Gamma.png")
+
+		synthCmds := [][]string{
+			{"-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=330:duration=4", "-c:a", "libmp3lame", "-b:a", "192k", track1},
+			{"-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=4", "-c:a", "libmp3lame", "-b:a", "192k", track2},
+			{"-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=523.25:duration=4", "-c:a", "libmp3lame", "-b:a", "192k", track3},
+			{"-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=659.25:duration=4", "-c:a", "libmp3lame", "-b:a", "192k", track4},
+			{"-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=teal:s=1280x720:d=1", "-frames:v", "1", widePNG},
+			{"-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=duration=2:size=1280x720:rate=30", "-c:v", "libx264", "-pix_fmt", "yuv420p", loopMP4},
+			{"-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=gold:s=600x600:d=1", "-frames:v", "1", squarePNG},
+		}
+		for _, args := range synthCmds {
+			if _, err := ExecCommandRunner(ctx, "ffmpeg", args...); err != nil {
+				t.Fatalf("generate segmented E2E asset (%v): %v", args, err)
+			}
+		}
+
+		tracks, err := ProbeTracksWithArt(ctx, audioDir, false, nil, ExecCommandRunner)
+		if err != nil {
+			t.Fatalf("ProbeTracksWithArt failed: %v", err)
+		}
+		sched := subtitle.BuildChapterSchedule(toChapterTracks(tracks), 1.0)
+		wantTimestamps := sched.Content
+
+		// Confirm auto layout picks Fullscreen/Fullscreen/Art Card/L0 Only.
+		cfg := Config{
+			AudioDir:         audioDir,
+			Out:              filepath.Join(workDir, "segmented_mix.mp4"),
+			Timestamps:       filepath.Join(workDir, "segmented_timestamps.txt"),
+			Crossfade:        1.0,
+			OverlayTitles:    true,
+			FontName:         "Arial",
+			Visualizer:       "bars",
+			TrackMedia:       "auto",
+			TrackMediaLayout: "auto",
+			TrackTransition:  "dip",
+		}
+		_, resolvedSegs, err := ResolveTrackSegments(ctx, cfg, tracks, "", ExecCommandRunner)
+		if err != nil {
+			t.Fatalf("ResolveTrackSegments failed: %v", err)
+		}
+		wantModes := []render.TrackLayerMode{
+			render.LayerFullscreen,
+			render.LayerFullscreen,
+			render.LayerArtCard,
+			render.LayerBackdrop,
+		}
+		for i, wantMode := range wantModes {
+			if resolvedSegs[i].LayerMode != wantMode {
+				t.Fatalf("segment %d layerMode = %q, want %q", i, resolvedSegs[i].LayerMode, wantMode)
+			}
+		}
+
+		var stdout bytes.Buffer
+		var sawProgress bool
+		cliSink := NewCLITelemetry(&stdout, false)
+		err = Run(ctx, cfg, func(ev TelemetryEvent) {
+			if ev.Kind == EventProgress {
+				sawProgress = true
+			}
+			cliSink(ev)
+		}, exec.LookPath, ExecCommandRunner, ExecStreamRunner)
+		if err != nil {
+			t.Fatalf("segmented Run failed: %v\nstdout:\n%s", err, stdout.String())
+		}
+		if !sawProgress {
+			t.Errorf("expected live EventProgress telemetry during segmented render")
+		}
+
+		media := assertOutputMP4WithDimensionsAndTimestamps(t, cfg.Out, cfg.Timestamps, 1920, 1080, sched.TotalDuration, wantTimestamps)
+		if media.Streams[0].CodecType == "video" && media.Streams[0].ColorSpace != "bt709" {
+			t.Errorf("expected bt709 color_space on segmented output, got %q", media.Streams[0].ColorSpace)
+		}
+
+		// Probe per-stream duration and frame rate to verify zero sub-frame PTS drift across concat -c:v copy segments.
+		rawStreamProbe, err := ExecCommandRunner(
+			ctx,
+			"ffprobe",
+			"-v", "error",
+			"-show_format",
+			"-show_streams",
+			"-of", "json",
+			cfg.Out,
+		)
+		if err != nil {
+			t.Fatalf("ffprobe stream details failed: %v", err)
+		}
+		var details struct {
+			Streams []struct {
+				CodecType    string `json:"codec_type"`
+				Duration     string `json:"duration"`
+				RFrameRate   string `json:"r_frame_rate"`
+				AvgFrameRate string `json:"avg_frame_rate"`
+			} `json:"streams"`
+			Format struct {
+				Duration string `json:"duration"`
+			} `json:"format"`
+		}
+		if err := json.Unmarshal(rawStreamProbe, &details); err != nil {
+			t.Fatalf("unmarshal detailed ffprobe JSON: %v", err)
+		}
+		var videoDur, audioDur float64
+		var videoAvgFPS string
+		for _, s := range details.Streams {
+			d, parseErr := strconv.ParseFloat(strings.TrimSpace(s.Duration), 64)
+			if parseErr != nil {
+				t.Fatalf("parse stream %s duration %q: %v", s.CodecType, s.Duration, parseErr)
+			}
+			switch s.CodecType {
+			case "video":
+				videoDur = d
+				videoAvgFPS = s.AvgFrameRate
+			case "audio":
+				audioDur = d
+			}
+		}
+		t.Logf("Open Question #1 check: sched.TotalDuration=%.4fs format=%.4fs video=%.4fs audio=%.4fs avg_frame_rate=%s (video-sched=%.4fs, video-audio=%.4fs)",
+			sched.TotalDuration,
+			func() float64 { v, _ := strconv.ParseFloat(strings.TrimSpace(details.Format.Duration), 64); return v }(),
+			videoDur,
+			audioDur,
+			videoAvgFPS,
+			videoDur-sched.TotalDuration,
+			videoDur-audioDur,
+		)
+		if math.Abs(videoDur-sched.TotalDuration) > 0.15 {
+			t.Errorf("video duration %.4fs drifted from ChapterSchedule.TotalDuration %.4fs by %.4fs (>0.15s)", videoDur, sched.TotalDuration, math.Abs(videoDur-sched.TotalDuration))
+		}
+		if math.Abs(videoDur-audioDur) > 0.15 {
+			t.Errorf("video duration %.4fs diverged from audio duration %.4fs by %.4fs (>0.15s)", videoDur, audioDur, math.Abs(videoDur-audioDur))
+		}
+	})
+
+	t.Run("Test B embedded ID3 attached_pic extraction and sidecar precedence", func(t *testing.T) {
+		workDir := t.TempDir()
+		audioDir := filepath.Join(workDir, "tracks")
+		if err := os.MkdirAll(audioDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		embeddedArtSrc := filepath.Join(workDir, "embedded_cover.png")
+		sidecarPNG := filepath.Join(audioDir, "02_Sidecar_Wins.png")
+		track1 := filepath.Join(audioDir, "01_Embedded_Only.mp3")
+		track2 := filepath.Join(audioDir, "02_Sidecar_Wins.mp3")
+
+		synthCmds := [][]string{
+			{"-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=crimson:s=500x500:d=1", "-frames:v", "1", embeddedArtSrc},
+			{"-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=steelblue:s=1280x720:d=1", "-frames:v", "1", sidecarPNG},
+			{"-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-i", embeddedArtSrc, "-map", "0:a", "-map", "1:v", "-c:a", "libmp3lame", "-b:a", "192k", "-c:v", "mjpeg", "-disposition:v:0", "attached_pic", "-id3v2_version", "3", track1},
+			{"-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=523.25:duration=3", "-i", embeddedArtSrc, "-map", "0:a", "-map", "1:v", "-c:a", "libmp3lame", "-b:a", "192k", "-c:v", "mjpeg", "-disposition:v:0", "attached_pic", "-id3v2_version", "3", track2},
+		}
+		for _, args := range synthCmds {
+			if _, err := ExecCommandRunner(ctx, "ffmpeg", args...); err != nil {
+				t.Fatalf("generate ID3/sidecar E2E asset (%v): %v", args, err)
+			}
+		}
+
+		tracks, err := ProbeTracksWithArt(ctx, audioDir, false, nil, ExecCommandRunner)
+		if err != nil {
+			t.Fatalf("ProbeTracksWithArt failed: %v", err)
+		}
+		if len(tracks) != 2 {
+			t.Fatalf("expected 2 tracks, got %d", len(tracks))
+		}
+		for i, tr := range tracks {
+			if !tr.HasEmbeddedArt {
+				t.Fatalf("track %d (%s) expected HasEmbeddedArt=true", i, tr.FileName)
+			}
+		}
+
+		cfg := Config{
+			AudioDir:         audioDir,
+			Out:              filepath.Join(workDir, "id3_sidecar_mix.mp4"),
+			Timestamps:       filepath.Join(workDir, "id3_sidecar_timestamps.txt"),
+			Visualizer:       "black",
+			TrackMedia:       "auto",
+			TrackMediaLayout: "auto",
+		}
+
+		// Verify embedded art extraction + sidecar precedence explicitly before full render.
+		extractCheckDir := filepath.Join(workDir, "extract_check")
+		if err := os.MkdirAll(extractCheckDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		_, resolvedSegs, err := ResolveTrackSegments(ctx, cfg, tracks, extractCheckDir, ExecCommandRunner)
+		if err != nil {
+			t.Fatalf("ResolveTrackSegments failed: %v", err)
+		}
+		if resolvedSegs[0].LayerMode != render.LayerArtCard {
+			t.Errorf("track 1 (embedded ID3) layerMode = %q, want %q", resolvedSegs[0].LayerMode, render.LayerArtCard)
+		}
+		if info, err := os.Stat(resolvedSegs[0].MediaPath); err != nil || info.Size() == 0 {
+			t.Fatalf("expected extracted ID3 art file at %q: err=%v", resolvedSegs[0].MediaPath, err)
+		}
+		if resolvedSegs[1].MediaPath != sidecarPNG {
+			t.Errorf("track 2 sidecar precedence failed: MediaPath = %q, want %q", resolvedSegs[1].MediaPath, sidecarPNG)
+		}
+		if resolvedSegs[1].LayerMode != render.LayerFullscreen {
+			t.Errorf("track 2 (16:9 sidecar) layerMode = %q, want %q", resolvedSegs[1].LayerMode, render.LayerFullscreen)
+		}
+
+		sched := subtitle.BuildChapterSchedule(toChapterTracks(tracks), 0)
+		wantTimestamps := sched.Content
+
+		var stdout bytes.Buffer
+		if err := Run(ctx, cfg, NewCLITelemetry(&stdout, false), exec.LookPath, ExecCommandRunner, ExecStreamRunner); err != nil {
+			t.Fatalf("ID3/sidecar Run failed: %v\nstdout:\n%s", err, stdout.String())
+		}
+		media := assertOutputMP4WithDimensionsAndTimestamps(t, cfg.Out, cfg.Timestamps, 1920, 1080, sched.TotalDuration, wantTimestamps)
+		if media.Streams[0].CodecType == "video" && media.Streams[0].ColorSpace != "bt709" {
+			t.Errorf("expected bt709 color_space on ID3/sidecar output, got %q", media.Streams[0].ColorSpace)
 		}
 	})
 }

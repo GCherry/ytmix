@@ -92,6 +92,34 @@
               <span class="source-badge mono" id="audio-source-badge">Ambient Sim</span>
             </div>
             <audio id="audition-audio" preload="none" hidden></audio>
+            <input id="track-media-file-input" type="file" accept=".jpg,.jpeg,.png,.webp,.mp4,.mov,.gif,image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime" hidden>
+
+            <div class="well composer-bar" id="per-track-bar">
+              <div class="composer-bar-left">
+                <label class="toggle-row">
+                  <input type="checkbox" id="per-track-toggle">
+                  <span class="toggle-title">Per-Track Visuals <code class="mono">--track-media</code></span>
+                </label>
+                <span class="field-hint mono" id="per-track-hint">Off — using Layer 0 Mix Backdrop only</span>
+              </div>
+              <div class="composer-bar-controls" id="per-track-controls">
+                <label class="composer-inline-control">
+                  <span class="mono">Layout</span>
+                  <select id="track-layout-select" class="select select-compact">
+                    <option value="auto" selected>Auto (ID3/Square → Card)</option>
+                    <option value="fullscreen">Fullscreen</option>
+                    <option value="card">Art Card</option>
+                  </select>
+                </label>
+                <label class="composer-inline-control">
+                  <span class="mono">Transition</span>
+                  <select id="track-transition-select" class="select select-compact">
+                    <option value="cut" selected>Cut</option>
+                    <option value="dip">0.5s Black Dip</option>
+                  </select>
+                </label>
+              </div>
+            </div>
 
             <div class="well table-well">
               <table class="track-table" aria-label="Selected Tracks">
@@ -99,13 +127,14 @@
                   <tr>
                     <th class="col-start">Start</th>
                     <th class="col-title">Display Title</th>
+                    <th class="col-visual">Visual Layer</th>
                     <th class="col-len">Length</th>
                     <th class="col-actions">Order</th>
                   </tr>
                 </thead>
                 <tbody id="track-tbody">
                   <tr class="empty-row">
-                    <td colspan="4">No Tracks loaded. Upload .mp3 files or probe a local folder.</td>
+                    <td colspan="5">No Tracks loaded. Upload .mp3 files or probe a local folder.</td>
                   </tr>
                 </tbody>
               </table>
@@ -120,11 +149,23 @@
                 <div class="panel-title-wrap">
                   <span class="panel-index mono">02</span>
                   <h2 id="sec-bg">Background Visual</h2>
+                  <span class="badge-soft mono">Layer 0 · Mix Backdrop</span>
                 </div>
-                <div class="segmented" role="tablist" aria-label="Background Visual Source">
+                <div class="segmented" role="tablist" aria-label="Layer 0 Mix Backdrop Source">
                   <button type="button" class="seg-btn is-active" id="bg-mode-upload" role="tab" aria-selected="true">Upload File</button>
                   <button type="button" class="seg-btn" id="bg-mode-local" role="tab" aria-selected="false">Local Path</button>
                   <button type="button" class="seg-btn" id="bg-mode-visualizer" role="tab" aria-selected="false">Auto Visualizer</button>
+                  <button type="button" class="seg-btn" id="bg-mode-black" role="tab" aria-selected="false">Black (#000)</button>
+                </div>
+              </div>
+
+              <div id="bg-black-pane" class="source-pane" hidden>
+                <div class="well black-l0-card">
+                  <div class="black-l0-head">
+                    <span class="toggle-title">Pure <code class="mono">#000000</code> Mix Backdrop</span>
+                    <span class="badge-soft mono">Fastest Render</span>
+                  </div>
+                  <p class="field-hint">Renders solid pitch-black (<code class="mono">color=c=black</code>, 2 fps / 10 fps with overlays) underneath any <code class="mono">Art Card</code> or <code class="mono">L0 Only</code> Track Visuals.</p>
                 </div>
               </div>
 
@@ -311,6 +352,18 @@
             <video id="stage-video" class="stage-media" autoplay loop muted playsinline hidden></video>
             <canvas id="stage-canvas" class="stage-media" width="960" height="540" hidden></canvas>
 
+            <div class="stage-l1-fullscreen" id="stage-l1-fullscreen" hidden>
+              <img id="stage-l1-img" class="stage-media" alt="Track Visual fullscreen preview" hidden>
+              <video id="stage-l1-video" class="stage-media" autoplay loop muted playsinline hidden></video>
+            </div>
+
+            <div class="stage-l1-card-wrap" id="stage-l1-card-wrap" hidden>
+              <div class="stage-l1-card">
+                <img id="stage-l1-card-img" class="stage-l1-card-media" alt="Track Visual Art Card preview" hidden>
+                <video id="stage-l1-card-video" class="stage-l1-card-media" autoplay loop muted playsinline hidden></video>
+              </div>
+            </div>
+
             <div class="stage-fade-pill mono" id="stage-fade-pill" hidden></div>
 
             <div class="stage-overlay" id="stage-overlay" hidden>
@@ -361,7 +414,10 @@
                 <div class="panel-title-wrap">
                   <h2 id="sec-outputs">Output Targets &amp; CLI</h2>
                 </div>
-                <button type="button" class="btn btn-ghost btn-sm" id="copy-cli-btn">Copy CLI</button>
+                <div class="head-actions">
+                  <button type="button" class="btn btn-ghost btn-sm" id="download-manifest-btn" title="Download track_media_manifest.json for CLI --track-media">Download Manifest JSON</button>
+                  <button type="button" class="btn btn-ghost btn-sm" id="copy-cli-btn">Copy CLI</button>
+                </div>
               </div>
 
               <div class="control-block" id="out-dir-row">

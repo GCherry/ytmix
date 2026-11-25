@@ -19,13 +19,25 @@ import (
 )
 
 // Track represents a single discovered .mp3 audio file, its probed duration in seconds,
-// its optional trimmed ID3 title tag, and its resolved Display Title.
+// its optional trimmed ID3 title tag, its resolved Display Title, and optional embedded cover art metadata.
 type Track struct {
-	Path         string
-	FileName     string
-	Duration     float64
-	RawID3Title  string
-	DisplayTitle string
+	Path              string
+	FileName          string
+	Duration          float64
+	RawID3Title       string
+	DisplayTitle      string
+	HasEmbeddedArt    bool
+	EmbeddedArtWidth  int
+	EmbeddedArtHeight int
+	EmbeddedArtCodec  string
+}
+
+// EmbeddedArt describes the primary attached picture stream found inside an audio file.
+type EmbeddedArt struct {
+	HasArt bool
+	Width  int
+	Height int
+	Codec  string
 }
 
 // NamedTrackFile pairs a local .mp3 file path with its original display filename.
@@ -39,6 +51,36 @@ type ffprobeOutput struct {
 		Duration string            `json:"duration"`
 		Tags     map[string]string `json:"tags"`
 	} `json:"format"`
+}
+
+type ffprobeStreamsOutput struct {
+	Streams []struct {
+		Index       int    `json:"index"`
+		CodecType   string `json:"codec_type"`
+		CodecName   string `json:"codec_name"`
+		Width       int    `json:"width"`
+		Height      int    `json:"height"`
+		Disposition struct {
+			AttachedPic int `json:"attached_pic"`
+		} `json:"disposition"`
+	} `json:"streams"`
+}
+
+type sidecarCandidate struct {
+	ext  string
+	kind string
+}
+
+// sidecarPriorities defines deterministic extension precedence: video/animation formats first,
+// then lossless/lossy still image formats.
+var sidecarPriorities = []sidecarCandidate{
+	{ext: ".mp4", kind: "video"},
+	{ext: ".mov", kind: "video"},
+	{ext: ".gif", kind: "video"},
+	{ext: ".png", kind: "image"},
+	{ext: ".jpg", kind: "image"},
+	{ext: ".jpeg", kind: "image"},
+	{ext: ".webp", kind: "image"},
 }
 
 var leadingNumberPattern = regexp.MustCompile(`^\d+[\s._-]+`)
@@ -144,7 +186,44 @@ func ProbeFile(ctx context.Context, path string, runner func(ctx context.Context
 	if err != nil {
 		return 0, "", fmt.Errorf("ffprobe %q: %w", path, err)
 	}
+	return parseProbeFormat(out, path)
+}
 
+// ProbeFileWithArt runs a single ffprobe command on path to extract duration, ID3 title,
+// and attached picture stream metadata. Missing or empty streams arrays return zero EmbeddedArt.
+func ProbeFileWithArt(ctx context.Context, path string, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) (duration float64, id3Title string, art EmbeddedArt, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, "", EmbeddedArt{}, err
+	}
+	if runner == nil {
+		return 0, "", EmbeddedArt{}, errors.New("ffprobe runner is nil")
+	}
+	out, err := runner(
+		ctx,
+		"ffprobe",
+		"-v", "error",
+		"-show_entries", "format=duration:format_tags=title:stream=index,codec_type,codec_name,width,height:stream_disposition=attached_pic",
+		"-of", "json",
+		path,
+	)
+	if err != nil {
+		return 0, "", EmbeddedArt{}, fmt.Errorf("ffprobe %q: %w", path, err)
+	}
+	dur, title, err := parseProbeFormat(out, path)
+	if err != nil {
+		return 0, "", EmbeddedArt{}, err
+	}
+	art, err = parseEmbeddedArt(out, path)
+	if err != nil {
+		return 0, "", EmbeddedArt{}, err
+	}
+	return dur, title, art, nil
+}
+
+func parseProbeFormat(out []byte, path string) (duration float64, id3Title string, err error) {
 	var parsed ffprobeOutput
 	if err := json.Unmarshal(out, &parsed); err != nil {
 		return 0, "", fmt.Errorf("parse ffprobe JSON for %q: %w", path, err)
@@ -165,6 +244,126 @@ func ProbeFile(ctx context.Context, path string, runner func(ctx context.Context
 	return dur, id3Title, nil
 }
 
+func parseEmbeddedArt(out []byte, path string) (EmbeddedArt, error) {
+	var parsed ffprobeStreamsOutput
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		return EmbeddedArt{}, fmt.Errorf("parse ffprobe streams JSON for %q: %w", path, err)
+	}
+
+	for _, st := range parsed.Streams {
+		if strings.EqualFold(strings.TrimSpace(st.CodecType), "video") && st.Disposition.AttachedPic == 1 {
+			return EmbeddedArt{
+				HasArt: true,
+				Width:  max(st.Width, 0),
+				Height: max(st.Height, 0),
+				Codec:  strings.TrimSpace(st.CodecName),
+			}, nil
+		}
+	}
+	return EmbeddedArt{}, nil
+}
+
+// ProbeEmbeddedArt inspects streams in path and returns metadata for the first video stream
+// marked with disposition.attached_pic == 1. Missing or empty streams arrays return zero EmbeddedArt.
+func ProbeEmbeddedArt(ctx context.Context, path string, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) (EmbeddedArt, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return EmbeddedArt{}, err
+	}
+	if runner == nil {
+		return EmbeddedArt{}, errors.New("ffprobe runner is nil")
+	}
+
+	out, err := runner(
+		ctx,
+		"ffprobe",
+		"-v", "error",
+		"-show_entries", "stream=index,codec_type,codec_name,width,height:stream_disposition=attached_pic",
+		"-of", "json",
+		path,
+	)
+	if err != nil {
+		return EmbeddedArt{}, fmt.Errorf("ffprobe streams %q: %w", path, err)
+	}
+	return parseEmbeddedArt(out, path)
+}
+
+// DiscoverSidecarMedia searches the directory of trackPath for a matching <track_stem>.<ext>
+// visual file (case-insensitive extension) using deterministic priority order:
+// .mp4, .mov, .gif ("video"), then .png, .jpg, .jpeg, .webp ("image").
+func DiscoverSidecarMedia(trackPath string) (mediaPath string, kind string, ok bool) {
+	if strings.TrimSpace(trackPath) == "" {
+		return "", "", false
+	}
+	dir := filepath.Dir(trackPath)
+	base := filepath.Base(trackPath)
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	if stem == "" {
+		return "", "", false
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", "", false
+	}
+
+	for _, candidate := range sidecarPriorities {
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			name := entry.Name()
+			ext := filepath.Ext(name)
+			if strings.TrimSuffix(name, ext) != stem || !strings.EqualFold(ext, candidate.ext) {
+				continue
+			}
+			fullPath := filepath.Join(dir, name)
+			info, statErr := os.Stat(fullPath)
+			if statErr != nil || info.IsDir() {
+				continue
+			}
+			return fullPath, candidate.kind, true
+		}
+	}
+	return "", "", false
+}
+
+// ExtractEmbeddedArt extracts the first attached picture stream from trackPath to outPath via ffmpeg.
+func ExtractEmbeddedArt(ctx context.Context, trackPath, outPath string, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if runner == nil {
+		return errors.New("ffmpeg runner is nil")
+	}
+	if strings.TrimSpace(trackPath) == "" {
+		return errors.New("track file path is empty")
+	}
+	if strings.TrimSpace(outPath) == "" {
+		return errors.New("output art path is empty")
+	}
+
+	if _, err := runner(
+		ctx,
+		"ffmpeg",
+		"-y",
+		"-hide_banner",
+		"-loglevel", "error",
+		"-i", trackPath,
+		"-map", "0:v:0",
+		"-frames:v", "1",
+		outPath,
+	); err != nil {
+		return fmt.Errorf("extract embedded art from %q to %q: %w", trackPath, outPath, err)
+	}
+	return nil
+}
+
 // ProbeTracks discovers .mp3 files in audioDir and probes each Track's duration and Display Title concurrently.
 func ProbeTracks(ctx context.Context, audioDir string, shuffle bool, shuffleFn func(n int, swap func(i, j int)), runner func(ctx context.Context, name string, args ...string) ([]byte, error)) ([]Track, error) {
 	files, err := DiscoverAudioFiles(audioDir, shuffle, shuffleFn)
@@ -174,18 +373,47 @@ func ProbeTracks(ctx context.Context, audioDir string, shuffle bool, shuffleFn f
 	return ProbeTrackFiles(ctx, files, runner)
 }
 
+// ProbeTracksWithArt discovers .mp3 files in audioDir and probes each Track's duration, Display Title,
+// and embedded cover art metadata concurrently in a single ffprobe invocation per Track.
+func ProbeTracksWithArt(ctx context.Context, audioDir string, shuffle bool, shuffleFn func(n int, swap func(i, j int)), runner func(ctx context.Context, name string, args ...string) ([]byte, error)) ([]Track, error) {
+	files, err := DiscoverAudioFiles(audioDir, shuffle, shuffleFn)
+	if err != nil {
+		return nil, err
+	}
+	return ProbeTrackFilesWithArt(ctx, files, runner)
+}
+
 // ProbeTrackFiles probes an ordered list of .mp3 file paths without re-scanning or re-sorting a directory.
 func ProbeTrackFiles(ctx context.Context, files []string, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) ([]Track, error) {
+	return probeNamedTrackFiles(ctx, toNamedTrackFiles(files), false, runner)
+}
+
+// ProbeTrackFilesWithArt probes an ordered list of .mp3 file paths including embedded cover art metadata.
+func ProbeTrackFilesWithArt(ctx context.Context, files []string, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) ([]Track, error) {
+	return probeNamedTrackFiles(ctx, toNamedTrackFiles(files), true, runner)
+}
+
+func toNamedTrackFiles(files []string) []NamedTrackFile {
 	named := make([]NamedTrackFile, len(files))
 	for i, p := range files {
 		named[i] = NamedTrackFile{Path: p, FileName: filepath.Base(p)}
 	}
-	return ProbeNamedTrackFiles(ctx, named, runner)
+	return named
 }
 
 // ProbeNamedTrackFiles validates and probes an ordered list of .mp3 files concurrently using a bounded errgroup,
 // preserving input Track order and resolving Display Titles from FileName.
 func ProbeNamedTrackFiles(ctx context.Context, files []NamedTrackFile, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) ([]Track, error) {
+	return probeNamedTrackFiles(ctx, files, false, runner)
+}
+
+// ProbeNamedTrackFilesWithArt validates and probes an ordered list of .mp3 files concurrently,
+// including embedded cover art metadata, while preserving input Track order.
+func ProbeNamedTrackFilesWithArt(ctx context.Context, files []NamedTrackFile, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) ([]Track, error) {
+	return probeNamedTrackFiles(ctx, files, true, runner)
+}
+
+func probeNamedTrackFiles(ctx context.Context, files []NamedTrackFile, includeArt bool, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) ([]Track, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -209,7 +437,17 @@ func ProbeNamedTrackFiles(ctx context.Context, files []NamedTrackFile, runner fu
 	g.SetLimit(probeConcurrencyLimit())
 	for i, f := range files {
 		g.Go(func() error {
-			dur, id3Title, err := ProbeFile(gctx, f.Path, runner)
+			var (
+				dur      float64
+				id3Title string
+				art      EmbeddedArt
+				err      error
+			)
+			if includeArt {
+				dur, id3Title, art, err = ProbeFileWithArt(gctx, f.Path, runner)
+			} else {
+				dur, id3Title, err = ProbeFile(gctx, f.Path, runner)
+			}
 			if err != nil {
 				return err
 			}
@@ -218,11 +456,15 @@ func ProbeNamedTrackFiles(ctx context.Context, files []NamedTrackFile, runner fu
 				displaySource = filepath.Base(f.Path)
 			}
 			tracks[i] = Track{
-				Path:         f.Path,
-				FileName:     displaySource,
-				Duration:     dur,
-				RawID3Title:  strings.TrimSpace(id3Title),
-				DisplayTitle: ResolveDisplayTitle(id3Title, displaySource),
+				Path:              f.Path,
+				FileName:          displaySource,
+				Duration:          dur,
+				RawID3Title:       strings.TrimSpace(id3Title),
+				DisplayTitle:      ResolveDisplayTitle(id3Title, displaySource),
+				HasEmbeddedArt:    art.HasArt,
+				EmbeddedArtWidth:  art.Width,
+				EmbeddedArtHeight: art.Height,
+				EmbeddedArtCodec:  art.Codec,
 			}
 			return nil
 		})

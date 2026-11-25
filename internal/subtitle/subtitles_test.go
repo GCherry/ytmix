@@ -256,3 +256,124 @@ func TestBuildAndWriteASSWithOptions(t *testing.T) {
 		}
 	})
 }
+
+func TestBuildAndWriteSegmentASSWithOptions(t *testing.T) {
+	cases := []struct {
+		name          string
+		title         string
+		slotDuration  float64
+		opts          ASSOptions
+		wantStyle     string
+		wantDialogue  string
+		forbidPrimary string
+	}{
+		{
+			name:         "full slot duration when TitleDuration is 0",
+			title:        "Midnight Drift",
+			slotDuration: 125.5,
+			opts: ASSOptions{
+				TitleDuration: 0,
+				FontName:      "Inter",
+				DimTitles:     false,
+			},
+			wantStyle:     "Style: Default,Inter,42,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,1,1,60,60,55,1",
+			wantDialogue:  `Dialogue: 0,0:00:00.00,0:02:05.50,Default,,0,0,0,,{\fad(500,500)}♪ Midnight Drift`,
+			forbidPrimary: "&H789EB2AF",
+		},
+		{
+			name:         "clamped by TitleDuration when shorter than slotDuration",
+			title:        "Sunrise",
+			slotDuration: 180.0,
+			opts: ASSOptions{
+				TitleDuration: 10,
+				FontName:      "Roboto",
+			},
+			wantStyle:    "Style: Default,Roboto,42,&H00FFFFFF,",
+			wantDialogue: `Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,{\fad(500,500)}♪ Sunrise`,
+		},
+		{
+			name:         "clamped to slotDuration when TitleDuration exceeds slotDuration",
+			title:        "Short Interlude",
+			slotDuration: 6.5,
+			opts: ASSOptions{
+				TitleDuration: 15,
+				FontName:      "Roboto",
+			},
+			wantStyle:    "Style: Default,Roboto,42,&H00FFFFFF,",
+			wantDialogue: `Dialogue: 0,0:00:00.00,0:00:06.50,Default,,0,0,0,,{\fad(500,500)}♪ Short Interlude`,
+		},
+		{
+			name:         "DimTitles true with blank font and ASS special character escaping",
+			title:        "Dream {Mix} \\ Line1\r\nLine2",
+			slotDuration: 45.25,
+			opts: ASSOptions{
+				TitleDuration: 12,
+				FontName:      "  \n\t ",
+				DimTitles:     true,
+			},
+			wantStyle:     "Style: Default,Arial,42,&H789EB2AF,&H000000FF,&H90000000,&HB0000000,0,0,0,0,100,100,0,0,1,1,0,1,60,60,55,1",
+			wantDialogue:  `Dialogue: 0,0:00:00.00,0:00:12.00,Default,,0,0,0,,{\fad(500,500)}♪ Dream \{Mix\} \\ Line1 Line2`,
+			forbidPrimary: "&H00FFFFFF",
+		},
+		{
+			name:         "sanitizes commas and newlines in FontName",
+			title:        "Forest",
+			slotDuration: 20.0,
+			opts: ASSOptions{
+				FontName: "Inter, Bold\r\n",
+			},
+			wantStyle:    "Style: Default,Inter Bold,42,",
+			wantDialogue: `Dialogue: 0,0:00:00.00,0:00:20.00,Default,,0,0,0,,{\fad(500,500)}♪ Forest`,
+		},
+		{
+			name:         "clamps negative slotDuration cleanly to zero",
+			title:        "Zeroed",
+			slotDuration: -5.0,
+			opts: ASSOptions{
+				TitleDuration: 10,
+			},
+			wantStyle:    "Style: Default,Arial,42,",
+			wantDialogue: `Dialogue: 0,0:00:00.00,0:00:00.00,Default,,0,0,0,,{\fad(500,500)}♪ Zeroed`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run("BuildSegmentASSWithOptions/"+tc.name, func(t *testing.T) {
+			ass := BuildSegmentASSWithOptions(tc.title, tc.slotDuration, tc.opts)
+			if !strings.Contains(ass, tc.wantStyle) {
+				t.Errorf("ASS missing style %q\nfull ASS:\n%s", tc.wantStyle, ass)
+			}
+			if !strings.Contains(ass, tc.wantDialogue) {
+				t.Errorf("ASS missing dialogue %q\nfull ASS:\n%s", tc.wantDialogue, ass)
+			}
+			if tc.forbidPrimary != "" && strings.Contains(ass, tc.forbidPrimary) {
+				t.Errorf("ASS unexpectedly contained %q\nfull ASS:\n%s", tc.forbidPrimary, ass)
+			}
+			if gotCount := strings.Count(ass, "Dialogue: "); gotCount != 1 {
+				t.Errorf("expected exactly 1 Dialogue line, got %d:\n%s", gotCount, ass)
+			}
+		})
+
+		t.Run("WriteSegmentASSWithOptions/"+tc.name, func(t *testing.T) {
+			outPath := filepath.Join(t.TempDir(), "segment.ass")
+			if err := WriteSegmentASSWithOptions(outPath, tc.title, tc.slotDuration, tc.opts); err != nil {
+				t.Fatalf("WriteSegmentASSWithOptions failed: %v", err)
+			}
+			data, err := os.ReadFile(outPath)
+			if err != nil {
+				t.Fatalf("read written segment ASS: %v", err)
+			}
+			want := BuildSegmentASSWithOptions(tc.title, tc.slotDuration, tc.opts)
+			if string(data) != want {
+				t.Fatalf("written segment ASS differs from BuildSegmentASSWithOptions\ngot:\n%s\nwant:\n%s", string(data), want)
+			}
+		})
+	}
+
+	t.Run("WriteSegmentASSWithOptions returns wrapped error on write failure", func(t *testing.T) {
+		missingParent := filepath.Join(t.TempDir(), "missing", "segment.ass")
+		if err := WriteSegmentASSWithOptions(missingParent, "Alpha", 10.0, ASSOptions{}); err == nil {
+			t.Fatal("expected error writing to non-existent directory")
+		}
+	})
+}

@@ -47,3 +47,15 @@ One of four deterministic FFmpeg video encoding strategies selected from whether
 - **Path C (Low-FPS Still Image)**: Static image Background Visual encoded with `-loop 1 -tune stillimage` at `2 fps` (no overlays) or `10 fps` (with Title Overlays).
 - **Path D (Auto Visualizer)**: Omitted `--bg`; generates a 1080p music-reactive FFmpeg filtergraph (`30 fps`, hardware-accelerated with `libx264` fallback) or pure `#000000` sleep blackout screen (`2 fps` / `10 fps`, `-tune stillimage`) across 14 built-in presets, 7 Color Themes, and global Darkness & Sleep controls (`--visualizer-brightness`, `--fade-to-black`, `--dim-titles`).
 _Avoid_: Render mode, preset, profile
+
+**Mix Backdrop**:
+The continuous Layer 0 canvas spanning an entire Mix—configured as pure `#000000` black, a Background Visual image or looping video/GIF, or an Auto Visualizer—remaining visible behind `Art Card` overlays and during `L0 Only` Tracks.
+_Avoid_: Base canvas, fallback background, wallpaper
+
+**Track Visual**:
+An optional per-Track image, looping video/GIF, or embedded cover artwork attached to an individual Track (via manifest/UI override, sidecar file, or embedded ID3 picture) and composed on Layer 1 over the Mix Backdrop as `Fullscreen`, `Art Card`, or `L0 Only`.
+_Avoid_: Track image, clip cover, per-song background
+
+**Art Card**:
+A visual-only Layer 1 framing mode that centers a Track Visual as a framed card over the active Mix Backdrop without duplicating text, leaving burned-in Title Overlays as the single text source.
+_Avoid_: Album widget, info card, lower-third card

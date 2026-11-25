@@ -146,3 +146,21 @@ func WriteASS(path string, cues []TitleCue, totalDuration float64, titleDuration
 		FontName:      fontName,
 	})
 }
+
+// BuildSegmentASSWithOptions builds an ASS subtitle script for a single per-Track segment
+// whose cue starts at 0.0 and ends at slotDuration (clamped by opts.TitleDuration when > 0).
+func BuildSegmentASSWithOptions(title string, slotDuration float64, opts ASSOptions) string {
+	if math.IsNaN(slotDuration) || math.IsInf(slotDuration, 0) || slotDuration < 0 {
+		slotDuration = 0
+	}
+	return BuildASSWithOptions([]TitleCue{{Title: title, Start: 0.0}}, slotDuration, opts)
+}
+
+// WriteSegmentASSWithOptions generates a segment-local ASS subtitle script with opts and writes it to path.
+func WriteSegmentASSWithOptions(path string, title string, slotDuration float64, opts ASSOptions) error {
+	content := BuildSegmentASSWithOptions(title, slotDuration, opts)
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		return fmt.Errorf("write segment ASS subtitles to %q: %w", path, err)
+	}
+	return nil
+}

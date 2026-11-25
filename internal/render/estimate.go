@@ -59,6 +59,17 @@ type BackgroundEstimateInput struct {
 	PixFmt      string
 }
 
+// SegmentEstimateInput describes one Track segment's visual mode and duration for segmented Mix estimation.
+type SegmentEstimateInput struct {
+	SlotDurationSec float64
+	LayerMode       TrackLayerMode
+	MediaKind       BackgroundKind
+	OverlayTitles   bool
+	MediaFPS        float64
+	MediaWidth      int
+	MediaHeight     int
+}
+
 // EstimateInput describes the full Mix configuration for pre-render duration estimation.
 type EstimateInput struct {
 	Path           Path
@@ -72,6 +83,9 @@ type EstimateInput struct {
 	Visualizer     VisualizerConfig
 	CPUCores       int
 	BG             BackgroundEstimateInput
+	Segmented      bool
+	Layer0         Layer0Spec
+	Segments       []SegmentEstimateInput
 }
 
 // StageWeights captures the normalized share of overall pipeline wall time across Steps 2 and 5.
@@ -169,6 +183,123 @@ func visualizerComplexity(cfg VisualizerConfig) float64 {
 	return mult
 }
 
+func resolveSegmentedEstimateFPS(in EstimateInput) int {
+	items := make([]segmentedFPSItem, len(in.Segments))
+	for i, seg := range in.Segments {
+		items[i] = segmentedFPSItem{
+			OverlayTitles: seg.OverlayTitles,
+			LayerMode:     seg.LayerMode,
+			MediaKind:     seg.MediaKind,
+		}
+	}
+	return resolveUniformSegmentedFPS(in.Layer0, in.Layer0.BGKind, in.OverlayTitles, items)
+}
+
+func estimateSegmentedVideo(in EstimateInput, enc string, fCPU, mixDur float64, cal map[string]CalibrationEntry) (videoSec, videoWorkSec float64, calibrated bool) {
+	segments := in.Segments
+	if len(segments) == 0 {
+		segments = []SegmentEstimateInput{{
+			SlotDurationSec: mixDur,
+			LayerMode:       LayerBackdrop,
+			OverlayTitles:   in.OverlayTitles,
+		}}
+	}
+
+	uniformFPS := resolveSegmentedEstimateFPS(in)
+	l0Mode := normalizeLayer0Mode(in.Layer0.Mode)
+	res := Resolution1080p
+	if l0Mode == Layer0Visualizer || l0Mode == Layer0Black {
+		res = normalizeResolution(in.Layer0.Visualizer.Resolution)
+	}
+	vizCfg := in.Layer0.Visualizer
+	if strings.TrimSpace(vizCfg.Preset) == "" {
+		vizCfg.Preset = DefaultVisualizerPreset
+	}
+	l0VizPreset := strings.ToLower(strings.TrimSpace(vizCfg.Preset))
+	l0IsVideo := l0Mode == Layer0Media && in.Layer0.BGKind == BackgroundKindVideo
+	l0IsReactiveViz := l0Mode == Layer0Visualizer && l0VizPreset != "black"
+
+	var totalSegDur float64
+	allCalibrated := true
+	for _, seg := range segments {
+		dur := math.Max(0, seg.SlotDurationSec)
+		if dur == 0 {
+			continue
+		}
+		totalSegDur += dur
+
+		mode, err := ValidateTrackLayerMode(seg.LayerMode)
+		if err != nil {
+			mode = LayerBackdrop
+		}
+		usesLayer0 := mode == LayerArtCard || mode == LayerBackdrop
+		segUsesReactiveViz := usesLayer0 && l0IsReactiveViz
+		segUsesVideo := ((mode == LayerFullscreen || mode == LayerArtCard) && seg.MediaKind == BackgroundKindVideo) || (usesLayer0 && l0IsVideo)
+		cardCompositeMult := 1.0
+		if mode == LayerArtCard {
+			cardCompositeMult = 1.15
+		}
+
+		var segWork, segSpeed float64
+		var segCal bool
+
+		switch {
+		case segUsesReactiveViz:
+			priorD := clampSpeed(13.0*fCPU, 3.0, 35.0)
+			if enc == "h264_nvenc" || enc == "h264_videotoolbox" {
+				priorD = 15.0
+			}
+			segWork = dur * resolutionMultiplier(res) * visualizerComplexity(vizCfg) * cardCompositeMult
+			segSpeed, segCal = lookupCalibratedSpeed(cal, CalibrationKey(PathD, enc, res), priorD)
+
+		case segUsesVideo:
+			priorB := clampSpeed(12.0*fCPU, 3.0, 32.0)
+			if enc == "h264_nvenc" || enc == "h264_videotoolbox" {
+				priorB = 14.0
+			}
+			fpsScale := float64(uniformFPS) / 30.0
+			if seg.MediaFPS > 30.0 {
+				fpsScale = seg.MediaFPS / 30.0
+			}
+			segWork = dur * fpsScale * cardCompositeMult
+			segSpeed, segCal = lookupCalibratedSpeed(cal, CalibrationKey(PathB, enc, res), priorB)
+
+		case uniformFPS == 30:
+			// Static image or black encoded at uniform 30fps because another segment uses video/visualizer.
+			prior30 := clampSpeed(30.0*fCPU, 8.0, 80.0)
+			if enc == "h264_nvenc" || enc == "h264_videotoolbox" {
+				prior30 = 32.0
+			}
+			segWork = dur * resolutionMultiplier(res) * cardCompositeMult
+			segSpeed, segCal = lookupCalibratedSpeed(cal, CalibrationKey(PathB, enc, res), prior30)
+
+		case uniformFPS == 10:
+			priorC := clampSpeed(36.0*fCPU, 10.0, 90.0)
+			segWork = dur * math.Sqrt(resolutionMultiplier(res)) * cardCompositeMult
+			segSpeed, segCal = lookupCalibratedSpeed(cal, CalibrationKey(PathC, "libx264", "10fps"), priorC)
+
+		default:
+			priorC := clampSpeed(95.0*fCPU, 25.0, 220.0)
+			segWork = dur * math.Sqrt(resolutionMultiplier(res)) * cardCompositeMult
+			segSpeed, segCal = lookupCalibratedSpeed(cal, CalibrationKey(PathC, "libx264", "2fps"), priorC)
+		}
+
+		videoWorkSec += segWork
+		videoSec += 0.08 + segWork/segSpeed
+		if !segCal {
+			allCalibrated = false
+		}
+	}
+
+	if totalSegDur <= 0 {
+		allCalibrated = false
+	}
+	// Stream-copy concat mux with merged_audio.m4a.
+	concatSpeed, _ := lookupCalibratedSpeed(cal, CalibrationKey(PathA, "mux", Resolution1080p), 500.0)
+	videoSec += 0.15 + max(mixDur, totalSegDur)/concatSpeed
+	return videoSec, videoWorkSec, allCalibrated
+}
+
 // EstimateMix computes a pre-render wall-time breakdown and confidence range across Step 2 and Step 5.
 func EstimateMix(in EstimateInput, cal map[string]CalibrationEntry) MixEstimate {
 	mixDur := math.Max(0, in.MixDurationSec)
@@ -201,90 +332,97 @@ func EstimateMix(in EstimateInput, cal map[string]CalibrationEntry) MixEstimate 
 	mergeSec := 0.25 + mixDur/mergeSpeed
 	audioSec := normSec + mergeSec
 
-	loopFPS := in.BG.FPS
-	if (in.Path == PathA || in.Path == PathB) && loopFPS <= 0 {
-		loopFPS = 30.0
-	}
-	loopDur := in.BG.DurationSec
+	var loopFPS, loopDur float64
 	var loopCycles int
-	if (in.Path == PathA || in.Path == PathB) && loopDur > 0 && mixDur > 0 {
-		loopCycles = int(math.Ceil(mixDur / loopDur))
+	if !in.Segmented {
+		loopFPS = in.BG.FPS
+		if (in.Path == PathA || in.Path == PathB) && loopFPS <= 0 {
+			loopFPS = 30.0
+		}
+		loopDur = in.BG.DurationSec
+		if (in.Path == PathA || in.Path == PathB) && loopDur > 0 && mixDur > 0 {
+			loopCycles = int(math.Ceil(mixDur / loopDur))
+		}
 	}
 
 	var videoSec, videoWorkSec, pathANormSec, pathANormWorkSec, pathAMuxSec float64
 	var videoCalibrated bool
 
-	switch in.Path {
-	case PathA:
-		effectiveLoop := loopDur
-		unknownLoopDur := effectiveLoop <= 0
-		if unknownLoopDur {
-			effectiveLoop = 10.0
-		}
-		decodePenalty := 1.0
-		if in.BG.Width*in.BG.Height >= 3840*2160 {
-			decodePenalty = 1.45
-		}
-		normWork := effectiveLoop * math.Pow(loopFPS/30.0, 0.5) * decodePenalty
-		if !unknownLoopDur {
-			pathANormWorkSec = normWork
-		}
-		priorNormLoop := clampSpeed(7.5*fCPU, 2.5, 20.0)
-		normLoopSpeed, calNorm := lookupCalibratedSpeed(cal, CalibrationKey(PathA, "norm_loop", Resolution1080p), priorNormLoop)
-		pathANormSec = 0.20 + normWork/normLoopSpeed
+	if in.Segmented {
+		videoSec, videoWorkSec, videoCalibrated = estimateSegmentedVideo(in, enc, fCPU, mixDur, cal)
+	} else {
+		switch in.Path {
+		case PathA:
+			effectiveLoop := loopDur
+			unknownLoopDur := effectiveLoop <= 0
+			if unknownLoopDur {
+				effectiveLoop = 10.0
+			}
+			decodePenalty := 1.0
+			if in.BG.Width*in.BG.Height >= 3840*2160 {
+				decodePenalty = 1.45
+			}
+			normWork := effectiveLoop * math.Pow(loopFPS/30.0, 0.5) * decodePenalty
+			if !unknownLoopDur {
+				pathANormWorkSec = normWork
+			}
+			priorNormLoop := clampSpeed(7.5*fCPU, 2.5, 20.0)
+			normLoopSpeed, calNorm := lookupCalibratedSpeed(cal, CalibrationKey(PathA, "norm_loop", Resolution1080p), priorNormLoop)
+			pathANormSec = 0.20 + normWork/normLoopSpeed
 
-		priorMux := 500.0
-		muxSpeed, calMux := lookupCalibratedSpeed(cal, CalibrationKey(PathA, "mux", Resolution1080p), priorMux)
-		pathAMuxSec = 0.15 + mixDur/muxSpeed
-		videoSec = pathANormSec + pathAMuxSec
-		videoWorkSec = mixDur
-		videoCalibrated = calNorm && calMux && !unknownLoopDur
-	case PathB:
-		priorB := clampSpeed(12.0*fCPU, 3.0, 32.0)
-		if enc == "h264_nvenc" || enc == "h264_videotoolbox" {
-			priorB = 14.0
-		}
-		videoWorkSec = mixDur * (loopFPS / 30.0)
-		speedB, calB := lookupCalibratedSpeed(cal, CalibrationKey(PathB, enc, Resolution1080p), priorB)
-		videoSec = 0.30 + videoWorkSec/speedB
-		videoCalibrated = calB
-	case PathC:
-		priorC := clampSpeed(95.0*fCPU, 25.0, 220.0)
-		resTag := "2fps"
-		if in.OverlayTitles {
-			priorC = clampSpeed(36.0*fCPU, 10.0, 90.0)
-			resTag = "10fps"
-		}
-		videoWorkSec = mixDur
-		speedC, calC := lookupCalibratedSpeed(cal, CalibrationKey(PathC, "libx264", resTag), priorC)
-		videoSec = 0.25 + videoWorkSec/speedC
-		videoCalibrated = calC
-	case PathD:
-		preset := strings.ToLower(strings.TrimSpace(in.Visualizer.Preset))
-		if preset == "" {
-			preset = DefaultVisualizerPreset
-		}
-		res := normalizeResolution(in.Visualizer.Resolution)
-		if preset == "black" {
-			priorBlack := clampSpeed(140.0*fCPU, 40.0, 300.0)
-			blackEncKey := "black-2fps"
-			if in.OverlayTitles {
-				priorBlack = clampSpeed(45.0*fCPU, 15.0, 120.0)
-				blackEncKey = "black-10fps"
-			}
-			videoWorkSec = mixDur * math.Sqrt(resolutionMultiplier(res))
-			speedBlack, calBlack := lookupCalibratedSpeed(cal, CalibrationKey(PathD, blackEncKey, res), priorBlack)
-			videoSec = 0.25 + videoWorkSec/speedBlack
-			videoCalibrated = calBlack
-		} else {
-			priorD := clampSpeed(13.0*fCPU, 3.0, 35.0)
+			priorMux := 500.0
+			muxSpeed, calMux := lookupCalibratedSpeed(cal, CalibrationKey(PathA, "mux", Resolution1080p), priorMux)
+			pathAMuxSec = 0.15 + mixDur/muxSpeed
+			videoSec = pathANormSec + pathAMuxSec
+			videoWorkSec = mixDur
+			videoCalibrated = calNorm && calMux && !unknownLoopDur
+		case PathB:
+			priorB := clampSpeed(12.0*fCPU, 3.0, 32.0)
 			if enc == "h264_nvenc" || enc == "h264_videotoolbox" {
-				priorD = 15.0
+				priorB = 14.0
 			}
-			videoWorkSec = mixDur * resolutionMultiplier(res) * visualizerComplexity(in.Visualizer)
-			speedD, calD := lookupCalibratedSpeed(cal, CalibrationKey(PathD, enc, res), priorD)
-			videoSec = 0.35 + videoWorkSec/speedD
-			videoCalibrated = calD
+			videoWorkSec = mixDur * (loopFPS / 30.0)
+			speedB, calB := lookupCalibratedSpeed(cal, CalibrationKey(PathB, enc, Resolution1080p), priorB)
+			videoSec = 0.30 + videoWorkSec/speedB
+			videoCalibrated = calB
+		case PathC:
+			priorC := clampSpeed(95.0*fCPU, 25.0, 220.0)
+			resTag := "2fps"
+			if in.OverlayTitles {
+				priorC = clampSpeed(36.0*fCPU, 10.0, 90.0)
+				resTag = "10fps"
+			}
+			videoWorkSec = mixDur
+			speedC, calC := lookupCalibratedSpeed(cal, CalibrationKey(PathC, "libx264", resTag), priorC)
+			videoSec = 0.25 + videoWorkSec/speedC
+			videoCalibrated = calC
+		case PathD:
+			preset := strings.ToLower(strings.TrimSpace(in.Visualizer.Preset))
+			if preset == "" {
+				preset = DefaultVisualizerPreset
+			}
+			res := normalizeResolution(in.Visualizer.Resolution)
+			if preset == "black" {
+				priorBlack := clampSpeed(140.0*fCPU, 40.0, 300.0)
+				blackEncKey := "black-2fps"
+				if in.OverlayTitles {
+					priorBlack = clampSpeed(45.0*fCPU, 15.0, 120.0)
+					blackEncKey = "black-10fps"
+				}
+				videoWorkSec = mixDur * math.Sqrt(resolutionMultiplier(res))
+				speedBlack, calBlack := lookupCalibratedSpeed(cal, CalibrationKey(PathD, blackEncKey, res), priorBlack)
+				videoSec = 0.25 + videoWorkSec/speedBlack
+				videoCalibrated = calBlack
+			} else {
+				priorD := clampSpeed(13.0*fCPU, 3.0, 35.0)
+				if enc == "h264_nvenc" || enc == "h264_videotoolbox" {
+					priorD = 15.0
+				}
+				videoWorkSec = mixDur * resolutionMultiplier(res) * visualizerComplexity(in.Visualizer)
+				speedD, calD := lookupCalibratedSpeed(cal, CalibrationKey(PathD, enc, res), priorD)
+				videoSec = 0.35 + videoWorkSec/speedD
+				videoCalibrated = calD
+			}
 		}
 	}
 
@@ -304,7 +442,7 @@ func EstimateMix(in EstimateInput, cal map[string]CalibrationEntry) MixEstimate 
 		weights.Audio = audioSec / denom
 		weights.Video = videoSec / denom
 	}
-	if in.Path == PathA && videoSec > 0 {
+	if !in.Segmented && in.Path == PathA && videoSec > 0 {
 		weights.PathANormSub = clampSpeed(pathANormSec/videoSec, 0.06, 0.94)
 	}
 
