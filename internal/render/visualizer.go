@@ -778,3 +778,124 @@ func BuildPathDArgs(mergedAudioPath, assPath, outPath string, overlayTitles bool
 	args = append(args, "-movflags", "+faststart", "-c:a", "copy", "-shortest", outPath)
 	return args, nil
 }
+
+// PreviewOptions configures single-frame PNG preview generation for Path D Auto Visualizer presets.
+type PreviewOptions struct {
+	AudioInput    string
+	IsLavfi       bool
+	ASSPath       string
+	OutPNGPath    string
+	OverlayTitles bool
+	OffsetSec     float64
+	TotalDuration float64
+	Config        VisualizerConfig
+}
+
+// BuildPathDPreviewArgs constructs the FFmpeg CLI arguments to render a single PNG preview frame
+// for a Path D Auto Visualizer preset from either a real audio file or a lavfi synthetic audio source.
+func BuildPathDPreviewArgs(opts PreviewOptions) ([]string, error) {
+	if math.IsNaN(opts.OffsetSec) || math.IsInf(opts.OffsetSec, 0) || opts.OffsetSec < 0 {
+		return nil, fmt.Errorf("preview offsetSec must be finite and >= 0 (got %v)", opts.OffsetSec)
+	}
+	if math.IsNaN(opts.TotalDuration) || math.IsInf(opts.TotalDuration, 0) || opts.TotalDuration < 0 {
+		return nil, fmt.Errorf("preview totalDuration must be finite and >= 0 (got %v)", opts.TotalDuration)
+	}
+	if strings.TrimSpace(opts.OutPNGPath) == "" {
+		return nil, errors.New("output PNG path is required")
+	}
+	if opts.OverlayTitles && strings.TrimSpace(opts.ASSPath) == "" {
+		return nil, errors.New("titles.ass path is required when --overlay-titles is enabled")
+	}
+	normCfg, err := ValidateVisualizerConfig(opts.Config)
+	if err != nil {
+		return nil, err
+	}
+
+	if normCfg.Preset == "black" {
+		res := resolveResolutionOrDefault(normCfg.Resolution)
+		var vfParts []string
+		if opts.OverlayTitles {
+			vfParts = append(vfParts, fmt.Sprintf("subtitles='%s'", EscapeFFmpegFilterPath(opts.ASSPath)))
+		}
+		if fade := BuildPathDFadeFilter(normCfg.FadeToBlack, opts.TotalDuration); fade != "" {
+			vfParts = append(vfParts, fade)
+		}
+		vfParts = append(vfParts, "format=yuv420p")
+
+		args := []string{
+			"-y", "-hide_banner", "-loglevel", "error",
+			"-f", "lavfi",
+			"-i", fmt.Sprintf("color=c=black:s=%dx%d:r=10", res.Width, res.Height),
+			"-vf", strings.Join(vfParts, ","),
+		}
+		if opts.OffsetSec > 0 {
+			args = append(args, "-ss", formatFFmpegSeconds(opts.OffsetSec))
+		}
+		args = append(args, "-frames:v", "1", opts.OutPNGPath)
+		return args, nil
+	}
+
+	if strings.TrimSpace(opts.AudioInput) == "" {
+		return nil, errors.New("audio input is required")
+	}
+
+	if opts.IsLavfi {
+		fc, err := BuildPathDFilterComplex(opts.ASSPath, opts.OverlayTitles, opts.TotalDuration, normCfg)
+		if err != nil {
+			return nil, err
+		}
+		args := []string{
+			"-y", "-hide_banner", "-loglevel", "error",
+			"-f", "lavfi",
+			"-i", opts.AudioInput,
+			"-filter_complex", fc,
+			"-map", "[vout]",
+		}
+		if opts.OffsetSec > 0 {
+			args = append(args, "-ss", formatFFmpegSeconds(opts.OffsetSec))
+		}
+		args = append(args, "-frames:v", "1", opts.OutPNGPath)
+		return args, nil
+	}
+
+	// For real audio files, cap pre-input seek to keep a 2s filtergraph window so audio-reactive
+	// trails, {\fad(500,500)} Title Overlays, and FadeToBlack evaluate accurately at OffsetSec.
+	preSeek := math.Max(0, opts.OffsetSec-2.0)
+	outSeek := opts.OffsetSec - preSeek
+	adjTotal := opts.TotalDuration
+	if preSeek > 0 {
+		fadeOriginallyEnabled := normCfg.FadeToBlack > 0 && (opts.TotalDuration == 0 || normCfg.FadeToBlack.Seconds() < opts.TotalDuration)
+		if adjTotal > 0 {
+			adjTotal -= preSeek
+		}
+		preDur := time.Duration(math.Round(preSeek * float64(time.Second)))
+		if fadeOriginallyEnabled {
+			if normCfg.FadeToBlack > preDur {
+				normCfg.FadeToBlack -= preDur
+			} else {
+				normCfg.FadeToBlack = 10 * time.Millisecond
+				if adjTotal < outSeek+1.0 {
+					adjTotal = outSeek + 1.0
+				}
+			}
+		} else if normCfg.FadeToBlack > preDur {
+			normCfg.FadeToBlack -= preDur
+		}
+	}
+
+	fc, err := BuildPathDFilterComplex(opts.ASSPath, opts.OverlayTitles, adjTotal, normCfg)
+	if err != nil {
+		return nil, err
+	}
+
+	args := []string{"-y", "-hide_banner", "-loglevel", "error"}
+	if preSeek > 0 {
+		args = append(args, "-ss", formatFFmpegSeconds(preSeek))
+	}
+	args = append(args, "-i", opts.AudioInput, "-filter_complex", fc, "-map", "[vout]")
+	if outSeek > 0 {
+		args = append(args, "-ss", formatFFmpegSeconds(outSeek))
+	}
+	args = append(args, "-frames:v", "1", opts.OutPNGPath)
+	return args, nil
+}

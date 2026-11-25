@@ -438,7 +438,7 @@ func TestRunMCPServer(t *testing.T) {
 			t.Fatalf("stdout line %d is not valid JSON: %q", i, line)
 		}
 	}
-	for _, toolName := range []string{"get_capabilities", "inspect_background", "inspect_tracks"} {
+	for _, toolName := range []string{"get_capabilities", "inspect_background", "inspect_tracks", "plan_mix", "preview_visualizer_frame"} {
 		if !strings.Contains(lines[1], `"`+toolName+`"`) {
 			t.Fatalf("tools/list missing %s: %s", toolName, lines[1])
 		}
