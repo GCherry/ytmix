@@ -798,9 +798,25 @@ func (s *Server) ensureSessionTrackExtractedArt(ctx context.Context, sessionID, 
 		ext = ".png"
 	}
 	artPath := filepath.Join(tempDir, fmt.Sprintf("id3_art_%s%s", trackID, ext))
-	if err := probe.ExtractEmbeddedArt(ctx, tr.Path, artPath, s.cfg.Runner); err != nil {
+	tmpFile, err := os.CreateTemp(tempDir, fmt.Sprintf("id3_tmp_%s_*%s", trackID, ext))
+	if err != nil {
+		return "", "", fmt.Errorf("create temp file for ID3 artwork: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	_ = tmpFile.Close()
+	keepTmp := false
+	defer func() {
+		if !keepTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := probe.ExtractEmbeddedArt(ctx, tr.Path, tmpPath, s.cfg.Runner); err != nil {
 		return "", "", err
 	}
+	if err := os.Rename(tmpPath, artPath); err != nil {
+		return "", "", fmt.Errorf("finalize ID3 artwork %q: %w", artPath, err)
+	}
+	keepTmp = true
 	s.store.setSessionExtractedArtPath(sessionID, trackID, artPath)
 	return tempDir, artPath, nil
 }

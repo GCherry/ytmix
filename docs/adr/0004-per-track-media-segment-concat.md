@@ -7,7 +7,7 @@ When per-Track visual attachments are enabled (`--track-media auto`, `--track-me
 ## Considered Options
 
 - **Engine Option A (Per-Track Segment Render + `concat -c:v copy`) vs. Monolithic `filter_complex` vs. Pure-Go `-f rawvideo` Pipe:**
-  - A single `filter_complex` chaining `N` Track media inputs, `scale`/`pad`/`overlay`, `subtitles=`, and video `concat` keeps every Track decoder open simultaneously, hits Windows/shell command-line limits on large playlists, and runs as one serial encode without per-Track parallelism.
+  - A single `filter_complex` chaining `N` Track media inputs, `scale`/`pad`/`overlay`, `subtitles=`, and video `concat` keeps every Track decoder open simultaneously, hits Windows/shell command-line limits on large Mixes, and runs as one serial encode without per-Track parallelism.
   - Piping raw frames from Go via `ffmpeg -f rawvideo` would require pure-Go image/video decoding, scaling, alpha compositing, and subtitle rasterization—violating `ytmix`'s minimal-dependency policy (`go.mod` strict `depguard` allowlist, zero CGo) and saturating memory bandwidth at 1080p30+.
   - **Engine Option A** (`internal/render/segments.go`) slices the Mix into each Track's exact slot (`Duration_i - Crossfade`, with the final Track keeping `Duration_n`), renders segments concurrently via bounded `golang.org/x/sync/errgroup` workers (`min(max(GOMAXPROCS/2, 1), 4)`), writes `seg_concat.txt`, and executes `ffmpeg -f concat -safe 0 -i seg_concat.txt -i merged_audio.m4a -map 0:v:0 -map 1:a:0 -c:v copy -c:a copy -movflags +faststart`.
 - **Uniform FPS & Stream Parameters vs. Mixed Frame Rates Across Segments:**
