@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"flag"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -366,4 +368,80 @@ func TestParseUIFlags(t *testing.T) {
 			t.Fatal("expected error for empty host")
 		}
 	})
+}
+
+func TestParseMCPFlags(t *testing.T) {
+	if !IsMCPSubcommand([]string{"mcp"}) || !IsMCPSubcommand([]string{"mcp", "--help"}) {
+		t.Fatal("expected IsMCPSubcommand to return true for mcp subcommand")
+	}
+	if IsMCPSubcommand(nil) || IsMCPSubcommand([]string{"ui"}) || IsMCPSubcommand([]string{"--bg", "cover.png"}) {
+		t.Fatal("expected IsMCPSubcommand to return false for non-mcp args")
+	}
+
+	if err := ParseMCPFlags(nil); err != nil {
+		t.Fatalf("unexpected ParseMCPFlags(nil) error: %v", err)
+	}
+	if err := ParseMCPFlags([]string{"--help"}); !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("expected flag.ErrHelp for --help, got: %v", err)
+	}
+	if err := ParseMCPFlags([]string{"--unknown"}); err == nil {
+		t.Fatal("expected error for unknown flag")
+	}
+	if err := ParseMCPFlags([]string{"extra"}); err == nil {
+		t.Fatal("expected error for unexpected positional argument")
+	}
+
+	var helpOut bytes.Buffer
+	fs := NewMCPFlagSet(&helpOut)
+	fs.Usage()
+	if !strings.Contains(helpOut.String(), "ytmix mcp") {
+		t.Fatalf("expected mcp usage text, got: %q", helpOut.String())
+	}
+}
+
+func TestRunMCPServer(t *testing.T) {
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_capabilities","arguments":{}}}`,
+	}, "\n") + "\n"
+
+	var out, errOut bytes.Buffer
+	err := runMCPServer(
+		context.Background(),
+		strings.NewReader(input),
+		&out,
+		&errOut,
+		func(bin string) (string, error) { return "/usr/bin/" + bin, nil },
+		func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			if strings.Contains(strings.Join(args, " "), "-filters") {
+				return []byte(" .. color |->V c\n .. showfreqs A->V f\n TS gblur V->V b\n"), nil
+			}
+			return nil, errors.New("no hwaccel")
+		},
+		"linux",
+	)
+	if err != nil {
+		t.Fatalf("runMCPServer error: %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("expected zero stderr bytes, got %q", errOut.String())
+	}
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 JSON lines on stdout, got %d:\n%s", len(lines), out.String())
+	}
+	for i, line := range lines {
+		if !json.Valid([]byte(line)) {
+			t.Fatalf("stdout line %d is not valid JSON: %q", i, line)
+		}
+	}
+	if !strings.Contains(lines[1], `"get_capabilities"`) {
+		t.Fatalf("tools/list missing get_capabilities: %s", lines[1])
+	}
+	if !strings.Contains(lines[2], `"libx264"`) || !strings.Contains(lines[2], `"studio-mint"`) {
+		t.Fatalf("get_capabilities response missing expected fields: %s", lines[2])
+	}
 }
