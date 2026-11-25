@@ -17,10 +17,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/GCherry/ytmix/internal/mcp"
 	"github.com/GCherry/ytmix/internal/mixer"
 	"github.com/GCherry/ytmix/internal/render"
 	"github.com/GCherry/ytmix/internal/ui"
 )
+
+var version = "0.1.0"
 
 type stringSliceFlag []string
 
@@ -86,6 +89,35 @@ func ParseUIFlags(args []string) (UIConfig, error) {
 		return UIConfig{}, fmt.Errorf("--port must be between 0 and 65535 (got %d)", cfg.Port)
 	}
 	return cfg, nil
+}
+
+// IsMCPSubcommand reports whether args invoke the `mcp` subcommand.
+func IsMCPSubcommand(args []string) bool {
+	return len(args) > 0 && args[0] == "mcp"
+}
+
+// NewMCPFlagSet configures the CLI flag definitions for `ytmix mcp`.
+func NewMCPFlagSet(output io.Writer) *flag.FlagSet {
+	fs := flag.NewFlagSet("ytmix mcp", flag.ContinueOnError)
+	fs.SetOutput(output)
+	fs.Usage = func() {
+		fmt.Fprintln(output, "Usage: ytmix mcp")
+		fmt.Fprintln(output, "Run ytmix as a stdio Model Context Protocol (MCP) JSON-RPC 2.0 server.")
+		fs.PrintDefaults()
+	}
+	return fs
+}
+
+// ParseMCPFlags parses `ytmix mcp` subcommand arguments.
+func ParseMCPFlags(args []string) error {
+	fs := NewMCPFlagSet(io.Discard)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	return nil
 }
 
 // CLIOptions holds auxiliary CLI mode flags outside mixer.Config.
@@ -262,6 +294,23 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if IsMCPSubcommand(os.Args[1:]) {
+		if err := ParseMCPFlags(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				fs := NewMCPFlagSet(os.Stderr)
+				fs.Usage()
+				os.Exit(0)
+			}
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(2)
+		}
+		if err := runMCPServer(ctx, os.Stdin, os.Stdout, os.Stderr, exec.LookPath, mixer.ExecCommandRunner, runtime.GOOS); err != nil && !errors.Is(err, context.Canceled) {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if IsUISubcommand(os.Args[1:]) {
 		uiCfg, err := ParseUIFlags(os.Args[2:])
 		if err != nil {
@@ -408,4 +457,30 @@ func openBrowserBestEffort(ctx context.Context, url string) {
 		cmd = exec.CommandContext(ctx, "xdg-open", url)
 	}
 	_ = cmd.Start()
+}
+
+func runMCPServer(
+	ctx context.Context,
+	in io.Reader,
+	out io.Writer,
+	errOut io.Writer,
+	lookPath func(string) (string, error),
+	runner mcp.CommandRunner,
+	goos string,
+) error {
+	srv := mcp.NewServer(mcp.ServerConfig{
+		In:     in,
+		Out:    out,
+		ErrOut: errOut,
+		Info: mcp.ServerInfo{
+			Name:    "ytmix",
+			Version: version,
+		},
+	})
+	mcp.RegisterCapabilitiesTool(srv.Registry, mcp.CapabilitiesDeps{
+		LookPath: lookPath,
+		Runner:   runner,
+		GOOS:     goos,
+	})
+	return srv.Serve(ctx)
 }

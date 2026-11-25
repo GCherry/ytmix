@@ -15,6 +15,7 @@
 - **Optional EBU R128 Loudness Normalization:** Normalizes each Track to YouTube's `-14 LUFS` target (`loudnorm=I=-14:TP=-1.5:LRA=11`).
 - **Burned-In `.ass` Title Overlays:** Generates Advanced SubStation Alpha (`titles.ass`) subtitles with 500ms fade-in/out tags (`\fad(500,500)`) instead of fragile FFmpeg `drawtext` chains.
 - **Embedded Web & Mobile Studio (`ytmix ui`):** Serves the Editorial Mix Studio UI directly from the single Go binary via `net/http` + `embed.FS` + Server-Sent Events (`text/event-stream`), supporting drag-and-drop MP3/Background Visual uploads, live Track reordering, **Auto Visualizer** mode (category filter chips, 6-card 3×2 pager with `◀`/`▶` navigation, 7 Color Themes, 60fps `<canvas>` preview, **Audition Selected Track** via Web Audio `AnalyserNode`, and **Test 3s Fade**), LAN-safe visualizer rendering, and real-time 5-step telemetry.
+- **MCP Stdio Server (`ytmix mcp`):** Exposes a pure Go standard-library Model Context Protocol server over newline-delimited JSON-RPC 2.0 `stdio` (`2025-06-18` / `2025-03-26` / `2024-11-05`) so AI assistants (Antigravity, Claude Desktop, Cursor) can inspect host FFmpeg/FFprobe availability, detected H.264 encoders, all 14 Path D Auto Visualizer presets, 7 Color Themes, and 3 output resolutions via `get_capabilities`.
 
 ## Prerequisites
 
@@ -66,6 +67,9 @@ go build -o ytmix.exe ./cmd/ytmix
 
 # Expose the studio on your LAN for mobile uploads & Path D Auto Visualizer renders (restricts local filesystem paths)
 ./ytmix ui --host 0.0.0.0 --port 8080 --no-open
+
+# Run ytmix as a stdio Model Context Protocol (MCP) JSON-RPC 2.0 server
+./ytmix mcp
 ```
 
 ## Path D Visualizer Presets & Themes
@@ -89,6 +93,27 @@ Run `./ytmix --list-visualizers` to inspect live FFmpeg filter availability on y
 | `--out` | `string` | `output.mp4` | Default output `.mp4` filename prefilled in the UI. |
 | `--timestamps` | `string` | `timestamps.txt` | Default Chapter Timestamps filename prefilled in the UI. |
 | `--allow-dir` | `[]string` | `""` | Additional local directory allowed for loopback UI browsing and output (repeatable). |
+
+## MCP Server Subcommand (`ytmix mcp`)
+
+`ytmix mcp` runs a newline-delimited JSON-RPC 2.0 MCP server over `stdin`/`stdout` (with all diagnostics strictly on `stderr` so `stdout` never contains non-JSON output).
+
+- **Supported MCP Methods:** `initialize` (`2025-06-18`, `2025-03-26`, `2024-11-05`), `notifications/initialized`, `ping`, `tools/list`, `tools/call`, `resources/list`, `resources/read`, `prompts/list`, and `prompts/get`.
+- **Registered Tools:**
+  - `get_capabilities` *(read-only, idempotent)* — probes `ffmpeg` and `ffprobe` availability, detected H.264 encoder (`h264_videotoolbox`, `h264_nvenc`, or `libx264` fallback) and Path D encoder info, all 14 Path D Auto Visualizer presets with live filter availability, 7 Color Themes, 3 output resolutions (`1080p`, `1440p`, `4k`), supported Background Visual extensions, and host `GOOS`.
+
+Example MCP client configuration (`mcpServers`):
+
+```json
+{
+  "mcpServers": {
+    "ytmix": {
+      "command": "ytmix",
+      "args": ["mcp"]
+    }
+  }
+}
+```
 
 ## CLI Flags
 
