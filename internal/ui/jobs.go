@@ -11,9 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/GCherry/ytmix/internal/mixer"
+	"github.com/GCherry/ytmix/internal/render"
 )
 
 const (
@@ -21,12 +23,29 @@ const (
 	defaultMaxSessions = 10
 )
 
+type sessionTrackMedia struct {
+	source           string
+	filePath         string
+	mediaKind        render.BackgroundKind
+	mediaName        string
+	layerMode        render.TrackLayerMode
+	explicitEmpty    bool
+	extractedArtPath string
+
+	sidecarPath        string
+	sidecarName        string
+	sidecarKind        render.BackgroundKind
+	defaultMediaSource string
+	defaultLayerMode   render.TrackLayerMode
+}
+
 type sessionState struct {
-	id      string
-	source  string
-	tempDir string
-	tracks  map[string]mixer.Track
-	order   []string
+	id         string
+	source     string
+	tempDir    string
+	tracks     map[string]mixer.Track
+	trackMedia map[string]sessionTrackMedia
+	order      []string
 }
 
 type sseEvent struct {
@@ -213,6 +232,7 @@ type jobStore struct {
 	jobRing         []string
 	activeJobID     string
 	activeSessionID string
+	mediaSeq        atomic.Int64
 }
 
 func newJobStore(maxJobs int) *jobStore {
@@ -268,18 +288,121 @@ func (st *jobStore) resolveTracks(sessionID string, trackIDs []string) ([]mixer.
 	return tracks, nil
 }
 
-func (st *jobStore) resolveTrackWithDir(sessionID, trackID string) (mixer.Track, string, error) {
+func (st *jobStore) resolveTrackWithDir(sessionID, trackID string) (mixer.Track, string, string, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	sess, ok := st.sessions[sessionID]
 	if !ok {
-		return mixer.Track{}, "", errors.New("unknown or expired sessionId; re-probe Tracks first")
+		return mixer.Track{}, "", "", errors.New("unknown or expired sessionId; re-probe Tracks first")
 	}
 	tr, exists := sess.tracks[trackID]
 	if !exists {
-		return mixer.Track{}, "", fmt.Errorf("unknown trackId %q in session", trackID)
+		return mixer.Track{}, "", "", fmt.Errorf("unknown trackId %q in session", trackID)
 	}
-	return tr, sess.tempDir, nil
+	return tr, sess.source, sess.tempDir, nil
+}
+
+func (st *jobStore) ensureSessionTempDir(sessionID string) (string, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	sess, ok := st.sessions[sessionID]
+	if !ok {
+		return "", errors.New("unknown or expired sessionId; re-probe Tracks first")
+	}
+	if sess.tempDir != "" {
+		return sess.tempDir, nil
+	}
+	dir, err := os.MkdirTemp("", "ytmix-ui-session-*")
+	if err != nil {
+		return "", fmt.Errorf("create session temp directory: %w", err)
+	}
+	sess.tempDir = dir
+	return dir, nil
+}
+
+func (st *jobStore) getSessionTrackMedia(sessionID, trackID string) (mixer.Track, sessionTrackMedia, string, string, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	sess, ok := st.sessions[sessionID]
+	if !ok {
+		return mixer.Track{}, sessionTrackMedia{}, "", "", errors.New("unknown or expired sessionId; re-probe Tracks first")
+	}
+	tr, exists := sess.tracks[trackID]
+	if !exists {
+		return mixer.Track{}, sessionTrackMedia{}, "", "", fmt.Errorf("unknown trackId %q in session", trackID)
+	}
+	var tm sessionTrackMedia
+	if sess.trackMedia != nil {
+		tm = sess.trackMedia[trackID]
+	}
+	return tr, tm, sess.source, sess.tempDir, nil
+}
+
+func (st *jobStore) setSessionTrackMedia(sessionID, trackID string, tm sessionTrackMedia) (string, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	sess, ok := st.sessions[sessionID]
+	if !ok {
+		return "", errors.New("unknown or expired sessionId; re-probe Tracks first")
+	}
+	if _, exists := sess.tracks[trackID]; !exists {
+		return "", fmt.Errorf("unknown trackId %q in session", trackID)
+	}
+	if sess.trackMedia == nil {
+		sess.trackMedia = make(map[string]sessionTrackMedia, len(sess.tracks))
+	}
+	prev := sess.trackMedia[trackID]
+	var staleUpload string
+	if prev.source == "upload" && prev.filePath != "" && prev.filePath != tm.filePath && sess.tempDir != "" && isPathWithinRoot(sess.tempDir, prev.filePath) {
+		staleUpload = prev.filePath
+	}
+	if tm.extractedArtPath == "" {
+		tm.extractedArtPath = prev.extractedArtPath
+	}
+	sess.trackMedia[trackID] = tm
+	return staleUpload, nil
+}
+
+func (st *jobStore) setSessionExtractedArtPath(sessionID, trackID, artPath string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	sess, ok := st.sessions[sessionID]
+	if !ok {
+		return
+	}
+	if sess.trackMedia == nil {
+		sess.trackMedia = make(map[string]sessionTrackMedia, len(sess.tracks))
+	}
+	tm := sess.trackMedia[trackID]
+	tm.extractedArtPath = artPath
+	sess.trackMedia[trackID] = tm
+}
+
+func (st *jobStore) resolveTracksWithMedia(sessionID string, trackIDs []string) ([]mixer.Track, []sessionTrackMedia, string, string, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	sess, ok := st.sessions[sessionID]
+	if !ok {
+		return nil, nil, "", "", errors.New("unknown or expired sessionId; re-probe Tracks first")
+	}
+	if len(trackIDs) == 0 {
+		return nil, nil, "", "", errors.New("at least one Track must be selected")
+	}
+	tracks := make([]mixer.Track, 0, len(trackIDs))
+	media := make([]sessionTrackMedia, 0, len(trackIDs))
+	for _, id := range trackIDs {
+		tr, exists := sess.tracks[id]
+		if !exists {
+			return nil, nil, "", "", fmt.Errorf("unknown trackId %q in session", id)
+		}
+		tracks = append(tracks, tr)
+		var tm sessionTrackMedia
+		if sess.trackMedia != nil {
+			tm = sess.trackMedia[id]
+		}
+		media = append(media, tm)
+	}
+	return tracks, media, sess.source, sess.tempDir, nil
 }
 
 func (st *jobStore) claimRenderSlot(job *renderJob, sessionID string) error {

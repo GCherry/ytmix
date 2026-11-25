@@ -68,9 +68,17 @@
     health: null,
     sessionId: "",
     tracksMode: "upload", // "upload" | "local"
-    bgMode: "upload",     // "upload" | "local" | "visualizer"
-    tracks: [],           // { id, fileName, displayTitle, duration }
+    bgMode: "upload",     // "upload" | "local" | "visualizer" | "black"
+    tracks: [],           // { id, fileName, displayTitle, duration, ... }
     selectedTrackIdx: 0,
+    perTrackEnabled: false,
+    trackMediaLayout: "auto",   // "auto" | "fullscreen" | "card"
+    trackTransition: "cut",     // "cut" | "dip"
+    editingTrackId: "",
+    pendingTrackUploadId: "",
+    trackMediaError: "",
+    dragTrackId: "",
+    mediaBustCounter: 0,
     bgFile: null,
     bgObjectUrl: "",
     bgMeta: null,
@@ -232,6 +240,14 @@
 
   function detectRenderingPath() {
     const overlay = $("overlay-toggle").checked;
+    if (state.bgMode === "black") {
+      const resSpec = getResolution(state.visualizerResolution);
+      return {
+        path: "Path D",
+        kind: "black",
+        fpsLabel: overlay ? `${resSpec.id} · 10 fps · -tune stillimage · Pure #000000 Blackout` : `${resSpec.id} · 2 fps · -tune stillimage · Pure #000000 Blackout`,
+      };
+    }
     if (state.bgMode === "visualizer") {
       const preset = getPreset(state.visualizer);
       const resSpec = getResolution(state.visualizerResolution);
@@ -425,9 +441,9 @@
   }
 
   function setBgMode(mode) {
-    if (mode !== "upload" && mode !== "local" && mode !== "visualizer") return;
+    if (mode !== "upload" && mode !== "local" && mode !== "visualizer" && mode !== "black") return;
     state.bgMode = mode;
-    ["upload", "local", "visualizer"].forEach((m) => {
+    ["upload", "local", "visualizer", "black"].forEach((m) => {
       const btn = $(`bg-mode-${m}`);
       const active = mode === m;
       if (btn) {
@@ -438,6 +454,7 @@
     $("bg-upload-pane").hidden = mode !== "upload";
     $("bg-local-pane").hidden = mode !== "local";
     $("bg-visualizer-pane").hidden = mode !== "visualizer";
+    if ($("bg-black-pane")) $("bg-black-pane").hidden = mode !== "black";
     if (mode === "visualizer") {
       resetStageBuffers();
       startStageLoop();
@@ -496,11 +513,36 @@
   function applyProbeResult(data) {
     stopAudition();
     state.sessionId = data.sessionId || "";
-    state.tracks = Array.isArray(data.tracks) ? data.tracks : [];
+    const rawTracks = Array.isArray(data.tracks) ? data.tracks : [];
+    state.tracks = rawTracks.map((t) => {
+      const defSrc = t.defaultMediaSource || "inherit";
+      const defMode = t.defaultLayerMode || "backdrop";
+      let mediaName = "";
+      let mediaKind = "";
+      if (defSrc === "sidecar") {
+        mediaName = t.sidecarName || "";
+        mediaKind = t.sidecarKind || "";
+      } else if (defSrc === "id3") {
+        mediaName = "Embedded Cover (ID3)";
+        mediaKind = "image";
+      }
+      return {
+        ...t,
+        mediaSource: defSrc,
+        mediaName,
+        mediaKind,
+        layerMode: defMode,
+        explicitEmpty: false,
+        previewSrc: t.previewUrl || "",
+      };
+    });
     if ($("shuffle-toggle").checked && state.tracksMode === "upload") {
       shuffleTracksInPlace();
     }
     state.selectedTrackIdx = 0;
+    state.perTrackEnabled = false;
+    state.editingTrackId = "";
+    state.trackMediaError = "";
     appendLog(`Loaded ${state.tracks.length} Track(s).`);
     renderAll();
   }
@@ -712,11 +754,203 @@
     });
   }
 
+  function trackSourceLabel(tr) {
+    if (!tr || tr.explicitEmpty || tr.layerMode === "backdrop") return "L0";
+    switch (tr.mediaSource) {
+      case "upload": return "Uploaded";
+      case "local": return "Local";
+      case "sidecar": return "Sidecar";
+      case "id3": return "ID3 Art";
+      default: return "L0";
+    }
+  }
+
+  function reorderTrackById(dragId, targetId, placeAfter) {
+    if (!dragId || !targetId || dragId === targetId) return;
+    const fromIdx = state.tracks.findIndex((t) => t.id === dragId);
+    let toIdx = state.tracks.findIndex((t) => t.id === targetId);
+    if (fromIdx < 0 || toIdx < 0) return;
+
+    const selectedTrack = state.tracks[state.selectedTrackIdx];
+    const copy = [...state.tracks];
+    const [moved] = copy.splice(fromIdx, 1);
+    toIdx = copy.findIndex((t) => t.id === targetId);
+    if (toIdx < 0) return;
+    if (placeAfter) toIdx += 1;
+    copy.splice(toIdx, 0, moved);
+    state.tracks = copy;
+    if (selectedTrack) {
+      const nextSel = state.tracks.findIndex((t) => t.id === selectedTrack.id);
+      if (nextSel >= 0) state.selectedTrackIdx = nextSel;
+    }
+    renderAll();
+  }
+
+  function applyTrackMediaResponse(trackId, data) {
+    const idx = state.tracks.findIndex((t) => t.id === trackId);
+    if (idx < 0) return;
+    const tr = state.tracks[idx];
+    tr.mediaSource = data.source || "inherit";
+    tr.mediaName = data.mediaName || "";
+    tr.mediaKind = data.mediaKind || "";
+    tr.layerMode = data.layerMode || "backdrop";
+    tr.explicitEmpty = Boolean(data.explicitEmpty);
+    tr.previewSrc = data.previewUrl ? `${data.previewUrl}?v=${++state.mediaBustCounter}` : "";
+    state.trackMediaError = "";
+    state.selectedTrackIdx = idx;
+  }
+
+  async function uploadTrackMedia(trackId, file) {
+    if (!state.sessionId || !trackId || !file) return;
+    const ext = extOf(file.name);
+    if (!VIDEO_EXTS.has(ext) && !IMAGE_EXTS.has(ext)) {
+      state.trackMediaError = `Unsupported media extension ${ext || "(none)"}.`;
+      renderTracksTable(computeSchedule());
+      return;
+    }
+    const fd = new FormData();
+    fd.append("file", file, file.name);
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}/tracks/${encodeURIComponent(trackId)}/media`, {
+        method: "POST",
+        body: fd,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Track media upload failed");
+      applyTrackMediaResponse(trackId, data);
+      state.perTrackEnabled = true;
+      renderAll();
+    } catch (err) {
+      state.trackMediaError = err.message;
+      renderTracksTable(computeSchedule());
+    }
+  }
+
+  async function bindTrackLocalMedia(trackId, localPath) {
+    if (!state.sessionId || !trackId) return;
+    const trimmed = String(localPath || "").trim();
+    if (!trimmed) {
+      state.trackMediaError = "Enter a local image or video path.";
+      renderTracksTable(computeSchedule());
+      return;
+    }
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}/tracks/${encodeURIComponent(trackId)}/media`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ localPath: trimmed }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to bind local Track media");
+      applyTrackMediaResponse(trackId, data);
+      state.perTrackEnabled = true;
+      renderAll();
+    } catch (err) {
+      state.trackMediaError = err.message;
+      renderTracksTable(computeSchedule());
+    }
+  }
+
+  async function revertTrackMediaToDefault(trackId) {
+    if (!state.sessionId || !trackId) return;
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}/tracks/${encodeURIComponent(trackId)}/media`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ revertToDefault: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to restore default Track media");
+      applyTrackMediaResponse(trackId, data);
+      state.perTrackEnabled = true;
+      renderAll();
+    } catch (err) {
+      state.trackMediaError = err.message;
+      renderTracksTable(computeSchedule());
+    }
+  }
+
+  async function setTrackLayerMode(trackId, mode) {
+    const idx = state.tracks.findIndex((t) => t.id === trackId);
+    if (idx < 0 || !state.sessionId) return;
+    const tr = state.tracks[idx];
+    if (mode === "backdrop") {
+      try {
+        const res = await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}/tracks/${encodeURIComponent(trackId)}/media?mode=backdrop`, {
+          method: "DELETE",
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Failed to set L0 Only");
+        applyTrackMediaResponse(trackId, data);
+        state.perTrackEnabled = true;
+        renderAll();
+      } catch (err) {
+        state.trackMediaError = err.message;
+        renderTracksTable(computeSchedule());
+      }
+      return;
+    }
+
+    const hasMedia = Boolean(tr.previewSrc) || (tr.defaultMediaSource === "sidecar" || tr.defaultMediaSource === "id3") || tr.mediaSource === "upload" || tr.mediaSource === "local";
+    if (!hasMedia) {
+      state.editingTrackId = trackId;
+      state.trackMediaError = "Attach an image or video first before selecting Fullscreen or Art Card.";
+      state.selectedTrackIdx = idx;
+      renderTracksTable(computeSchedule());
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}/tracks/${encodeURIComponent(trackId)}/media`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ layerMode: mode }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update layer mode");
+      applyTrackMediaResponse(trackId, data);
+      state.perTrackEnabled = true;
+      renderAll();
+    } catch (err) {
+      state.editingTrackId = trackId;
+      state.trackMediaError = err.message;
+      renderTracksTable(computeSchedule());
+    }
+  }
+
+  function renderPerTrackBar() {
+    const toggle = $("per-track-toggle");
+    const hint = $("per-track-hint");
+    const layoutSel = $("track-layout-select");
+    const transSel = $("track-transition-select");
+    if (!toggle || !hint) return;
+
+    toggle.checked = state.perTrackEnabled;
+    if (layoutSel) layoutSel.value = state.trackMediaLayout;
+    if (transSel) transSel.value = state.trackTransition;
+
+    const autoPaired = state.tracks.filter((t) => t.defaultMediaSource === "sidecar" || t.defaultMediaSource === "id3").length;
+    const customAttached = state.tracks.filter((t) => t.mediaSource === "upload" || t.mediaSource === "local").length;
+    if (!state.perTrackEnabled) {
+      hint.textContent = autoPaired > 0
+        ? `Off · ${autoPaired} Track(s) have auto-paired art (sidecar / ID3)`
+        : "Off — using Layer 0 Mix Backdrop only";
+    } else {
+      const parts = ["Active · Option A"];
+      if (customAttached > 0) parts.push(`${customAttached} custom`);
+      if (autoPaired > 0) parts.push(`${autoPaired} auto-paired`);
+      parts.push(state.trackTransition === "dip" ? "0.5s dip" : "cut");
+      hint.textContent = parts.join(" · ");
+    }
+  }
+
   function renderTracksTable(sched) {
     const badgeEl = $("left-tracks-badge");
     const durEl = $("left-tab-duration");
     if (badgeEl) badgeEl.textContent = `(${state.tracks.length})`;
     if (durEl) durEl.textContent = formatTime(sched.totalDuration, false);
+
+    renderPerTrackBar();
 
     const tbody = $("track-tbody");
     tbody.innerHTML = "";
@@ -724,7 +958,7 @@
       const row = document.createElement("tr");
       row.className = "empty-row";
       const cell = document.createElement("td");
-      cell.colSpan = 4;
+      cell.colSpan = 5;
       cell.textContent = "No Tracks loaded. Upload .mp3 files or probe a local folder.";
       row.appendChild(cell);
       tbody.appendChild(row);
@@ -737,15 +971,59 @@
     $("tracks-summary").textContent = `${state.tracks.length} Track(s) · ${formatTime(sched.totalDuration, false)}`;
     renderStageTrackSelect();
     const includeHours = sched.totalDuration >= 3600;
+    const localAllowed = Boolean(state.health && state.health.localPathsAllowed);
+
     state.tracks.forEach((tr, idx) => {
       const row = document.createElement("tr");
       row.className = "track-row" + (idx === state.selectedTrackIdx ? " is-selected" : "");
+      row.draggable = !state.rendering && state.tracks.length > 1;
+      row.dataset.trackId = tr.id;
+
+      row.addEventListener("dragstart", (e) => {
+        if (e.target.closest("button, input, select, a")) {
+          e.preventDefault();
+          return;
+        }
+        state.dragTrackId = tr.id;
+        row.classList.add("is-dragging");
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/plain", tr.id);
+        }
+      });
+      row.addEventListener("dragover", (e) => {
+        if (!state.dragTrackId || state.dragTrackId === tr.id) return;
+        e.preventDefault();
+        const rect = row.getBoundingClientRect();
+        const after = e.clientY > rect.top + rect.height / 2;
+        row.classList.toggle("is-drag-over-top", !after);
+        row.classList.toggle("is-drag-over-bottom", after);
+      });
+      row.addEventListener("dragleave", () => {
+        row.classList.remove("is-drag-over-top", "is-drag-over-bottom");
+      });
+      row.addEventListener("drop", (e) => {
+        e.preventDefault();
+        const rect = row.getBoundingClientRect();
+        const after = e.clientY > rect.top + rect.height / 2;
+        row.classList.remove("is-drag-over-top", "is-drag-over-bottom");
+        const dragId = state.dragTrackId || (e.dataTransfer ? e.dataTransfer.getData("text/plain") : "");
+        state.dragTrackId = "";
+        reorderTrackById(dragId, tr.id, after);
+      });
+      row.addEventListener("dragend", () => {
+        state.dragTrackId = "";
+        document.querySelectorAll(".track-row").forEach((r) => {
+          r.classList.remove("is-dragging", "is-drag-over-top", "is-drag-over-bottom");
+        });
+      });
+
       row.addEventListener("click", (e) => {
-        if (e.target.closest("button")) return;
+        if (e.target.closest("button, input, select")) return;
         const changed = state.selectedTrackIdx !== idx;
         state.selectedTrackIdx = idx;
         renderTracksTable(sched);
-        renderStageOverlay();
+        renderStage();
         renderAuditionBar();
         if (changed && state.auditioning) {
           playSelectedTrackAudition();
@@ -757,7 +1035,101 @@
       tdStart.textContent = formatTime(sched.starts[idx] || 0, includeHours);
 
       const tdTitle = document.createElement("td");
-      tdTitle.textContent = tr.displayTitle;
+      const titleCell = document.createElement("div");
+      titleCell.className = "track-title-cell";
+
+      const grip = document.createElement("span");
+      grip.className = "drag-grip mono";
+      grip.title = "Drag to reorder";
+      grip.textContent = "⋮⋮";
+
+      const showThumb = !tr.explicitEmpty && tr.layerMode !== "backdrop" && Boolean(tr.previewSrc);
+      let thumbEl;
+      if (showThumb && tr.mediaKind === "video") {
+        thumbEl = document.createElement("video");
+        thumbEl.className = "track-thumb";
+        thumbEl.src = tr.previewSrc;
+        thumbEl.muted = true;
+        thumbEl.loop = true;
+        thumbEl.autoplay = true;
+        thumbEl.playsInline = true;
+      } else if (showThumb) {
+        thumbEl = document.createElement("img");
+        thumbEl.className = "track-thumb";
+        thumbEl.src = tr.previewSrc;
+        thumbEl.alt = "";
+      } else {
+        thumbEl = document.createElement("span");
+        thumbEl.className = "track-thumb track-thumb-l0 mono";
+        thumbEl.textContent = "L0";
+      }
+
+      const metaDiv = document.createElement("div");
+      metaDiv.className = "track-title-meta";
+
+      const titleSpan = document.createElement("span");
+      titleSpan.className = "track-display-title";
+      titleSpan.textContent = tr.displayTitle;
+
+      const subDiv = document.createElement("div");
+      subDiv.className = "track-media-sub";
+      const srcPill = document.createElement("span");
+      const srcType = !tr.explicitEmpty && tr.layerMode !== "backdrop" ? tr.mediaSource : "inherit";
+      srcPill.className = `source-pill mono is-${srcType}`;
+      srcPill.textContent = trackSourceLabel(tr);
+      const mediaNameSpan = document.createElement("span");
+      mediaNameSpan.className = "track-media-name mono";
+      mediaNameSpan.textContent = (!tr.explicitEmpty && tr.layerMode !== "backdrop" && tr.mediaName)
+        ? tr.mediaName
+        : "Layer 0 Mix Backdrop";
+      subDiv.append(srcPill, mediaNameSpan);
+
+      metaDiv.append(titleSpan, subDiv);
+      titleCell.append(grip, thumbEl, metaDiv);
+      tdTitle.appendChild(titleCell);
+
+      const tdVisual = document.createElement("td");
+      tdVisual.className = "col-visual";
+      const visWrap = document.createElement("div");
+      visWrap.className = "visual-controls-wrap";
+
+      const pills = document.createElement("div");
+      pills.className = "mode-pills";
+      const effectiveMode = tr.explicitEmpty ? "backdrop" : (tr.layerMode || "backdrop");
+      [
+        { id: "fullscreen", label: "Fullscreen" },
+        { id: "card", label: "Art Card" },
+        { id: "backdrop", label: "L0 Only" },
+      ].forEach((m) => {
+        const pillBtn = document.createElement("button");
+        pillBtn.type = "button";
+        pillBtn.className = "mode-pill" + (effectiveMode === m.id ? " is-active" : "");
+        pillBtn.textContent = m.label;
+        pillBtn.disabled = state.rendering;
+        pillBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          setTrackLayerMode(tr.id, m.id);
+        });
+        pills.appendChild(pillBtn);
+      });
+
+      const pickerBtn = document.createElement("button");
+      pickerBtn.type = "button";
+      pickerBtn.className = "media-picker-btn" + (state.editingTrackId === tr.id ? " is-open" : "");
+      pickerBtn.textContent = "Media▾";
+      pickerBtn.disabled = state.rendering;
+      pickerBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        state.trackMediaError = "";
+        state.editingTrackId = state.editingTrackId === tr.id ? "" : tr.id;
+        state.selectedTrackIdx = idx;
+        renderTracksTable(sched);
+        renderStage();
+        renderAuditionBar();
+      });
+
+      visWrap.append(pills, pickerBtn);
+      tdVisual.appendChild(visWrap);
 
       const tdLen = document.createElement("td");
       tdLen.className = "col-len";
@@ -771,17 +1143,17 @@
       const upBtn = document.createElement("button");
       upBtn.type = "button";
       upBtn.className = "icon-btn";
-      upBtn.textContent = "↑";
+      upBtn.textContent = "▲";
       upBtn.ariaLabel = `Move ${tr.displayTitle} up`;
-      upBtn.disabled = idx === 0;
+      upBtn.disabled = idx === 0 || state.rendering;
       upBtn.addEventListener("click", () => moveTrack(idx, -1));
 
       const downBtn = document.createElement("button");
       downBtn.type = "button";
       downBtn.className = "icon-btn";
-      downBtn.textContent = "↓";
+      downBtn.textContent = "▼";
       downBtn.ariaLabel = `Move ${tr.displayTitle} down`;
-      downBtn.disabled = idx === state.tracks.length - 1;
+      downBtn.disabled = idx === state.tracks.length - 1 || state.rendering;
       downBtn.addEventListener("click", () => moveTrack(idx, 1));
 
       const delBtn = document.createElement("button");
@@ -789,12 +1161,93 @@
       delBtn.className = "icon-btn is-remove";
       delBtn.textContent = "×";
       delBtn.ariaLabel = `Remove ${tr.displayTitle}`;
+      delBtn.disabled = state.rendering;
       delBtn.addEventListener("click", () => removeTrack(idx));
 
       wrap.append(upBtn, downBtn, delBtn);
       tdAct.appendChild(wrap);
-      row.append(tdStart, tdTitle, tdLen, tdAct);
+      row.append(tdStart, tdTitle, tdVisual, tdLen, tdAct);
       tbody.appendChild(row);
+
+      if (state.editingTrackId === tr.id) {
+        const drawerRow = document.createElement("tr");
+        drawerRow.className = "track-media-drawer-row";
+        const drawerCell = document.createElement("td");
+        drawerCell.colSpan = 5;
+
+        const drawer = document.createElement("div");
+        drawer.className = "track-media-drawer";
+
+        const actions = document.createElement("div");
+        actions.className = "drawer-actions";
+
+        const uploadBtn = document.createElement("button");
+        uploadBtn.type = "button";
+        uploadBtn.className = "btn btn-mint";
+        uploadBtn.textContent = "Upload File…";
+        uploadBtn.addEventListener("click", () => {
+          state.pendingTrackUploadId = tr.id;
+          const fileIn = $("track-media-file-input");
+          fileIn.value = "";
+          fileIn.click();
+        });
+        actions.appendChild(uploadBtn);
+
+        if (tr.defaultMediaSource === "sidecar" || tr.defaultMediaSource === "id3") {
+          const defBtn = document.createElement("button");
+          defBtn.type = "button";
+          defBtn.className = "btn btn-secondary";
+          defBtn.textContent = tr.defaultMediaSource === "sidecar" ? `Use Sidecar (${tr.sidecarName})` : "Use ID3 Cover";
+          defBtn.addEventListener("click", () => revertTrackMediaToDefault(tr.id));
+          actions.appendChild(defBtn);
+        }
+
+        const l0Btn = document.createElement("button");
+        l0Btn.type = "button";
+        l0Btn.className = "btn btn-secondary";
+        l0Btn.textContent = "L0 Only";
+        l0Btn.addEventListener("click", () => setTrackLayerMode(tr.id, "backdrop"));
+        actions.appendChild(l0Btn);
+
+        const doneBtn = document.createElement("button");
+        doneBtn.type = "button";
+        doneBtn.className = "btn btn-ghost";
+        doneBtn.textContent = "Done";
+        doneBtn.addEventListener("click", () => {
+          state.editingTrackId = "";
+          state.trackMediaError = "";
+          renderTracksTable(sched);
+        });
+        actions.appendChild(doneBtn);
+        drawer.appendChild(actions);
+
+        if (localAllowed) {
+          const localRow = document.createElement("div");
+          localRow.className = "drawer-local-row";
+          const localInput = document.createElement("input");
+          localInput.type = "text";
+          localInput.className = "input mono";
+          localInput.placeholder = "Local path to image, GIF, or MP4…";
+          const bindBtn = document.createElement("button");
+          bindBtn.type = "button";
+          bindBtn.className = "btn btn-secondary";
+          bindBtn.textContent = "Use Local Path";
+          bindBtn.addEventListener("click", () => bindTrackLocalMedia(tr.id, localInput.value));
+          localRow.append(localInput, bindBtn);
+          drawer.appendChild(localRow);
+        }
+
+        if (state.trackMediaError) {
+          const errEl = document.createElement("p");
+          errEl.className = "field-hint error-text";
+          errEl.textContent = state.trackMediaError;
+          drawer.appendChild(errEl);
+        }
+
+        drawerCell.appendChild(drawer);
+        drawerRow.appendChild(drawerCell);
+        tbody.appendChild(drawerRow);
+      }
     });
     renderAuditionBar();
   }
@@ -971,72 +1424,136 @@
     $("dim-titles-toggle").checked = state.dimTitles;
   }
 
+  function setStageMediaSlot(imgEl, vidEl, src, kind) {
+    if (!imgEl || !vidEl) return;
+    if (!src || !kind) {
+      imgEl.hidden = true;
+      imgEl.removeAttribute("src");
+      delete imgEl.dataset.currentSrc;
+      vidEl.hidden = true;
+      vidEl.removeAttribute("src");
+      return;
+    }
+    if (kind === "video") {
+      imgEl.hidden = true;
+      imgEl.removeAttribute("src");
+      delete imgEl.dataset.currentSrc;
+      if (vidEl.getAttribute("src") !== src) {
+        vidEl.src = src;
+      }
+      vidEl.hidden = false;
+    } else {
+      vidEl.hidden = true;
+      vidEl.removeAttribute("src");
+      if (imgEl.dataset.currentSrc !== src) {
+        imgEl.dataset.currentSrc = src;
+        imgEl.src = src;
+      }
+      imgEl.hidden = false;
+    }
+  }
+
   function renderStage() {
     const info = detectRenderingPath();
+    const frame = $("stage-frame");
     const img = $("stage-img");
     const vid = $("stage-video");
     const canvas = $("stage-canvas");
     const empty = $("stage-empty");
+    const l1FullWrap = $("stage-l1-fullscreen");
+    const l1FullImg = $("stage-l1-img");
+    const l1FullVid = $("stage-l1-video");
+    const l1CardWrap = $("stage-l1-card-wrap");
+    const l1CardImg = $("stage-l1-card-img");
+    const l1CardVid = $("stage-l1-card-video");
 
-    if (state.bgMode === "visualizer") {
+    const tr = state.tracks[state.selectedTrackIdx];
+    const l1Active = Boolean(state.perTrackEnabled && tr && !tr.explicitEmpty && tr.layerMode !== "backdrop" && tr.previewSrc);
+    const l1Mode = l1Active ? (tr.layerMode === "card" ? "card" : "fullscreen") : "backdrop";
+    const showL0 = !(l1Active && l1Mode === "fullscreen");
+
+    if (frame) {
+      frame.classList.toggle("is-black-l0", showL0 && state.bgMode === "black");
+    }
+
+    if (l1Active && l1Mode === "fullscreen") {
+      if (l1FullWrap) l1FullWrap.hidden = false;
+      if (l1CardWrap) l1CardWrap.hidden = true;
+      setStageMediaSlot(l1FullImg, l1FullVid, tr.previewSrc, tr.mediaKind || "image");
+      setStageMediaSlot(l1CardImg, l1CardVid, "", "");
+    } else if (l1Active && l1Mode === "card") {
+      if (l1FullWrap) l1FullWrap.hidden = true;
+      if (l1CardWrap) l1CardWrap.hidden = false;
+      setStageMediaSlot(l1FullImg, l1FullVid, "", "");
+      setStageMediaSlot(l1CardImg, l1CardVid, tr.previewSrc, tr.mediaKind || "image");
+    } else {
+      if (l1FullWrap) l1FullWrap.hidden = true;
+      if (l1CardWrap) l1CardWrap.hidden = true;
+      setStageMediaSlot(l1FullImg, l1FullVid, "", "");
+      setStageMediaSlot(l1CardImg, l1CardVid, "", "");
+    }
+
+    if (showL0 && state.bgMode === "visualizer") {
+      setStageMediaSlot(img, vid, "", "");
+      empty.hidden = true;
+      canvas.hidden = false;
+      startStageLoop();
+    } else if (showL0 && state.bgMode === "black") {
+      canvas.hidden = true;
+      $("stage-fade-pill").hidden = true;
+      stopStageLoop();
+      setStageMediaSlot(img, vid, "", "");
+      empty.hidden = true;
+    } else if (showL0) {
+      canvas.hidden = true;
+      $("stage-fade-pill").hidden = true;
+      stopStageLoop();
+
+      const bgName = activeBgName();
+      let src = "";
+      if (state.bgMode === "upload" && state.bgObjectUrl) {
+        src = state.bgObjectUrl;
+      } else if (state.bgMode === "local" && bgName && state.health && state.health.localPathsAllowed) {
+        src = `/api/preview-bg?path=${encodeURIComponent(bgName)}`;
+      }
+      if (!src || !info.kind) {
+        setStageMediaSlot(img, vid, "", "");
+        empty.hidden = false;
+      } else {
+        empty.hidden = true;
+        setStageMediaSlot(img, vid, src, info.kind);
+      }
+    } else {
+      canvas.hidden = true;
+      $("stage-fade-pill").hidden = true;
+      stopStageLoop();
+      setStageMediaSlot(img, vid, "", "");
+      empty.hidden = true;
+    }
+
+    if (state.perTrackEnabled && tr) {
+      const modeLabel = l1Mode === "card" ? "Art Card" : l1Mode === "fullscreen" ? "Fullscreen" : "L0 Only";
+      const l0Label = state.bgMode === "visualizer" ? `viz: ${getPreset(state.visualizer).id}` : state.bgMode === "black" ? "Black" : (activeBgName() ? baseName(activeBgName()) : "L0");
+      $("stage-bg-badge").textContent = `${modeLabel} · ${l0Label}`;
+      $("stage-path-badge").textContent = "Option A";
+      const metaEl = $("stage-fps-meta");
+      if (metaEl) {
+        metaEl.textContent = `Track ${state.selectedTrackIdx + 1}: ${modeLabel} · ${state.trackTransition === "dip" ? "0.5s Dip" : "Cut"} (Segmented Option A)`;
+      }
+    } else if (state.bgMode === "visualizer") {
       const preset = getPreset(state.visualizer);
       $("stage-bg-badge").textContent = `viz: ${preset.id}`;
       $("stage-path-badge").textContent = "Path D";
       renderStageFpsMeta(info);
-
-      img.hidden = true;
-      img.removeAttribute("src");
-      delete img.dataset.currentSrc;
-      vid.hidden = true;
-      vid.removeAttribute("src");
-      empty.hidden = true;
-      canvas.hidden = false;
-      startStageLoop();
-      renderStageOverlay();
-      return;
-    }
-
-    canvas.hidden = true;
-    $("stage-fade-pill").hidden = true;
-    stopStageLoop();
-
-    const bgName = activeBgName();
-    $("stage-bg-badge").textContent = bgName ? baseName(bgName) : "No visual";
-    $("stage-path-badge").textContent = info.path || "Select BG";
-    renderStageFpsMeta(info);
-
-    let src = "";
-    if (state.bgMode === "upload" && state.bgObjectUrl) {
-      src = state.bgObjectUrl;
-    } else if (state.bgMode === "local" && bgName && state.health && state.health.localPathsAllowed) {
-      src = `/api/preview-bg?path=${encodeURIComponent(bgName)}`;
-    }
-
-    if (!src || !info.kind) {
-      img.hidden = true;
-      img.removeAttribute("src");
-      delete img.dataset.currentSrc;
-      vid.hidden = true;
-      vid.removeAttribute("src");
-      empty.hidden = false;
-    } else if (info.kind === "video") {
-      empty.hidden = true;
-      img.hidden = true;
-      img.removeAttribute("src");
-      delete img.dataset.currentSrc;
-      if (vid.getAttribute("src") !== src) {
-        vid.src = src;
-      }
-      vid.hidden = false;
+    } else if (state.bgMode === "black") {
+      $("stage-bg-badge").textContent = "Black (#000)";
+      $("stage-path-badge").textContent = "Path D";
+      renderStageFpsMeta(info);
     } else {
-      empty.hidden = true;
-      vid.hidden = true;
-      vid.removeAttribute("src");
-      if (img.dataset.currentSrc !== src) {
-        img.dataset.currentSrc = src;
-        img.src = src;
-      }
-      img.hidden = false;
+      const bgName = activeBgName();
+      $("stage-bg-badge").textContent = bgName ? baseName(bgName) : "No visual";
+      $("stage-path-badge").textContent = info.path || "Select BG";
+      renderStageFpsMeta(info);
     }
 
     renderStageOverlay();
@@ -1058,6 +1575,63 @@
     overlayEl.hidden = false;
   }
 
+  function buildTrackMediaManifest() {
+    let layer0;
+    if (state.bgMode === "black") {
+      layer0 = { mode: "black" };
+    } else if (state.bgMode === "visualizer") {
+      layer0 = {
+        mode: "visualizer",
+        visualizer: state.visualizer,
+        visualizerTheme: state.visualizerTheme,
+        visualizerResolution: state.visualizerResolution,
+        visualizerGlow: state.visualizerGlow,
+        visualizerBrightness: state.visualizerBrightness,
+      };
+      if (state.fadeToBlackMin > 0 && state.visualizer !== "black") {
+        layer0.fadeToBlack = `${state.fadeToBlackMin}m`;
+      }
+    } else {
+      layer0 = {
+        mode: "media",
+        bgPath: activeBgName() || "<background-visual>",
+      };
+    }
+
+    const tracks = state.tracks.map((tr) => {
+      const effectiveMode = tr.explicitEmpty ? "backdrop" : (tr.layerMode || "backdrop");
+      const entry = {
+        file: tr.fileName,
+        layerMode: effectiveMode,
+      };
+      if (effectiveMode !== "backdrop" && (tr.mediaSource === "upload" || tr.mediaSource === "local" || tr.mediaSource === "sidecar") && tr.mediaName) {
+        entry.media = tr.mediaName;
+      }
+      return entry;
+    });
+
+    return {
+      layer0,
+      auto: true,
+      layout: state.trackMediaLayout,
+      transition: state.trackTransition,
+      tracks,
+    };
+  }
+
+  function downloadManifestJSON() {
+    const manifest = buildTrackMediaManifest();
+    const blob = new Blob([JSON.stringify(manifest, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "track_media_manifest.json";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
   function renderCLI() {
     const audioDir = state.tracksMode === "local" ? ($("audio-dir-input").value.trim() || "./tracks") : "./tracks";
     const localAllowed = Boolean(!state.health || state.health.localPathsAllowed);
@@ -1067,7 +1641,12 @@
     const crossfade = Number($("crossfade-slider").value) || 0;
     const parts = ["ytmix", "--audio-dir", quoteArg(audioDir)];
 
-    if (state.bgMode === "visualizer") {
+    if (state.bgMode === "black") {
+      parts.push("--visualizer", "black");
+      if (state.visualizerResolution && state.visualizerResolution !== "1080p") {
+        parts.push("--visualizer-resolution", state.visualizerResolution);
+      }
+    } else if (state.bgMode === "visualizer") {
       parts.push("--visualizer", state.visualizer);
       if (state.visualizerResolution && state.visualizerResolution !== "1080p") {
         parts.push("--visualizer-resolution", state.visualizerResolution);
@@ -1089,6 +1668,22 @@
     } else {
       const bg = activeBgName() || "<background-visual>";
       parts.push("--bg", quoteArg(bg));
+    }
+
+    if (state.perTrackEnabled) {
+      const hasCustom = state.tracks.some((t) =>
+        t.explicitEmpty ||
+        t.mediaSource === "upload" ||
+        t.mediaSource === "local" ||
+        (t.defaultLayerMode && t.layerMode && t.layerMode !== t.defaultLayerMode)
+      );
+      parts.push("--track-media", hasCustom ? "track_media_manifest.json" : "auto");
+      if (state.trackMediaLayout && state.trackMediaLayout !== "auto") {
+        parts.push("--track-media-layout", state.trackMediaLayout);
+      }
+      if (state.trackTransition && state.trackTransition !== "cut") {
+        parts.push("--track-transition", state.trackTransition);
+      }
     }
 
     if (outDir) parts.push("--out-dir", quoteArg(outDir));
@@ -1142,7 +1737,8 @@
     renderCLI();
 
     const vizReady = state.bgMode === "visualizer" && Boolean(getPreset(state.visualizer).available);
-    const hasBg = vizReady || (Boolean(activeBgName()) && Boolean(detectRenderingPath().path));
+    const blackReady = state.bgMode === "black";
+    const hasBg = blackReady || vizReady || (Boolean(activeBgName()) && Boolean(detectRenderingPath().path));
     const hasTracks = state.tracks.length > 0;
     $("render-btn").disabled = state.rendering || !hasTracks || !hasBg || !sched.validCrossfade;
 
@@ -1153,6 +1749,9 @@
   function renderStageFpsMeta(info) {
     const el = $("stage-fps-meta");
     if (!el) return;
+    if (state.perTrackEnabled && state.tracks.length > 0) {
+      return;
+    }
     const est = state.estimate;
     if (est && est.renderingPath && est.renderingPath === info.path) {
       if (est.renderingPath === "Path A" || est.renderingPath === "Path B") {
@@ -1177,6 +1776,15 @@
     el.textContent = info.fpsLabel;
   }
 
+  function buildTrackOverridesPayload() {
+    if (!state.perTrackEnabled || !state.sessionId) return [];
+    return state.tracks.map((tr) => ({
+      trackId: tr.id,
+      layerMode: tr.explicitEmpty ? "backdrop" : (tr.layerMode || "backdrop"),
+      source: tr.explicitEmpty ? "backdrop" : (tr.mediaSource || "inherit"),
+    }));
+  }
+
   function buildEstimatePayload(sched) {
     if (!sched || !sched.validCrossfade || state.tracks.length === 0) return null;
     const info = detectRenderingPath();
@@ -1184,18 +1792,28 @@
 
     const payload = {
       bgMode: state.bgMode,
+      layer0Mode: state.bgMode,
       crossfade: Number($("crossfade-slider").value) || 0,
       normalize: $("normalize-toggle").checked,
       overlayTitles: $("overlay-toggle").checked,
+      segmented: state.perTrackEnabled,
+      trackMediaLayout: state.trackMediaLayout,
+      trackTransition: state.trackTransition,
     };
     if (state.sessionId) {
       payload.sessionId = state.sessionId;
       payload.trackIds = state.tracks.map((t) => t.id);
+      if (state.perTrackEnabled) {
+        payload.trackOverrides = buildTrackOverridesPayload();
+      }
     } else {
       payload.trackDurations = state.tracks.map((t) => t.duration);
     }
 
-    if (state.bgMode === "visualizer") {
+    if (state.bgMode === "black") {
+      payload.visualizer = "black";
+      payload.visualizerResolution = state.visualizerResolution;
+    } else if (state.bgMode === "visualizer") {
       if (!getPreset(state.visualizer).available) return null;
       payload.visualizer = state.visualizer;
       payload.visualizerTheme = state.visualizerTheme;
@@ -1358,6 +1976,7 @@
       sessionId: state.sessionId,
       trackIds: state.tracks.map((t) => t.id),
       bgMode: state.bgMode,
+      layer0Mode: state.bgMode,
       bgPath: state.bgMode === "local" ? $("bg-path-input").value.trim() : "",
       outDir: outDirVal,
       out: outVal,
@@ -1368,13 +1987,17 @@
       titleDuration: Math.max(0, Math.round(Number($("title-duration-input").value) || 0)),
       fontName: $("font-name-input").value.trim() || "Arial",
       shuffle: $("shuffle-toggle").checked,
-      visualizer: state.bgMode === "visualizer" ? state.visualizer : "",
+      visualizer: state.bgMode === "visualizer" ? state.visualizer : (state.bgMode === "black" ? "black" : ""),
       visualizerTheme: state.visualizerTheme,
       visualizerResolution: state.visualizerResolution,
       visualizerGlow: state.visualizerGlow,
       visualizerBrightness: state.visualizerBrightness,
-      fadeToBlackMinutes: state.visualizer === "black" ? 0 : state.fadeToBlackMin,
+      fadeToBlackMinutes: (state.bgMode === "black" || state.visualizer === "black") ? 0 : state.fadeToBlackMin,
       dimTitles: state.dimTitles,
+      segmented: state.perTrackEnabled,
+      trackMediaLayout: state.trackMediaLayout,
+      trackTransition: state.trackTransition,
+      trackOverrides: buildTrackOverridesPayload(),
     };
 
     try {
@@ -2624,6 +3247,38 @@
     $("bg-mode-upload").addEventListener("click", () => setBgMode("upload"));
     $("bg-mode-local").addEventListener("click", () => setBgMode("local"));
     $("bg-mode-visualizer").addEventListener("click", () => setBgMode("visualizer"));
+    if ($("bg-mode-black")) {
+      $("bg-mode-black").addEventListener("click", () => setBgMode("black"));
+    }
+
+    if ($("per-track-toggle")) {
+      $("per-track-toggle").addEventListener("change", (e) => {
+        state.perTrackEnabled = Boolean(e.target.checked);
+        renderAll();
+      });
+    }
+    if ($("track-layout-select")) {
+      $("track-layout-select").addEventListener("change", (e) => {
+        state.trackMediaLayout = e.target.value || "auto";
+        renderAll();
+      });
+    }
+    if ($("track-transition-select")) {
+      $("track-transition-select").addEventListener("change", (e) => {
+        state.trackTransition = e.target.value || "cut";
+        renderAll();
+      });
+    }
+    if ($("track-media-file-input")) {
+      $("track-media-file-input").addEventListener("change", (e) => {
+        const file = e.target.files && e.target.files[0];
+        const tid = state.pendingTrackUploadId;
+        state.pendingTrackUploadId = "";
+        if (file && tid) {
+          uploadTrackMedia(tid, file);
+        }
+      });
+    }
 
     $("audition-btn").addEventListener("click", toggleAudition);
     if ($("stage-audition-btn")) {
@@ -2635,7 +3290,7 @@
         const changed = state.selectedTrackIdx !== nextIdx;
         state.selectedTrackIdx = nextIdx;
         renderTracksTable(computeSchedule());
-        renderStageOverlay();
+        renderStage();
         renderAuditionBar();
         if (changed && state.auditioning) {
           playSelectedTrackAudition();
@@ -2733,6 +3388,9 @@
     });
 
     $("copy-chapters-btn").addEventListener("click", () => copyText($("chapters-preview").textContent, $("copy-chapters-btn")));
+    if ($("download-manifest-btn")) {
+      $("download-manifest-btn").addEventListener("click", downloadManifestJSON);
+    }
     $("copy-cli-btn").addEventListener("click", () => copyText($("cli-preview").textContent, $("copy-cli-btn")));
     $("render-btn").addEventListener("click", startRender);
     $("save-lan-folder-btn").addEventListener("click", saveToLanFolder);

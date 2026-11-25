@@ -168,6 +168,9 @@ func newCLIFlagSet(cfg *mixer.Config, listVisualizers *bool, estimate *bool, out
 	fs.IntVar(&cfg.VisualizerBrightness, "visualizer-brightness", render.DefaultVisualizerBrightness, "Global Path D visualizer brightness percentage in 10..100.")
 	fs.DurationVar(&cfg.FadeToBlack, "fade-to-black", 0, "Fade Path D video and burned Title Overlays to #000000 black after this duration (e.g. 15m; 0 disables).")
 	fs.BoolVar(&cfg.DimTitles, "dim-titles", false, "Use low-luminance translucent warm-gray ASS styling for Title Overlays.")
+	fs.StringVar(&cfg.TrackMedia, "track-media", string(mixer.TrackMediaOff), "Per-Track visual attachment mode: off, auto (sidecar/ID3), or <manifest.json>.")
+	fs.StringVar(&cfg.TrackMediaLayout, "track-media-layout", string(mixer.TrackMediaLayoutAuto), "Default layout for per-Track visuals: auto, fullscreen, or card.")
+	fs.StringVar(&cfg.TrackTransition, "track-transition", string(render.TransitionCut), "Visual transition across Track segment boundaries: cut or dip.")
 
 	var dummyList bool
 	listTarget := &dummyList
@@ -214,6 +217,19 @@ func ParseCLIOptions(args []string) (mixer.Config, CLIOptions, error) {
 	if cfg.FadeToBlack < 0 {
 		return mixer.Config{}, CLIOptions{}, fmt.Errorf("--fade-to-black must be >= 0 (got %s)", cfg.FadeToBlack)
 	}
+	if err := mixer.ValidateTrackMedia(cfg.TrackMedia); err != nil {
+		return mixer.Config{}, CLIOptions{}, err
+	}
+	if _, err := mixer.ValidateTrackMediaLayout(cfg.TrackMediaLayout); err != nil {
+		return mixer.Config{}, CLIOptions{}, err
+	}
+	if _, err := render.ValidateTrackTransition(render.TrackTransition(cfg.TrackTransition)); err != nil {
+		return mixer.Config{}, CLIOptions{}, err
+	}
+	tm := strings.TrimSpace(cfg.TrackMedia)
+	if tm != "" && !strings.EqualFold(tm, string(mixer.TrackMediaOff)) {
+		cfg.Segmented = true
+	}
 	return cfg, opts, nil
 }
 
@@ -228,7 +244,12 @@ func RunEstimate(ctx context.Context, cfg mixer.Config, w io.Writer, lookPath fu
 			return err
 		}
 	}
-	tracks, err := mixer.ProbeTracks(ctx, preparedCfg.AudioDir, preparedCfg.Shuffle, nil, runner)
+	var tracks []mixer.Track
+	if preparedCfg.Segmented {
+		tracks, err = mixer.ProbeTracksWithArt(ctx, preparedCfg.AudioDir, preparedCfg.Shuffle, nil, runner)
+	} else {
+		tracks, err = mixer.ProbeTracks(ctx, preparedCfg.AudioDir, preparedCfg.Shuffle, nil, runner)
+	}
 	if err != nil {
 		return err
 	}

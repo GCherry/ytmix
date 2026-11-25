@@ -14,7 +14,8 @@
 - **Sample-Accurate Chapter Timestamps:** Probes exact audio durations via `ffprobe`, accounts for `--crossfade` overlap and post-normalization lengths, and writes a YouTube-ready `timestamps.txt` starting at `00:00`.
 - **Optional EBU R128 Loudness Normalization:** Normalizes each Track to YouTube's `-14 LUFS` target (`loudnorm=I=-14:TP=-1.5:LRA=11`).
 - **Burned-In `.ass` Title Overlays:** Generates Advanced SubStation Alpha (`titles.ass`) subtitles with 500ms fade-in/out tags (`\fad(500,500)`) instead of fragile FFmpeg `drawtext` chains.
-- **Embedded Web & Mobile Studio (`ytmix ui`):** Serves the Editorial Mix Studio UI directly from the single Go binary via `net/http` + `embed.FS` + Server-Sent Events (`text/event-stream`), supporting drag-and-drop MP3/Background Visual uploads, live Track reordering, **Auto Visualizer** mode (category filter chips, 6-card 3×2 pager with `◀`/`▶` navigation, 7 Color Themes, 60fps `<canvas>` preview, **Audition Selected Track** via Web Audio `AnalyserNode`, and **Test 3s Fade**), LAN-safe visualizer rendering, and real-time 5-step telemetry.
+- **Per-Track Visuals & Segmented Composition (`--track-media`):** Optionally pairs individual `.mp3` Tracks with sidecar visuals (`<track_stem>.<ext>`), embedded ID3 `attached_pic` cover art, or a JSON manifest (`--track-media <manifest.json>`) composed against a Layer 0 Mix Backdrop (`Black #000000`, `--bg`, or Path D Auto Visualizer) in `Fullscreen`, `Art Card`, or `L0 Only` framing with optional `0.5s` `--track-transition dip` boundaries and bounded-parallel Engine Option A `concat -c:v copy` rendering.
+- **Embedded Web & Mobile Studio (`ytmix ui`):** Serves the Dual-Layer Composer Editorial Mix Studio UI directly from the single Go binary via `net/http` + `embed.FS` + Server-Sent Events (`text/event-stream`), supporting drag-and-drop MP3/Background Visual uploads, drag-and-drop Track reordering, **Layer 0 Mix Backdrop** (`Upload`, `Local Path`, `Auto Visualizer`, `Black #000`), per-Track `Fullscreen`/`Art Card`/`L0 Only` toggles + inline `Media▾` picker, live composited **16:9 Stage Preview** (60fps `<canvas>` + Track Visual layer), **Audition Selected Track** via Web Audio `AnalyserNode`, **Download Manifest JSON** export, and real-time 5-step telemetry.
 - **MCP Stdio Server (`ytmix mcp`):** Exposes a pure Go standard-library Model Context Protocol server over newline-delimited JSON-RPC 2.0 `stdio` (`2025-06-18` / `2025-03-26` / `2024-11-05`) so AI assistants (Antigravity, Claude Desktop, Cursor) can inspect host FFmpeg/FFprobe availability, detected H.264 encoders, Path D Auto Visualizer presets/themes/resolutions (`get_capabilities`), audio Track folders (`inspect_tracks`), Background Visual assets (`inspect_background`), dry-run Mix plans and Crossfade-adjusted Chapter Timestamps (`plan_mix`), single-frame Path D PNG previews (`preview_visualizer_frame`), asynchronous 5-step Mix rendering with Display Title overrides, live progress/cancellation, and output verification (`start_render`, `get_render_status`, `cancel_render`, `verify_mix`), static discovery + live job MCP resources (`ytmix://presets`, `ytmix://themes`, `ytmix://resolutions`, `ytmix://jobs/{id}`, `ytmix://jobs/{id}/timestamps`), and guided workflow MCP prompts (`create-sleep-mix`, `clean-youtube-release`).
 
 ## Prerequisites
@@ -61,6 +62,12 @@ go build -o ytmix.exe ./cmd/ytmix
 
 # Path C: Static cover art with shuffled tracks and full-track title overlays
 ./ytmix --audio-dir ./tracks --bg cover_art.png --shuffle --overlay-titles --out mix.mp4
+
+# Per-Track Visuals (Auto): Discover sidecars & ID3 cover art over Path D bars with 0.5s dip transitions
+./ytmix --audio-dir ./tracks --track-media auto --track-media-layout auto --track-transition dip --overlay-titles --out mix.mp4
+
+# Per-Track Visuals (Manifest): Explicit dual-layer configuration via JSON manifest
+./ytmix --audio-dir ./tracks --track-media ./track_media_manifest.json --out mix.mp4
 
 # Launch the Editorial Mix Studio web UI (default: http://127.0.0.1:8080)
 ./ytmix ui
@@ -154,9 +161,37 @@ Example MCP client configuration (`mcpServers`):
 | `--fade-to-black` | `duration` | `0s` | Fade Path D video and burned Title Overlays to `#000000` black after this duration (e.g., `15m`; `0` disables). |
 | `--dim-titles` | `bool` | `false` | Use low-luminance translucent warm-gray ASS styling (`&H789EB2AF`) for Title Overlays. |
 | `--list-visualizers` | `bool` | `false` | Print all 14 built-in Path D presets (with live FFmpeg filter availability) and 7 Color Themes and exit. |
+| `--track-media` | `string` | `off` | Per-Track visual mode: `off` (Paths A–D), `auto` (sidecar + ID3 `attached_pic`), or `<manifest.json>` path. |
+| `--track-media-layout` | `string` | `auto` | Default framing for per-Track visuals: `auto` (`Art Card` for ID3/square `aspect <= 1.25`, `Fullscreen` for widescreen), `fullscreen`, or `card`. |
+| `--track-transition` | `string` | `cut` | Visual transition at Track segment boundaries: `cut` (direct cut) or `dip` (`0.5s` fade-to-black dip). |
+
+## Per-Track Media Manifest (`--track-media <manifest.json>`)
+
+When `--track-media` points to a `.json` file, `ytmix` resolves relative `bgPath` and `media` paths against the manifest's directory and applies precedence **Manifest Entry → Sidecar (`<track_stem>.<ext>`) → Embedded ID3 `attached_pic` → `L0 Only`**:
+
+```json
+{
+  "layer0": {
+    "mode": "visualizer",
+    "visualizer": "bars",
+    "visualizerTheme": "studio-mint",
+    "visualizerResolution": "1080p",
+    "visualizerGlow": true,
+    "visualizerBrightness": 100
+  },
+  "auto": true,
+  "layout": "auto",
+  "transition": "dip",
+  "tracks": [
+    { "file": "01_Opening.mp3", "media": "./art/opening_wide.png", "layerMode": "fullscreen" },
+    { "file": "02_Midnight.mp3", "media": "./art/cover_sq.png", "layerMode": "card" },
+    { "file": "03_Outro.mp3", "layerMode": "backdrop" }
+  ]
+}
+```
 
 ## Documentation & Architecture
 
 - [Technical Specification](docs/specs/ytmix_technical_specification.md) — full pipeline rules, FFmpeg filter chains, and end-to-end verification suite.
 - [Interactive Architecture & Pipeline Blueprint](docs/specs/ytmix_architecture_pipeline_blueprint.html) — interactive HTML simulator of CLI flags and Rendering Paths.
-- [Domain Glossary](GLOSSARY.md), [ADR 0001](docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md), [ADR 0002](docs/adr/0002-embedded-http-ui-and-sse-telemetry.md), and [ADR 0003](docs/adr/0003-path-d-ffmpeg-auto-visualizer.md).
+- [Domain Glossary](GLOSSARY.md), [ADR 0001](docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md), [ADR 0002](docs/adr/0002-embedded-http-ui-and-sse-telemetry.md), [ADR 0003](docs/adr/0003-path-d-ffmpeg-auto-visualizer.md), and [ADR 0004](docs/adr/0004-per-track-media-segment-concat.md).

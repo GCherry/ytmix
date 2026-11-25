@@ -556,3 +556,372 @@ func TestTrackIntakeAndConcurrency(t *testing.T) {
 		}
 	})
 }
+
+func TestProbeEmbeddedArt(t *testing.T) {
+	t.Run("parses attached_pic streams deterministically and handles missing streams", func(t *testing.T) {
+		cases := []struct {
+			name      string
+			payload   string
+			want      EmbeddedArt
+		}{
+			{
+				name:    "missing streams array (backward-compatible stub)",
+				payload: `{"format":{"duration":"10.0","tags":{}}}`,
+				want:    EmbeddedArt{},
+			},
+			{
+				name:    "empty streams array",
+				payload: `{"streams":[]}`,
+				want:    EmbeddedArt{},
+			},
+			{
+				name:    "audio stream only",
+				payload: `{"streams":[{"index":0,"codec_type":"audio","codec_name":"mp3","disposition":{"attached_pic":0}}]}`,
+				want:    EmbeddedArt{},
+			},
+			{
+				name:    "video stream without attached_pic",
+				payload: `{"streams":[{"index":0,"codec_type":"audio","codec_name":"mp3"},{"index":1,"codec_type":"video","codec_name":"mjpeg","width":500,"height":500,"disposition":{"attached_pic":0}}]}`,
+				want:    EmbeddedArt{},
+			},
+			{
+				name:    "single attached_pic mjpeg cover",
+				payload: `{"streams":[{"index":0,"codec_type":"audio","codec_name":"mp3","disposition":{"attached_pic":0}},{"index":1,"codec_type":"video","codec_name":"mjpeg","width":1000,"height":1000,"disposition":{"attached_pic":1}}]}`,
+				want:    EmbeddedArt{HasArt: true, Width: 1000, Height: 1000, Codec: "mjpeg"},
+			},
+			{
+				name:    "multiple attached_pic streams pick first deterministically",
+				payload: `{"streams":[{"index":0,"codec_type":"audio","codec_name":"mp3","disposition":{"attached_pic":0}},{"index":1,"codec_type":"video","codec_name":"png","width":800,"height":800,"disposition":{"attached_pic":1}},{"index":2,"codec_type":"video","codec_name":"mjpeg","width":1200,"height":900,"disposition":{"attached_pic":1}}]}`,
+				want:    EmbeddedArt{HasArt: true, Width: 800, Height: 800, Codec: "png"},
+			},
+			{
+				name:    "ignores non-video stream even if attached_pic=1",
+				payload: `{"streams":[{"index":0,"codec_type":"data","codec_name":"bin_data","disposition":{"attached_pic":1}},{"index":1,"codec_type":"video","codec_name":"webp","width":640,"height":480,"disposition":{"attached_pic":1}}]}`,
+				want:    EmbeddedArt{HasArt: true, Width: 640, Height: 480, Codec: "webp"},
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				var gotArgs []string
+				runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+					if name != "ffprobe" {
+						return nil, errors.New("unexpected binary: " + name)
+					}
+					gotArgs = args
+					return []byte(tc.payload), nil
+				}
+				got, err := ProbeEmbeddedArt(context.Background(), "track.mp3", runner)
+				if err != nil {
+					t.Fatalf("ProbeEmbeddedArt error: %v", err)
+				}
+				wantArgs := []string{
+					"-v", "error",
+					"-show_entries", "stream=index,codec_type,codec_name,width,height:stream_disposition=attached_pic",
+					"-of", "json",
+					"track.mp3",
+				}
+				if !reflect.DeepEqual(gotArgs, wantArgs) {
+					t.Fatalf("ffprobe args = %v, want %v", gotArgs, wantArgs)
+				}
+				if got != tc.want {
+					t.Fatalf("got %+v, want %+v", got, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("ProbeTracksWithArt populates Track embedded art fields in a single ffprobe call per Track", func(t *testing.T) {
+		dir := t.TempDir()
+		p1 := filepath.Join(dir, "01 - Cover.mp3")
+		p2 := filepath.Join(dir, "02 - Plain.mp3")
+		for _, p := range []string{p1, p2} {
+			if err := os.WriteFile(p, []byte("mp3"), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		var calls atomic.Int32
+		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name != "ffprobe" {
+				return nil, errors.New("unexpected binary: " + name)
+			}
+			calls.Add(1)
+			target := args[len(args)-1]
+			if target == p1 {
+				return []byte(`{"format":{"duration":"45.0","tags":{"title":"With Cover"}},"streams":[{"index":0,"codec_type":"audio","codec_name":"mp3","disposition":{"attached_pic":0}},{"index":1,"codec_type":"video","codec_name":"mjpeg","width":1400,"height":1400,"disposition":{"attached_pic":1}}]}`), nil
+			}
+			return []byte(`{"format":{"duration":"30.0","tags":{}},"streams":[{"index":0,"codec_type":"audio","codec_name":"mp3","disposition":{"attached_pic":0}}]}`), nil
+		}
+
+		tracks, err := ProbeTracksWithArt(context.Background(), dir, false, nil, runner)
+		if err != nil {
+			t.Fatalf("ProbeTracksWithArt error: %v", err)
+		}
+		if calls.Load() != 2 {
+			t.Fatalf("expected 2 ffprobe calls, got %d", calls.Load())
+		}
+		if len(tracks) != 2 {
+			t.Fatalf("expected 2 tracks, got %d", len(tracks))
+		}
+		if tracks[0].DisplayTitle != "With Cover" || !tracks[0].HasEmbeddedArt || tracks[0].EmbeddedArtWidth != 1400 || tracks[0].EmbeddedArtHeight != 1400 || tracks[0].EmbeddedArtCodec != "mjpeg" {
+			t.Fatalf("tracks[0] art = %+v", tracks[0])
+		}
+		if tracks[1].DisplayTitle != "Plain" || tracks[1].HasEmbeddedArt || tracks[1].EmbeddedArtWidth != 0 || tracks[1].EmbeddedArtHeight != 0 || tracks[1].EmbeddedArtCodec != "" {
+			t.Fatalf("tracks[1] art = %+v", tracks[1])
+		}
+
+		// Also verify ProbeFileWithArt handles missing streams gracefully.
+		dur, title, art, err := ProbeFileWithArt(context.Background(), p2, func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+			return []byte(`{"format":{"duration":"12.5","tags":{"title":"Stub"}}}`), nil
+		})
+		if err != nil || dur != 12.5 || title != "Stub" || art != (EmbeddedArt{}) {
+			t.Fatalf("ProbeFileWithArt stub = (%v, %q, %+v, %v)", dur, title, art, err)
+		}
+	})
+
+	t.Run("validates context, nil runner, and invalid JSON", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := ProbeEmbeddedArt(ctx, "a.mp3", func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+			t.Fatal("runner should not be called on cancelled ctx")
+			return nil, nil
+		}); !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+		if _, err := ProbeEmbeddedArt(context.Background(), "a.mp3", nil); err == nil {
+			t.Fatal("expected error for nil runner")
+		}
+		if _, err := ProbeEmbeddedArt(context.Background(), "a.mp3", func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+			return []byte("{bad"), nil
+		}); err == nil {
+			t.Fatal("expected JSON parse error")
+		}
+	})
+}
+
+func TestDiscoverSidecarMedia(t *testing.T) {
+	cases := []struct {
+		name     string
+		files    []string
+		dirs     []string
+		trackRel string
+		wantFile string
+		wantKind string
+		wantOK   bool
+	}{
+		{
+			name:     "no matching sidecar",
+			files:    []string{"01 - Dawn.mp3", "02 - Dawn.jpg", "01 - Dawn_alt.png", "01 - Dawn.txt"},
+			trackRel: "01 - Dawn.mp3",
+			wantOK:   false,
+		},
+		{
+			name:     "case-insensitive jpg",
+			files:    []string{"01 - Dawn.mp3", "01 - Dawn.JPG"},
+			trackRel: "01 - Dawn.mp3",
+			wantFile: "01 - Dawn.JPG",
+			wantKind: "image",
+			wantOK:   true,
+		},
+		{
+			name:     "case-insensitive jpeg",
+			files:    []string{"01 - Dawn.mp3", "01 - Dawn.JpEg"},
+			trackRel: "01 - Dawn.mp3",
+			wantFile: "01 - Dawn.JpEg",
+			wantKind: "image",
+			wantOK:   true,
+		},
+		{
+			name:     "case-insensitive png",
+			files:    []string{"01 - Dawn.mp3", "01 - Dawn.Png"},
+			trackRel: "01 - Dawn.mp3",
+			wantFile: "01 - Dawn.Png",
+			wantKind: "image",
+			wantOK:   true,
+		},
+		{
+			name:     "case-insensitive webp",
+			files:    []string{"01 - Dawn.mp3", "01 - Dawn.WEBP"},
+			trackRel: "01 - Dawn.mp3",
+			wantFile: "01 - Dawn.WEBP",
+			wantKind: "image",
+			wantOK:   true,
+		},
+		{
+			name:     "case-insensitive mp4 video",
+			files:    []string{"01 - Dawn.mp3", "01 - Dawn.MP4"},
+			trackRel: "01 - Dawn.mp3",
+			wantFile: "01 - Dawn.MP4",
+			wantKind: "video",
+			wantOK:   true,
+		},
+		{
+			name:     "case-insensitive mov video",
+			files:    []string{"01 - Dawn.mp3", "01 - Dawn.Mov"},
+			trackRel: "01 - Dawn.mp3",
+			wantFile: "01 - Dawn.Mov",
+			wantKind: "video",
+			wantOK:   true,
+		},
+		{
+			name:     "case-insensitive gif video",
+			files:    []string{"01 - Dawn.mp3", "01 - Dawn.GIF"},
+			trackRel: "01 - Dawn.mp3",
+			wantFile: "01 - Dawn.GIF",
+			wantKind: "video",
+			wantOK:   true,
+		},
+		{
+			name:     "priority mp4 over mov, gif, png, jpg",
+			files:    []string{"track.mp3", "track.jpg", "track.png", "track.gif", "track.mov", "track.mp4"},
+			trackRel: "track.mp3",
+			wantFile: "track.mp4",
+			wantKind: "video",
+			wantOK:   true,
+		},
+		{
+			name:     "priority mov over gif and png",
+			files:    []string{"track.mp3", "track.png", "track.gif", "track.mov"},
+			trackRel: "track.mp3",
+			wantFile: "track.mov",
+			wantKind: "video",
+			wantOK:   true,
+		},
+		{
+			name:     "priority gif over png and jpg",
+			files:    []string{"track.mp3", "track.jpg", "track.png", "track.gif"},
+			trackRel: "track.mp3",
+			wantFile: "track.gif",
+			wantKind: "video",
+			wantOK:   true,
+		},
+		{
+			name:     "priority png over jpg, jpeg, webp",
+			files:    []string{"track.mp3", "track.webp", "track.jpeg", "track.jpg", "track.png"},
+			trackRel: "track.mp3",
+			wantFile: "track.png",
+			wantKind: "image",
+			wantOK:   true,
+		},
+		{
+			name:     "priority jpg over jpeg and webp",
+			files:    []string{"track.mp3", "track.webp", "track.jpeg", "track.jpg"},
+			trackRel: "track.mp3",
+			wantFile: "track.jpg",
+			wantKind: "image",
+			wantOK:   true,
+		},
+		{
+			name:     "priority jpeg over webp",
+			files:    []string{"track.mp3", "track.webp", "track.jpeg"},
+			trackRel: "track.mp3",
+			wantFile: "track.jpeg",
+			wantKind: "image",
+			wantOK:   true,
+		},
+		{
+			name:     "ignores directories matching sidecar pattern",
+			files:    []string{"track.mp3", "track.jpg"},
+			dirs:     []string{"track.mp4"},
+			trackRel: "track.mp3",
+			wantFile: "track.jpg",
+			wantKind: "image",
+			wantOK:   true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, f := range tc.files {
+				if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, d := range tc.dirs {
+				if err := os.Mkdir(filepath.Join(dir, d), 0755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			gotPath, gotKind, gotOK := DiscoverSidecarMedia(filepath.Join(dir, tc.trackRel))
+			wantPath := ""
+			if tc.wantFile != "" {
+				wantPath = filepath.Join(dir, tc.wantFile)
+			}
+			if gotOK != tc.wantOK || gotKind != tc.wantKind || gotPath != wantPath {
+				t.Fatalf("DiscoverSidecarMedia() = (%q, %q, %v), want (%q, %q, %v)", gotPath, gotKind, gotOK, wantPath, tc.wantKind, tc.wantOK)
+			}
+		})
+	}
+
+	t.Run("handles blank and missing directories cleanly", func(t *testing.T) {
+		if p, k, ok := DiscoverSidecarMedia("   "); ok || p != "" || k != "" {
+			t.Fatalf("expected empty result for blank path, got (%q, %q, %v)", p, k, ok)
+		}
+		if p, k, ok := DiscoverSidecarMedia(filepath.Join(t.TempDir(), "missing", "01.mp3")); ok || p != "" || k != "" {
+			t.Fatalf("expected empty result for missing dir, got (%q, %q, %v)", p, k, ok)
+		}
+	})
+}
+
+func TestExtractEmbeddedArt(t *testing.T) {
+	t.Run("invokes ffmpeg with deterministic single-frame extraction args", func(t *testing.T) {
+		var gotName string
+		var gotArgs []string
+		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+			gotName = name
+			gotArgs = args
+			return nil, nil
+		}
+		err := ExtractEmbeddedArt(context.Background(), "/tmp/01.mp3", "/tmp/cover.jpg", runner)
+		if err != nil {
+			t.Fatalf("ExtractEmbeddedArt error: %v", err)
+		}
+		wantArgs := []string{
+			"-y",
+			"-hide_banner",
+			"-loglevel", "error",
+			"-i", "/tmp/01.mp3",
+			"-map", "0:v:0",
+			"-frames:v", "1",
+			"/tmp/cover.jpg",
+		}
+		if gotName != "ffmpeg" || !reflect.DeepEqual(gotArgs, wantArgs) {
+			t.Fatalf("got (%q, %v), want (%q, %v)", gotName, gotArgs, "ffmpeg", wantArgs)
+		}
+	})
+
+	t.Run("validates arguments, context cancellation, and propagates runner failure", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := ExtractEmbeddedArt(ctx, "a.mp3", "out.jpg", func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+			t.Fatal("runner should not run on cancelled ctx")
+			return nil, nil
+		}); !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+
+		if err := ExtractEmbeddedArt(context.Background(), "a.mp3", "out.jpg", nil); err == nil {
+			t.Fatal("expected error for nil runner")
+		}
+		if err := ExtractEmbeddedArt(context.Background(), "  ", "out.jpg", func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+			return nil, nil
+		}); err == nil {
+			t.Fatal("expected error for empty trackPath")
+		}
+		if err := ExtractEmbeddedArt(context.Background(), "a.mp3", "  ", func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+			return nil, nil
+		}); err == nil {
+			t.Fatal("expected error for empty outPath")
+		}
+
+		boom := errors.New("ffmpeg failed")
+		err := ExtractEmbeddedArt(context.Background(), "a.mp3", "out.jpg", func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+			return nil, boom
+		})
+		if !errors.Is(err, boom) {
+			t.Fatalf("expected wrapped boom error, got %v", err)
+		}
+	})
+}

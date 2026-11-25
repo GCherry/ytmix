@@ -65,8 +65,34 @@ func TestParseFlags(t *testing.T) {
 			defCfg.Visualizer != "" || defCfg.VisualizerTheme != "studio-mint" ||
 			defCfg.VisualizerResolution != "1080p" ||
 			!defCfg.VisualizerGlow || defCfg.VisualizerBrightness != 100 ||
-			defCfg.FadeToBlack != 0 || defCfg.DimTitles {
+			defCfg.FadeToBlack != 0 || defCfg.DimTitles ||
+			defCfg.TrackMedia != "off" || defCfg.TrackMediaLayout != "auto" ||
+			defCfg.TrackTransition != "cut" || defCfg.Segmented {
 			t.Fatalf("unexpected default config: %+v", defCfg)
+		}
+
+		tmAutoCfg, err := ParseFlags([]string{
+			"--track-media", "auto",
+			"--track-media-layout", "card",
+			"--track-transition", "dip",
+		})
+		if err != nil {
+			t.Fatalf("ParseFlags --track-media auto error: %v", err)
+		}
+		if tmAutoCfg.TrackMedia != "auto" || tmAutoCfg.TrackMediaLayout != "card" || tmAutoCfg.TrackTransition != "dip" || !tmAutoCfg.Segmented {
+			t.Fatalf("unexpected --track-media auto config: %+v", tmAutoCfg)
+		}
+
+		tmManifestCfg, err := ParseFlags([]string{
+			"--track-media", "mix.json",
+			"--track-media-layout", "fullscreen",
+			"--track-transition", "cut",
+		})
+		if err != nil {
+			t.Fatalf("ParseFlags --track-media manifest error: %v", err)
+		}
+		if tmManifestCfg.TrackMedia != "mix.json" || tmManifestCfg.TrackMediaLayout != "fullscreen" || tmManifestCfg.TrackTransition != "cut" || !tmManifestCfg.Segmented {
+			t.Fatalf("unexpected --track-media manifest config: %+v", tmManifestCfg)
 		}
 
 		vizCfg, listViz, err := ParseCLIFlags([]string{
@@ -95,6 +121,10 @@ func TestParseFlags(t *testing.T) {
 			{"--visualizer-brightness", "9"},
 			{"--visualizer-brightness", "101"},
 			{"--fade-to-black", "-5s"},
+			{"--track-media", "invalid"},
+			{"--track-media", "bad.txt"},
+			{"--track-media-layout", "invalid"},
+			{"--track-transition", "invalid"},
 		} {
 			if _, _, err := ParseCLIFlags(badArgs); err == nil {
 				t.Fatalf("expected error for %v", badArgs)
@@ -289,6 +319,77 @@ func TestRunEstimate(t *testing.T) {
 		}
 		if probed {
 			t.Fatal("expected missing filter preflight to fail before probing tracks")
+		}
+	})
+
+	t.Run("segmented --track-media auto dry-run probes embedded art and prints segmented estimate without creating out-dir", func(t *testing.T) {
+		workDir := t.TempDir()
+		audioDir := filepath.Join(workDir, "tracks")
+		if err := os.Mkdir(audioDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(audioDir, "01 - Cover.mp3"), []byte("mp3"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(audioDir, "02 - Sidecar.mp3"), []byte("mp3"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(audioDir, "02 - Sidecar.png"), []byte("png"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		outDir := filepath.Join(workDir, "never-created-seg")
+
+		var sawAttachedPicProbe bool
+		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+			joined := strings.Join(args, " ")
+			if name == "ffprobe" {
+				if strings.Contains(joined, "attached_pic") {
+					sawAttachedPicProbe = true
+				}
+				target := args[len(args)-1]
+				if strings.HasSuffix(target, "01 - Cover.mp3") {
+					return []byte(`{"format":{"duration":"90.0"},"streams":[{"index":1,"codec_type":"video","codec_name":"mjpeg","width":600,"height":600,"disposition":{"attached_pic":1}}]}`), nil
+				}
+				if strings.HasSuffix(target, "02 - Sidecar.png") {
+					return []byte(`{"streams":[{"codec_type":"video","width":1920,"height":1080}]}`), nil
+				}
+				return []byte(`{"format":{"duration":"90.0"},"streams":[]}`), nil
+			}
+			if strings.Contains(joined, "-filters") {
+				return []byte(" .. showfreqs A->V Freqs\n .. scale V->V Scale\n .. color |->V Color\n"), nil
+			}
+			if strings.Contains(joined, "h264_nvenc") {
+				return nil, errors.New("no nvenc")
+			}
+			return nil, errors.New("unexpected ffmpeg command: " + joined)
+		}
+
+		var out bytes.Buffer
+		err := RunEstimate(context.Background(), mixer.Config{
+			AudioDir:   audioDir,
+			OutDir:     outDir,
+			TrackMedia: "auto",
+		}, &out, okLookPath, runner)
+		if err != nil {
+			t.Fatalf("RunEstimate segmented error: %v", err)
+		}
+		if !sawAttachedPicProbe {
+			t.Fatal("expected segmented RunEstimate to probe tracks with attached_pic")
+		}
+		if _, err := os.Stat(outDir); !os.IsNotExist(err) {
+			t.Fatalf("expected --out-dir not to be created on segmented --estimate, err=%v", err)
+		}
+		text := out.String()
+		for _, want := range []string{
+			"2, Mix duration 3m 00s",
+			"Segmented Per-Track (Option A)",
+			"Auto Visualizer (bars · studio-mint · 1080p)",
+			"Audio Stage:",
+			"Video Stage:",
+		} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("segmented RunEstimate output missing %q:\n%s", want, text)
+			}
 		}
 	})
 }

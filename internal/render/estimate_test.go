@@ -256,4 +256,118 @@ func TestEstimateMix(t *testing.T) {
 			t.Fatalf("expected PathA to be Calibrated=true when norm_loop and mux both have >=2 samples")
 		}
 	})
+
+	t.Run("Segmented estimation sums per-segment render estimates and respects uniform FPS", func(t *testing.T) {
+		estStill2 := EstimateMix(EstimateInput{
+			EncoderName:    "libx264",
+			MixDurationSec: 300,
+			TotalAudioSec:  300,
+			TrackCount:     2,
+			CPUCores:       8,
+			Segmented:      true,
+			Layer0:         Layer0Spec{Mode: Layer0Black},
+			Segments: []SegmentEstimateInput{
+				{SlotDurationSec: 150, LayerMode: LayerFullscreen, MediaKind: BackgroundKindImage},
+				{SlotDurationSec: 150, LayerMode: LayerBackdrop},
+			},
+		}, nil)
+
+		estStill10 := EstimateMix(EstimateInput{
+			EncoderName:    "libx264",
+			MixDurationSec: 300,
+			TotalAudioSec:  300,
+			TrackCount:     2,
+			CPUCores:       8,
+			Segmented:      true,
+			Layer0:         Layer0Spec{Mode: Layer0Black},
+			Segments: []SegmentEstimateInput{
+				{SlotDurationSec: 150, LayerMode: LayerFullscreen, MediaKind: BackgroundKindImage, OverlayTitles: true},
+				{SlotDurationSec: 150, LayerMode: LayerBackdrop},
+			},
+		}, nil)
+
+		estReactiveViz := EstimateMix(EstimateInput{
+			EncoderName:    "libx264",
+			MixDurationSec: 300,
+			TotalAudioSec:  300,
+			TrackCount:     2,
+			CPUCores:       8,
+			Segmented:      true,
+			Layer0:         Layer0Spec{Mode: Layer0Visualizer, Visualizer: VisualizerConfig{Preset: "bars", Resolution: Resolution1080p, Glow: true}},
+			Segments: []SegmentEstimateInput{
+				{SlotDurationSec: 150, LayerMode: LayerArtCard, MediaKind: BackgroundKindImage},
+				{SlotDurationSec: 150, LayerMode: LayerBackdrop},
+			},
+		}, nil)
+
+		estReactiveViz4K := EstimateMix(EstimateInput{
+			EncoderName:    "libx264",
+			MixDurationSec: 300,
+			TotalAudioSec:  300,
+			TrackCount:     2,
+			CPUCores:       8,
+			Segmented:      true,
+			Layer0:         Layer0Spec{Mode: Layer0Visualizer, Visualizer: VisualizerConfig{Preset: "bars", Resolution: Resolution4K, Glow: true}},
+			Segments: []SegmentEstimateInput{
+				{SlotDurationSec: 150, LayerMode: LayerArtCard, MediaKind: BackgroundKindImage},
+				{SlotDurationSec: 150, LayerMode: LayerBackdrop},
+			},
+		}, nil)
+
+		if estStill10.VideoSec <= estStill2.VideoSec*1.5 {
+			t.Fatalf("expected 10fps segmented (%v) slower than 2fps segmented (%v)", estStill10.VideoSec, estStill2.VideoSec)
+		}
+		if estReactiveViz.VideoSec <= estStill10.VideoSec*2.0 {
+			t.Fatalf("expected reactive visualizer segmented (%v) slower than 10fps still (%v)", estReactiveViz.VideoSec, estStill10.VideoSec)
+		}
+		if estReactiveViz4K.VideoSec <= estReactiveViz.VideoSec*2.5 {
+			t.Fatalf("expected 4K segmented (%v) slower than 1080p segmented (%v)", estReactiveViz4K.VideoSec, estReactiveViz.VideoSec)
+		}
+		if estReactiveViz.LoopCycles != 0 {
+			t.Fatalf("expected LoopCycles=0 in segmented mode, got %d", estReactiveViz.LoopCycles)
+		}
+		if estReactiveViz.LowSec >= estReactiveViz.PointSec || estReactiveViz.PointSec >= estReactiveViz.HighSec {
+			t.Fatalf("expected Low < Point < High, got %+v", estReactiveViz)
+		}
+	})
+
+	t.Run("Segmented estimation scales proportionally with summed segment durations and supports calibration", func(t *testing.T) {
+		in := EstimateInput{
+			EncoderName:    "libx264",
+			MixDurationSec: 200,
+			TotalAudioSec:  200,
+			TrackCount:     2,
+			CPUCores:       8,
+			Segmented:      true,
+			Layer0:         Layer0Spec{Mode: Layer0Media, BGKind: BackgroundKindVideo},
+			Segments: []SegmentEstimateInput{
+				{SlotDurationSec: 100, LayerMode: LayerArtCard, MediaKind: BackgroundKindImage},
+				{SlotDurationSec: 100, LayerMode: LayerBackdrop},
+			},
+		}
+		inDouble := in
+		inDouble.MixDurationSec = 400
+		inDouble.TotalAudioSec = 400
+		inDouble.Segments = []SegmentEstimateInput{
+			{SlotDurationSec: 200, LayerMode: LayerArtCard, MediaKind: BackgroundKindImage},
+			{SlotDurationSec: 200, LayerMode: LayerBackdrop},
+		}
+
+		est1 := EstimateMix(in, nil)
+		est2 := EstimateMix(inDouble, nil)
+		if est2.VideoSec <= est1.VideoSec*1.8 || est2.VideoSec >= est1.VideoSec*2.1 {
+			t.Fatalf("expected doubled segment durations to ~2x VideoSec (est1=%v, est2=%v)", est1.VideoSec, est2.VideoSec)
+		}
+
+		cal := map[string]CalibrationEntry{
+			CalibrationKey(PathB, "libx264", Resolution1080p): {Speed: 6.0, Samples: 3},
+		}
+		estCal := EstimateMix(in, cal)
+		if !estCal.Calibrated {
+			t.Fatalf("expected Calibrated=true when PathB key has >=2 samples")
+		}
+		if estCal.VideoSec <= est1.VideoSec {
+			t.Fatalf("expected slower calibrated speed (6x) to raise VideoSec (%v > %v)", estCal.VideoSec, est1.VideoSec)
+		}
+	})
 }

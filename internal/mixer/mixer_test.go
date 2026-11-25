@@ -3,7 +3,12 @@ package mixer
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"math"
 	"os"
 	"path/filepath"
@@ -1165,6 +1170,514 @@ func TestExecStreamRunner(t *testing.T) {
 		err := ExecStreamRunner(context.Background(), nil, exe, "-test.run=^TestExecStreamRunner$")
 		if err == nil || !strings.Contains(err.Error(), "simulated ffmpeg error") {
 			t.Fatalf("expected stderr in error, got: %v", err)
+		}
+	})
+}
+
+func writeTestPNG(t *testing.T, path string, width, height int) {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	img.Set(0, 0, color.RGBA{R: 255, G: 128, B: 64, A: 255})
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := png.Encode(f, img); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTrackMediaValidationAndPreflight(t *testing.T) {
+	okLookPath := func(name string) (string, error) { return "/usr/bin/" + name, nil }
+
+	t.Run("ValidateConfig validates track-media, layout, transition, and mutual exclusion", func(t *testing.T) {
+		validCases := []Config{
+			{TrackMedia: "off"},
+			{TrackMedia: "auto", TrackMediaLayout: "auto", TrackTransition: "cut"},
+			{TrackMedia: "auto", TrackMediaLayout: "fullscreen", TrackTransition: "dip"},
+			{TrackMedia: "mix.json", TrackMediaLayout: "card", TrackTransition: "dip"},
+			{TrackMedia: "auto", BG: "backdrop.png"},
+			{TrackMedia: "auto", Visualizer: "ember"},
+			{TrackOverrides: []TrackMediaOverride{{TrackIndex: 0, MediaPath: "a.png", LayerMode: render.LayerArtCard}}},
+		}
+		for _, cfg := range validCases {
+			if err := ValidateConfig(cfg, okLookPath); err != nil {
+				t.Fatalf("expected valid config %+v, got: %v", cfg, err)
+			}
+		}
+
+		invalidCases := []Config{
+			{TrackMedia: "invalid"},
+			{TrackMedia: "manifest.txt"},
+			{TrackMedia: "auto", TrackMediaLayout: "tile"},
+			{TrackMedia: "auto", TrackTransition: "wipe"},
+			{TrackMedia: "auto", BG: "bg.png", Visualizer: "bars"},
+			{TrackOverrides: []TrackMediaOverride{{TrackIndex: 0, LayerMode: "invalid"}}},
+			{TrackOverrides: []TrackMediaOverride{{TrackIndex: 0, MediaPath: "bad.bmp"}}},
+			{TrackOverrides: []TrackMediaOverride{{TrackIndex: 0, MediaKind: "audio"}}},
+		}
+		for _, cfg := range invalidCases {
+			if err := ValidateConfig(cfg, okLookPath); err == nil {
+				t.Fatalf("expected error for invalid config %+v", cfg)
+			}
+		}
+	})
+
+	t.Run("PreflightConfig sets Segmented and applies manifest Layer0", func(t *testing.T) {
+		tmp := t.TempDir()
+		bgPath := filepath.Join(tmp, "layer0.png")
+		writeTestPNG(t, bgPath, 1920, 1080)
+
+		manifestPath := filepath.Join(tmp, "manifest.json")
+		if err := os.WriteFile(manifestPath, []byte(fmt.Sprintf(`{
+			"layer0": {"mode": "media", "bgPath": %q},
+			"layout": "card",
+			"transition": "dip"
+		}`, "layer0.png")), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		resCfg, pathKind, err := PreflightConfig(Config{TrackMedia: manifestPath}, okLookPath, false)
+		if err != nil {
+			t.Fatalf("PreflightConfig manifest error: %v", err)
+		}
+		if !resCfg.Segmented || resCfg.BG != bgPath || pathKind != render.PathC {
+			t.Fatalf("unexpected preflight result: cfg=%+v path=%q", resCfg, pathKind)
+		}
+
+		offCfg, _, err := PreflightConfig(Config{TrackMedia: "off"}, okLookPath, false)
+		if err != nil {
+			t.Fatalf("PreflightConfig off error: %v", err)
+		}
+		if offCfg.Segmented {
+			t.Fatal("expected Segmented=false when --track-media off")
+		}
+	})
+}
+
+func TestParseTrackMediaManifest(t *testing.T) {
+	t.Run("parses valid manifest, resolves relative paths, and round-trips FadeToBlack", func(t *testing.T) {
+		tmp := t.TempDir()
+		sub := filepath.Join(tmp, "assets")
+		if err := os.Mkdir(sub, 0755); err != nil {
+			t.Fatal(err)
+		}
+		manifestPath := filepath.Join(tmp, "mix.json")
+		raw := `{
+			"layer0": {
+				"mode": "visualizer",
+				"visualizer": "ember",
+				"visualizerTheme": "oled-ember",
+				"visualizerResolution": "1440p",
+				"visualizerGlow": false,
+				"visualizerBrightness": 55,
+				"fadeToBlack": "15m"
+			},
+			"auto": true,
+			"layout": "card",
+			"transition": "dip",
+			"tracks": [
+				{"file": "01.mp3", "media": "assets/cover.png", "layerMode": "card"},
+				{"file": "02.mp3", "mode": "backdrop"}
+			]
+		}`
+		if err := os.WriteFile(manifestPath, []byte(raw), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		m, err := ParseTrackMediaManifest(manifestPath)
+		if err != nil {
+			t.Fatalf("ParseTrackMediaManifest error: %v", err)
+		}
+		if !m.Auto || m.Layout != "card" || m.Transition != "dip" || m.Layer0 == nil {
+			t.Fatalf("unexpected manifest header: %+v", m)
+		}
+		if m.Layer0.FadeToBlack != 15*time.Minute || m.Layer0.VisualizerGlow == nil || *m.Layer0.VisualizerGlow {
+			t.Fatalf("unexpected layer0: %+v", m.Layer0)
+		}
+		if m.Layer0.VisualizerBrightness == nil || *m.Layer0.VisualizerBrightness != 55 {
+			t.Fatalf("unexpected layer0 brightness: %+v", m.Layer0)
+		}
+		if len(m.Tracks) != 2 || m.Tracks[0].Media != filepath.Join(tmp, "assets", "cover.png") || m.Tracks[1].LayerMode != "backdrop" {
+			t.Fatalf("unexpected manifest tracks: %+v", m.Tracks)
+		}
+
+		encoded, err := json.Marshal(m)
+		if err != nil {
+			t.Fatalf("json.Marshal manifest error: %v", err)
+		}
+		if !strings.Contains(string(encoded), `"fadeToBlack":"15m0s"`) {
+			t.Fatalf("expected fadeToBlack duration string in JSON, got: %s", string(encoded))
+		}
+	})
+
+	t.Run("rejects invalid manifest payloads", func(t *testing.T) {
+		tmp := t.TempDir()
+		if _, err := ParseTrackMediaManifest(filepath.Join(tmp, "missing.json")); err == nil {
+			t.Fatal("expected error for missing manifest")
+		}
+		if _, err := ParseTrackMediaManifest(tmp); err == nil {
+			t.Fatal("expected error for directory manifest path")
+		}
+
+		badPayloads := []struct {
+			name string
+			body string
+		}{
+			{"invalid json", `{not-json`},
+			{"bad layout", `{"layout":"grid"}`},
+			{"bad transition", `{"transition":"crossfade"}`},
+			{"bad layer0 mode", `{"layer0":{"mode":"neon"}}`},
+			{"layer0 media missing bgPath", `{"layer0":{"mode":"media"}}`},
+			{"layer0 bgPath + visualizer", `{"layer0":{"bgPath":"a.png","visualizer":"bars"}}`},
+			{"layer0 bad fadeToBlack", `{"layer0":{"mode":"black","fadeToBlack":"not-a-duration"}}`},
+			{"empty track file", `{"tracks":[{"file":"  ","media":"a.png"}]}`},
+			{"duplicate track file", `{"tracks":[{"file":"01.mp3","media":"a.png"},{"file":"01.mp3","media":"b.png"}]}`},
+			{"conflicting mode vs layerMode", `{"tracks":[{"file":"01.mp3","media":"a.png","mode":"card","layerMode":"fullscreen"}]}`},
+			{"bad track media ext", `{"tracks":[{"file":"01.mp3","media":"a.bmp"}]}`},
+		}
+		for i, tc := range badPayloads {
+			p := filepath.Join(tmp, fmt.Sprintf("bad_%d.json", i))
+			if err := os.WriteFile(p, []byte(tc.body), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ParseTrackMediaManifest(p); err == nil {
+				t.Fatalf("case %q: expected error for %s", tc.name, tc.body)
+			}
+		}
+	})
+}
+
+func TestResolveTrackSegments(t *testing.T) {
+	t.Run("enforces precedence: Override/Manifest > Sidecar > ID3 attached_pic > L0 Only", func(t *testing.T) {
+		workDir := t.TempDir()
+		audioDir := filepath.Join(workDir, "tracks")
+		tempDir := filepath.Join(workDir, "temp")
+		if err := os.MkdirAll(audioDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(tempDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		t0 := filepath.Join(audioDir, "01 - Override.mp3")
+		t1 := filepath.Join(audioDir, "02 - Sidecar.mp3")
+		t2 := filepath.Join(audioDir, "03 - Embedded.mp3")
+		t3 := filepath.Join(audioDir, "04 - Fallback.mp3")
+		t4 := filepath.Join(audioDir, "05 - Suppressed.mp3")
+		for _, p := range []string{t0, t1, t2, t3, t4} {
+			if err := os.WriteFile(p, []byte("mp3"), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		// Sidecars for t0 (should be beaten by override), t1 (should win over ID3), and t4 (should be suppressed by ExplicitEmpty).
+		writeTestPNG(t, filepath.Join(audioDir, "01 - Override.png"), 1920, 1080)
+		writeTestPNG(t, filepath.Join(audioDir, "02 - Sidecar.png"), 1920, 1080)
+		writeTestPNG(t, filepath.Join(audioDir, "05 - Suppressed.png"), 1920, 1080)
+
+		overrideMedia := filepath.Join(workDir, "custom_square.png")
+		writeTestPNG(t, overrideMedia, 800, 800)
+
+		tracks := []Track{
+			{Path: t0, FileName: "01 - Override.mp3", Duration: 10, DisplayTitle: "Override", HasEmbeddedArt: true},
+			{Path: t1, FileName: "02 - Sidecar.mp3", Duration: 12, DisplayTitle: "Sidecar", HasEmbeddedArt: true},
+			{Path: t2, FileName: "03 - Embedded.mp3", Duration: 8, DisplayTitle: "Embedded", HasEmbeddedArt: true, EmbeddedArtWidth: 600, EmbeddedArtHeight: 600},
+			{Path: t3, FileName: "04 - Fallback.mp3", Duration: 9, DisplayTitle: "Fallback", HasEmbeddedArt: false},
+			{Path: t4, FileName: "05 - Suppressed.mp3", Duration: 7, DisplayTitle: "Suppressed", HasEmbeddedArt: true},
+		}
+
+		var extractedCalls int
+		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "ffmpeg" {
+				extractedCalls++
+				outPath := args[len(args)-1]
+				writeTestPNG(t, outPath, 600, 600)
+				return nil, nil
+			}
+			if name == "ffprobe" {
+				joined := strings.Join(args, " ")
+				if strings.Contains(joined, "attached_pic") {
+					return []byte(`{"streams":[]}`), nil
+				}
+				target := args[len(args)-1]
+				if target == overrideMedia {
+					return []byte(`{"streams":[{"codec_type":"video","width":800,"height":800}]}`), nil
+				}
+				return []byte(`{"streams":[{"codec_type":"video","width":1920,"height":1080}]}`), nil
+			}
+			return nil, nil
+		}
+
+		cfg := Config{
+			TrackMedia:    "auto",
+			Crossfade:     2.0,
+			OverlayTitles: true,
+			TitleDuration: 4,
+			FontName:      "Inter",
+			DimTitles:     true,
+			TrackOverrides: []TrackMediaOverride{
+				{TrackFile: "01 - Override.mp3", MediaPath: overrideMedia},
+				{TrackIndex: 4, ExplicitEmpty: true},
+			},
+		}
+
+		layer0, segs, err := ResolveTrackSegments(context.Background(), cfg, tracks, tempDir, runner)
+		if err != nil {
+			t.Fatalf("ResolveTrackSegments error: %v", err)
+		}
+		if layer0.Mode != render.Layer0Visualizer || layer0.Visualizer.Preset != render.DefaultVisualizerPreset {
+			t.Fatalf("expected default Layer0 Visualizer bars, got: %+v", layer0)
+		}
+		if len(segs) != 5 {
+			t.Fatalf("expected 5 segments, got %d", len(segs))
+		}
+		if extractedCalls != 1 {
+			t.Fatalf("expected exactly 1 embedded art extraction (for Track 2), got %d", extractedCalls)
+		}
+
+		// Verify precedence & auto layout results:
+		if segs[0].MediaPath != overrideMedia || segs[0].LayerMode != render.LayerArtCard {
+			t.Fatalf("seg[0] expected override square Art Card, got: %+v", segs[0])
+		}
+		if segs[1].MediaPath != filepath.Join(audioDir, "02 - Sidecar.png") || segs[1].LayerMode != render.LayerFullscreen {
+			t.Fatalf("seg[1] expected widescreen sidecar Fullscreen, got: %+v", segs[1])
+		}
+		wantArtPath := filepath.Join(tempDir, "art_2.jpg")
+		if segs[2].MediaPath != wantArtPath || segs[2].LayerMode != render.LayerArtCard {
+			t.Fatalf("seg[2] expected extracted ID3 Art Card at %q, got: %+v", wantArtPath, segs[2])
+		}
+		if segs[3].LayerMode != render.LayerBackdrop || segs[3].MediaPath != "" {
+			t.Fatalf("seg[3] expected L0 Only fallback, got: %+v", segs[3])
+		}
+		if segs[4].LayerMode != render.LayerBackdrop || segs[4].MediaPath != "" {
+			t.Fatalf("seg[4] expected ExplicitEmpty L0 Only, got: %+v", segs[4])
+		}
+
+		// Verify crossfade-aware slot durations: [10,12,8,9,7] with crossfade 2 -> starts [0,8,18,24,31], slots [8,10,6,7,7].
+		wantStarts := []float64{0, 8, 18, 24, 31}
+		wantSlots := []float64{8, 10, 6, 7, 7}
+		for i, seg := range segs {
+			if seg.StartSec != wantStarts[i] || seg.SlotDuration != wantSlots[i] {
+				t.Errorf("seg[%d] timing = (start=%v, slot=%v), want (%v, %v)", i, seg.StartSec, seg.SlotDuration, wantStarts[i], wantSlots[i])
+			}
+			wantASS := filepath.Join(tempDir, fmt.Sprintf("seg_%d.ass", i))
+			if seg.SegmentASSPath != wantASS {
+				t.Errorf("seg[%d].SegmentASSPath = %q, want %q", i, seg.SegmentASSPath, wantASS)
+			}
+			assBytes, err := os.ReadFile(wantASS)
+			if err != nil {
+				t.Fatalf("read %s: %v", wantASS, err)
+			}
+			if !strings.Contains(string(assBytes), "Style: Default,Inter,42,&H789EB2AF") || !strings.Contains(string(assBytes), "Dialogue: 0,0:00:00.00,") {
+				t.Fatalf("unexpected segment ASS content for seg[%d]:\n%s", i, string(assBytes))
+			}
+		}
+	})
+
+	t.Run("auto aspect heuristic, layout overrides, Layer0 black, and unknown-track error", func(t *testing.T) {
+		tmp := t.TempDir()
+		mp3Path := filepath.Join(tmp, "01 - Track.mp3")
+		if err := os.WriteFile(mp3Path, []byte("mp3"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		cases := []struct {
+			name         string
+			w, h         int
+			layout       string
+			overrideMode render.TrackLayerMode
+			want         render.TrackLayerMode
+		}{
+			{"square 1:1 auto -> card", 1000, 1000, "auto", "", render.LayerArtCard},
+			{"boundary 1.25 auto -> card", 1000, 800, "auto", "", render.LayerArtCard},
+			{"4:3 1.33 auto -> fullscreen", 1280, 960, "auto", "", render.LayerFullscreen},
+			{"16:9 auto -> fullscreen", 1920, 1080, "auto", "", render.LayerFullscreen},
+			{"square with layout=fullscreen -> fullscreen", 1000, 1000, "fullscreen", "", render.LayerFullscreen},
+			{"16:9 with layout=card -> card", 1920, 1080, "card", "", render.LayerArtCard},
+			{"per-track override beats layout", 1000, 1000, "card", render.LayerFullscreen, render.LayerFullscreen},
+		}
+		for i, tc := range cases {
+			imgPath := filepath.Join(tmp, fmt.Sprintf("img_%d.png", i))
+			writeTestPNG(t, imgPath, tc.w, tc.h)
+
+			layer0, segs, err := ResolveTrackSegments(context.Background(), Config{
+				Visualizer:       "black",
+				TrackMediaLayout: tc.layout,
+				TrackOverrides: []TrackMediaOverride{
+					{TrackIndex: 0, MediaPath: imgPath, LayerMode: tc.overrideMode},
+				},
+			}, []Track{{Path: mp3Path, FileName: "01 - Track.mp3", Duration: 10, DisplayTitle: "Track"}}, "", nil)
+			if err != nil {
+				t.Fatalf("%s: ResolveTrackSegments error: %v", tc.name, err)
+			}
+			if layer0.Mode != render.Layer0Black {
+				t.Fatalf("%s: expected Layer0Black when Visualizer==black, got %+v", tc.name, layer0)
+			}
+			if segs[0].LayerMode != tc.want {
+				t.Fatalf("%s: LayerMode = %q, want %q", tc.name, segs[0].LayerMode, tc.want)
+			}
+		}
+
+		manifestPath := filepath.Join(tmp, "unknown.json")
+		if err := os.WriteFile(manifestPath, []byte(`{"tracks":[{"file":"missing.mp3","mode":"backdrop"}]}`), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := ResolveTrackSegments(context.Background(), Config{TrackMedia: manifestPath}, []Track{{Path: mp3Path, FileName: "01 - Track.mp3", Duration: 10}}, "", nil); err == nil || !strings.Contains(err.Error(), "unknown track") {
+			t.Fatalf("expected unknown track error, got: %v", err)
+		}
+	})
+}
+
+func TestSegmentedEstimateAndRunWithTracks(t *testing.T) {
+	okLookPath := func(name string) (string, error) { return "/usr/bin/" + name, nil }
+
+	t.Run("EstimateConfig and RunWithTracks execute segmented pipeline while preserving original Track paths under Normalize", func(t *testing.T) {
+		workDir := t.TempDir()
+		audioDir := filepath.Join(workDir, "tracks")
+		if err := os.Mkdir(audioDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		t1 := filepath.Join(audioDir, "01_First.mp3")
+		t2 := filepath.Join(audioDir, "02_Second.mp3")
+		for _, p := range []string{t1, t2} {
+			if err := os.WriteFile(p, []byte("mp3"), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		sidecar1 := filepath.Join(audioDir, "01_First.png")
+		writeTestPNG(t, sidecar1, 1920, 1080)
+
+		tracks := []Track{
+			{Path: t1, FileName: "01_First.mp3", Duration: 10.0, DisplayTitle: "First"},
+			{Path: t2, FileName: "02_Second.mp3", Duration: 12.0, DisplayTitle: "Second", HasEmbeddedArt: true, EmbeddedArtWidth: 600, EmbeddedArtHeight: 600},
+		}
+
+		var (
+			mu            sync.Mutex
+			ffmpegCmds    [][]string
+			extractedFrom string
+			sawSegConcat  bool
+			sawDipFade    bool
+		)
+		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+			joined := strings.Join(args, " ")
+			if name == "ffprobe" {
+				target := args[len(args)-1]
+				if strings.HasSuffix(target, ".wav") {
+					return []byte(`{"format":{"duration":"10.000000","tags":{}}}`), nil
+				}
+				if target == sidecar1 {
+					return []byte(`{"streams":[{"codec_type":"video","width":1920,"height":1080}]}`), nil
+				}
+				return []byte(`{"streams":[]}`), nil
+			}
+
+			mu.Lock()
+			ffmpegCmds = append(ffmpegCmds, args)
+			if strings.Contains(joined, "-frames:v 1") {
+				for i, a := range args {
+					if a == "-i" && i+1 < len(args) {
+						extractedFrom = args[i+1]
+						break
+					}
+				}
+				writeTestPNG(t, args[len(args)-1], 600, 600)
+			}
+			if strings.Contains(joined, "seg_concat.txt") {
+				sawSegConcat = true
+			}
+			if strings.Contains(joined, "fade=t=") {
+				sawDipFade = true
+			}
+			mu.Unlock()
+
+			if strings.Contains(joined, "-filters") {
+				return []byte(" .. showfreqs A->V Freqs\n .. scale V->V Scale\n .. color |->V Color\n"), nil
+			}
+			if strings.Contains(joined, "h264_nvenc") {
+				return nil, errors.New("no nvenc")
+			}
+			return nil, nil
+		}
+
+		cfg := Config{
+			BG:              "",
+			Out:             filepath.Join(workDir, "seg_mix.mp4"),
+			Timestamps:      filepath.Join(workDir, "seg_chapters.txt"),
+			Crossfade:       1.0,
+			Normalize:       true,
+			OverlayTitles:   true,
+			TrackMedia:      "auto",
+			TrackTransition: "dip",
+		}
+
+		est, err := EstimateConfig(context.Background(), cfg, tracks, nil, okLookPath, runner)
+		if err != nil {
+			t.Fatalf("EstimateConfig segmented error: %v", err)
+		}
+		if est.VideoSec <= 0 || est.AudioSec <= 0 || est.MixDurationSec != 21.0 {
+			t.Fatalf("unexpected segmented estimate: %+v", est)
+		}
+
+		var events []TelemetryEvent
+		if err := RunWithTracks(context.Background(), cfg, tracks, func(ev TelemetryEvent) { events = append(events, ev) }, okLookPath, runner, nil); err != nil {
+			t.Fatalf("RunWithTracks segmented error: %v", err)
+		}
+
+		if extractedFrom != t2 {
+			t.Fatalf("expected embedded art extraction from original MP3 %q even with Normalize=true, got %q", t2, extractedFrom)
+		}
+		if !sawSegConcat {
+			t.Fatalf("expected seg_concat.txt concat command in ffmpeg calls: %v", ffmpegCmds)
+		}
+		if !sawDipFade {
+			t.Fatalf("expected fade=t= dip transition in segment commands: %v", ffmpegCmds)
+		}
+
+		tsBytes, err := os.ReadFile(cfg.Timestamps)
+		if err != nil {
+			t.Fatalf("read timestamps: %v", err)
+		}
+		if string(tsBytes) != "00:00 First\n00:09 Second\n" {
+			t.Fatalf("unexpected timestamps:\n%s", string(tsBytes))
+		}
+
+		lastEv := events[len(events)-1]
+		if lastEv.Kind != EventDone || lastEv.Progress != 100 || !strings.Contains(lastEv.Message, "Segmented (Option A)") {
+			t.Fatalf("unexpected completion telemetry: %+v", lastEv)
+		}
+	})
+
+	t.Run("TrackMedia off routes identically through non-segmented Path C without segment concat", func(t *testing.T) {
+		workDir, audioDir, bgPath := setupStubMixWorkspace(t, "cover.png")
+		cfg := Config{
+			AudioDir:   audioDir,
+			BG:         bgPath,
+			Out:        filepath.Join(workDir, "compat.mp4"),
+			Timestamps: filepath.Join(workDir, "compat_ts.txt"),
+			TrackMedia: "off",
+		}
+		var sawSegConcat bool
+		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "ffprobe" {
+				return []byte(`{"format":{"duration":"4.000000","tags":{}}}`), nil
+			}
+			if strings.Contains(strings.Join(args, " "), "seg_concat.txt") {
+				sawSegConcat = true
+			}
+			return nil, nil
+		}
+		var events []TelemetryEvent
+		if err := Run(context.Background(), cfg, func(ev TelemetryEvent) { events = append(events, ev) }, okLookPath, runner, nil); err != nil {
+			t.Fatalf("Run TrackMedia=off error: %v", err)
+		}
+		if sawSegConcat {
+			t.Fatal("expected TrackMedia=off not to invoke segmented concat")
+		}
+		if !strings.Contains(events[len(events)-1].Message, "Path C") {
+			t.Fatalf("expected standard Path C completion message, got: %+v", events[len(events)-1])
 		}
 	})
 }

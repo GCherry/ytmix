@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -161,9 +164,9 @@ func TestStaticAssetsAndHealth(t *testing.T) {
 		wantType string
 		wantSub  []string
 	}{
-		{"/", "text/html", []string{"Editorial Mix Studio", "out-dir-input", "browse-out-dir-btn", "browse-audio-dir-btn", "browse-bg-path-btn", "fs-modal", "save-lan-folder-btn", "fs-modal-out-name", "fs-modal-ts-name", "bg-mode-visualizer", "viz-pager", "audition-btn", "darkness-box", "stage-canvas", "left-tab-tracks", "left-tab-studio", "left-pane-studio", "stage-audition-btn", "stage-track-select", "right-tab-chapters", "right-tab-output", "right-tab-telemetry", "render-dock", "estimate-strip", "estimate-pill", "cost-seg-audio", "cost-seg-video", "telemetry-accuracy"}},
-		{"/styles.css", "text/css", []string{"[hidden]", ".modal-backdrop", ".fs-root-chip", ".preset-grid", ".preset-pager", ".darkness-box", ".audition-bar", ".studio-tabs-bar", ".dual-studio-grid", ".stage-track-bar", ".render-dock", ".estimate-strip", ".cost-bar", ".cost-seg-audio", ".cost-seg-video", ".telemetry-accuracy", "#render-btn-target"}},
-		{"/app.js", "javascript", []string{"/api/render", "/api/estimate", "/api/fs/list", "/api/fs/mkdir", "/api/fs/pick", "pickNativePath", "showDirectoryPicker", "/api/sessions/", "VIZ_PAGE_SIZE", "visualizerBrightness", "fadeToBlackMinutes", "setLeftTab", "setRightTab", "renderStageTrackSelect", "bgMeta", "remainingSec", "estimatedSec", "actualSec"}},
+		{"/", "text/html", []string{"Editorial Mix Studio", "out-dir-input", "browse-out-dir-btn", "browse-audio-dir-btn", "browse-bg-path-btn", "fs-modal", "save-lan-folder-btn", "fs-modal-out-name", "fs-modal-ts-name", "bg-mode-visualizer", "bg-mode-black", "per-track-toggle", "track-layout-select", "track-transition-select", "stage-l1-fullscreen", "stage-l1-card-wrap", "download-manifest-btn", "viz-pager", "audition-btn", "darkness-box", "stage-canvas", "left-tab-tracks", "left-tab-studio", "left-pane-studio", "stage-audition-btn", "stage-track-select", "right-tab-chapters", "right-tab-output", "right-tab-telemetry", "render-dock", "estimate-strip", "estimate-pill", "cost-seg-audio", "cost-seg-video", "telemetry-accuracy"}},
+		{"/styles.css", "text/css", []string{"[hidden]", ".modal-backdrop", ".fs-root-chip", ".preset-grid", ".preset-pager", ".darkness-box", ".audition-bar", ".composer-bar", ".mode-pills", ".stage-l1-card", ".studio-tabs-bar", ".dual-studio-grid", ".stage-track-bar", ".render-dock", ".estimate-strip", ".cost-bar", ".cost-seg-audio", ".cost-seg-video", ".telemetry-accuracy", "#render-btn-target"}},
+		{"/app.js", "javascript", []string{"/api/render", "/api/estimate", "/api/fs/list", "/api/fs/mkdir", "/api/fs/pick", "pickNativePath", "showDirectoryPicker", "/api/sessions/", "/tracks/", "downloadManifestJSON", "reorderTrackById", "VIZ_PAGE_SIZE", "visualizerBrightness", "fadeToBlackMinutes", "setLeftTab", "setRightTab", "renderStageTrackSelect", "bgMeta", "remainingSec", "estimatedSec", "actualSec"}},
 	} {
 		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
 		rec := httptest.NewRecorder()
@@ -2142,5 +2145,283 @@ func TestRenderSSENormalizeProgressAndCompletionAccuracy(t *testing.T) {
 	}
 	if !strings.Contains(raw, `"estimatedSec":`) || !strings.Contains(raw, `"actualSec":`) {
 		t.Errorf("expected estimatedSec and actualSec in complete event, got:\n%s", raw)
+	}
+}
+
+func makeTestPNGBytes(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.Set(x, y, color.RGBA{R: 62, G: 230, B: 181, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestSessionTrackMediaEndpointsAndSecurity(t *testing.T) {
+	ws := t.TempDir()
+	audioDir := filepath.Join(ws, "tracks")
+	if err := os.Mkdir(audioDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(audioDir, "01_Sidecar.mp3"), []byte("mp3-1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(audioDir, "02_Embedded.mp3"), []byte("mp3-2"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	squarePNG := makeTestPNGBytes(t, 40, 40)
+	widePNG := makeTestPNGBytes(t, 160, 90)
+	if err := os.WriteFile(filepath.Join(audioDir, "01_Sidecar.png"), squarePNG, 0644); err != nil {
+		t.Fatal(err)
+	}
+	localExtra := filepath.Join(ws, "local_wide.png")
+	if err := os.WriteFile(localExtra, widePNG, 0644); err != nil {
+		t.Fatal(err)
+	}
+	outsideFile := filepath.Join(t.TempDir(), "outside.png")
+	if err := os.WriteFile(outsideFile, squarePNG, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var id3Extractions atomic.Int32
+	baseRunner := stubPipelineRunner(t, nil)
+	mediaRunner := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "ffprobe" {
+			target := args[len(args)-1]
+			if strings.Contains(target, "02_Embedded") || strings.Contains(target, "track_0001") {
+				return []byte(`{"format":{"duration":"12.0","tags":{"title":"Embedded Track"}},"streams":[{"index":1,"codec_type":"video","codec_name":"png","width":500,"height":500,"disposition":{"attached_pic":1}}]}`), nil
+			}
+			return []byte(`{"format":{"duration":"10.0","tags":{"title":"Sidecar Track"}},"streams":[]}`), nil
+		}
+		if name == "ffmpeg" && len(args) > 0 && strings.Contains(strings.Join(args, " "), "-frames:v 1") {
+			id3Extractions.Add(1)
+			outPath := args[len(args)-1]
+			if err := os.WriteFile(outPath, squarePNG, 0600); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		}
+		return baseRunner(ctx, name, args...)
+	}
+
+	srv, err := NewServer(Config{
+		Host:           "127.0.0.1",
+		Port:           8080,
+		WorkspaceDir:   ws,
+		LookPath:       okLookPath,
+		Runner:         mediaRunner,
+		MaxUploadBytes: 1024 * 1024,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	// 1. Local probe detects sidecar + ID3 art without leaking filesystem paths.
+	probeBody, _ := json.Marshal(map[string]any{"audioDir": audioDir})
+	probeReq := httptest.NewRequest(http.MethodPost, "/api/probe", bytes.NewReader(probeBody))
+	probeReq.Header.Set("Content-Type", "application/json")
+	probeReq.RemoteAddr = "127.0.0.1:50000"
+	probeRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(probeRec, probeReq)
+	if probeRec.Code != http.StatusOK {
+		t.Fatalf("probe failed: %d %s", probeRec.Code, probeRec.Body.String())
+	}
+	if strings.Contains(probeRec.Body.String(), ws) {
+		t.Fatalf("probe response leaked workspace path: %s", probeRec.Body.String())
+	}
+	var probed probeResponse
+	if err := json.Unmarshal(probeRec.Body.Bytes(), &probed); err != nil {
+		t.Fatal(err)
+	}
+	if len(probed.Tracks) != 2 {
+		t.Fatalf("expected 2 tracks, got %d", len(probed.Tracks))
+	}
+	t1, t2 := probed.Tracks[0], probed.Tracks[1]
+	if t1.DefaultMediaSource != "sidecar" || t1.SidecarName != "01_Sidecar.png" || t1.SidecarKind != "image" || t1.DefaultLayerMode != "card" || t1.PreviewURL == "" {
+		t.Fatalf("unexpected sidecar track DTO: %+v", t1)
+	}
+	if !t2.HasEmbeddedArt || t2.EmbeddedArtWidth != 500 || t2.EmbeddedArtHeight != 500 || t2.DefaultMediaSource != "id3" || t2.DefaultLayerMode != "card" || t2.PreviewURL == "" {
+		t.Fatalf("unexpected ID3 track DTO: %+v", t2)
+	}
+
+	// 2. GET sidecar preview + GET ID3 preview (cached after first extraction) with nosniff + no-store.
+	for _, previewURL := range []string{t1.PreviewURL, t2.PreviewURL, t2.PreviewURL} {
+		getReq := httptest.NewRequest(http.MethodGet, previewURL, nil)
+		getReq.RemoteAddr = "127.0.0.1:50000"
+		getRec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(getRec, getReq)
+		if getRec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d: %s", previewURL, getRec.Code, getRec.Body.String())
+		}
+		if got := getRec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Fatalf("GET %s X-Content-Type-Options = %q, want nosniff", previewURL, got)
+		}
+		if got := getRec.Header().Get("Cache-Control"); got != "no-store" {
+			t.Fatalf("GET %s Cache-Control = %q, want no-store", previewURL, got)
+		}
+	}
+	if got := id3Extractions.Load(); got != 1 {
+		t.Fatalf("expected ID3 cover extracted once and cached, got %d extractions", got)
+	}
+
+	// 3. Cross-origin request blocked with 403.
+	crossReq := httptest.NewRequest(http.MethodGet, t1.PreviewURL, nil)
+	crossReq.Header.Set("Sec-Fetch-Site", "cross-site")
+	crossReq.RemoteAddr = "127.0.0.1:50000"
+	crossRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(crossRec, crossReq)
+	if crossRec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 on cross-site GET media, got %d", crossRec.Code)
+	}
+
+	// 4. POST multipart upload validation (rejects .exe -> 400, accepts .png -> 200).
+	postMediaMultipart := func(fileName string, content []byte, layerMode string) *httptest.ResponseRecorder {
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		if layerMode != "" {
+			_ = mw.WriteField("layerMode", layerMode)
+		}
+		part, _ := mw.CreateFormFile("file", fileName)
+		_, _ = part.Write(content)
+		_ = mw.Close()
+		req := httptest.NewRequest(http.MethodPost, t1.PreviewURL, &buf)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		req.RemoteAddr = "127.0.0.1:50000"
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	if badRec := postMediaMultipart("evil.exe", []byte("MZ"), ""); badRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for .exe upload, got %d: %s", badRec.Code, badRec.Body.String())
+	}
+
+	upRec := postMediaMultipart("custom_wide.png", widePNG, "")
+	if upRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for PNG upload, got %d: %s", upRec.Code, upRec.Body.String())
+	}
+	var upResp trackMediaResponse
+	if err := json.Unmarshal(upRec.Body.Bytes(), &upResp); err != nil {
+		t.Fatal(err)
+	}
+	if upResp.Source != "upload" || upResp.MediaName != "custom_wide.png" || upResp.MediaKind != "image" || upResp.LayerMode != "fullscreen" {
+		t.Fatalf("unexpected upload response: %+v", upResp)
+	}
+
+	// Serve uploaded PNG bytes.
+	getUpReq := httptest.NewRequest(http.MethodGet, upResp.PreviewURL, nil)
+	getUpReq.RemoteAddr = "127.0.0.1:50000"
+	getUpRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(getUpRec, getUpReq)
+	if getUpRec.Code != http.StatusOK || !bytes.Equal(getUpRec.Body.Bytes(), widePNG) {
+		t.Fatalf("GET uploaded media status=%d, len=%d (want %d)", getUpRec.Code, getUpRec.Body.Len(), len(widePNG))
+	}
+
+	// 5. Local path binding: allowed inside workspace -> 200; outside -> 403.
+	outsideReq := httptest.NewRequest(http.MethodPost, t1.PreviewURL, strings.NewReader(`{"localPath":`+strconvQuote(outsideFile)+`}`))
+	outsideReq.Header.Set("Content-Type", "application/json")
+	outsideReq.RemoteAddr = "127.0.0.1:50000"
+	outsideRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(outsideRec, outsideReq)
+	if outsideRec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for outside localPath, got %d", outsideRec.Code)
+	}
+
+	localReq := httptest.NewRequest(http.MethodPost, t1.PreviewURL, strings.NewReader(`{"localPath":`+strconvQuote(localExtra)+`,"layerMode":"card"}`))
+	localReq.Header.Set("Content-Type", "application/json")
+	localReq.RemoteAddr = "127.0.0.1:50000"
+	localRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(localRec, localReq)
+	if localRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for allowed localPath, got %d: %s", localRec.Code, localRec.Body.String())
+	}
+
+	// 6. DELETE ?mode=backdrop sets explicitEmpty, then DELETE reverts to sidecar default.
+	delBackdropReq := httptest.NewRequest(http.MethodDelete, t1.PreviewURL+"?mode=backdrop", nil)
+	delBackdropReq.RemoteAddr = "127.0.0.1:50000"
+	delBackdropRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(delBackdropRec, delBackdropReq)
+	if delBackdropRec.Code != http.StatusOK {
+		t.Fatalf("DELETE ?mode=backdrop status = %d", delBackdropRec.Code)
+	}
+	var delBackdropResp trackMediaResponse
+	_ = json.Unmarshal(delBackdropRec.Body.Bytes(), &delBackdropResp)
+	if !delBackdropResp.ExplicitEmpty || delBackdropResp.LayerMode != "backdrop" || delBackdropResp.PreviewURL != "" {
+		t.Fatalf("unexpected DELETE ?mode=backdrop response: %+v", delBackdropResp)
+	}
+
+	// GET after backdrop delete returns 404.
+	emptyGetReq := httptest.NewRequest(http.MethodGet, t1.PreviewURL, nil)
+	emptyGetReq.RemoteAddr = "127.0.0.1:50000"
+	emptyGetRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(emptyGetRec, emptyGetReq)
+	if emptyGetRec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when track is explicitEmpty, got %d", emptyGetRec.Code)
+	}
+
+	// DELETE (revert to default sidecar).
+	revertReq := httptest.NewRequest(http.MethodDelete, t1.PreviewURL, nil)
+	revertReq.RemoteAddr = "127.0.0.1:50000"
+	revertRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(revertRec, revertReq)
+	if revertRec.Code != http.StatusOK {
+		t.Fatalf("DELETE revert status = %d", revertRec.Code)
+	}
+	var revertResp trackMediaResponse
+	_ = json.Unmarshal(revertRec.Body.Bytes(), &revertResp)
+	if revertResp.Source != "sidecar" || revertResp.LayerMode != "card" || revertResp.PreviewURL == "" {
+		t.Fatalf("unexpected revert response: %+v", revertResp)
+	}
+
+	// 7. Non-loopback 0.0.0.0 server: upload + ID3 preview work, localPath binding returns 403.
+	lanSrv, err := NewServer(Config{
+		Host:           "0.0.0.0",
+		Port:           8080,
+		WorkspaceDir:   ws,
+		LookPath:       okLookPath,
+		Runner:         mediaRunner,
+		MaxUploadBytes: 1024 * 1024,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lanSrv.Close()
+
+	lanProbeReq, _ := newMultipartProbeRequest(t, map[string][]byte{"01_Lan.mp3": []byte("mp3")}, []string{"01_Lan.mp3"})
+	lanProbeReq.RemoteAddr = "192.168.1.42:51000"
+	lanProbeRec := httptest.NewRecorder()
+	lanSrv.Handler().ServeHTTP(lanProbeRec, lanProbeReq)
+	if lanProbeRec.Code != http.StatusOK {
+		t.Fatalf("LAN upload probe failed: %d %s", lanProbeRec.Code, lanProbeRec.Body.String())
+	}
+	var lanProbed probeResponse
+	_ = json.Unmarshal(lanProbeRec.Body.Bytes(), &lanProbed)
+	if len(lanProbed.Tracks) != 1 || !lanProbed.Tracks[0].HasEmbeddedArt || lanProbed.Tracks[0].PreviewURL == "" {
+		t.Fatalf("unexpected LAN probe response: %+v", lanProbed)
+	}
+
+	lanLocalReq := httptest.NewRequest(http.MethodPost, lanProbed.Tracks[0].PreviewURL, strings.NewReader(`{"localPath":`+strconvQuote(localExtra)+`}`))
+	lanLocalReq.Header.Set("Content-Type", "application/json")
+	lanLocalReq.RemoteAddr = "192.168.1.42:51000"
+	lanLocalRec := httptest.NewRecorder()
+	lanSrv.Handler().ServeHTTP(lanLocalRec, lanLocalReq)
+	if lanLocalRec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for LAN localPath track media bind, got %d: %s", lanLocalRec.Code, lanLocalRec.Body.String())
+	}
+
+	// LAN ID3 preview extraction works without leaking local paths.
+	lanID3Req := httptest.NewRequest(http.MethodGet, lanProbed.Tracks[0].PreviewURL, nil)
+	lanID3Req.RemoteAddr = "192.168.1.42:51000"
+	lanID3Rec := httptest.NewRecorder()
+	lanSrv.Handler().ServeHTTP(lanID3Rec, lanID3Req)
+	if lanID3Rec.Code != http.StatusOK || !bytes.Equal(lanID3Rec.Body.Bytes(), squarePNG) {
+		t.Fatalf("LAN GET ID3 preview status=%d, bodyLen=%d", lanID3Rec.Code, lanID3Rec.Body.Len())
 	}
 }
