@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -56,12 +57,15 @@ func TestPlanMix(t *testing.T) {
 		}
 
 		var ffmpegCalled bool
+		var ffprobeTrackCalls int
 		reg := NewRegistry(ServerInfo{Name: "ytmix", Version: "0.1.0"})
 		RegisterPlanTools(reg, PlanDeps{
 			LookPath: okLookPath,
-			GOOS:     "linux",
 			Runner: func(_ context.Context, name string, args ...string) ([]byte, error) {
 				if name == "ffprobe" {
+					if strings.Contains(strings.Join(args, " "), "format_tags=title") {
+						ffprobeTrackCalls++
+					}
 					return []byte(`{"format":{"duration":"12.0"},"streams":[{"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"avg_frame_rate":"30/1"}]}`), nil
 				}
 				ffmpegCalled = true
@@ -85,6 +89,9 @@ func TestPlanMix(t *testing.T) {
 		}
 		if ffmpegCalled {
 			t.Fatal("Path A plan_mix should not probe ffmpeg hw encoders")
+		}
+		if ffprobeTrackCalls != 0 {
+			t.Fatalf("expected zero track ffprobe calls when durationSec > 0, got %d", ffprobeTrackCalls)
 		}
 
 		var gotA PlanMixResult
@@ -176,15 +183,16 @@ func TestPlanMix(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		var filterProbes int
 		reg := NewRegistry(ServerInfo{Name: "ytmix", Version: "0.1.0"})
 		RegisterPlanTools(reg, PlanDeps{
 			LookPath: okLookPath,
-			GOOS:     "linux",
 			Runner: func(_ context.Context, name string, args ...string) ([]byte, error) {
 				if name == "ffprobe" {
 					return []byte(`{"format":{"duration":"90.0","tags":{"title":"Probed Title"}}}`), nil
 				}
 				if strings.Contains(strings.Join(args, " "), "-filters") {
+					filterProbes++
 					return allFiltersOutput, nil
 				}
 				return nil, errors.New("no nvenc")
@@ -210,7 +218,8 @@ func TestPlanMix(t *testing.T) {
 			t.Fatalf("expected Path C 2 fps note, got %v", gotC.TradeOffNotes)
 		}
 
-		// Path D 4k ember with fadeToBlack
+		// Path D 4k ember with fadeToBlack (probes -filters once)
+		filterProbes = 0
 		resD, rpcErr, rawD := callToolRPC(t, reg, "plan_mix", map[string]any{
 			"audioDir":             audioDir,
 			"visualizer":           "ember",
@@ -224,6 +233,9 @@ func TestPlanMix(t *testing.T) {
 		})
 		if rpcErr != nil || resD.IsError {
 			t.Fatalf("Path D unexpected error: rpcErr=%v res=%+v raw=%s", rpcErr, resD, rawD)
+		}
+		if filterProbes != 1 {
+			t.Fatalf("expected exactly 1 ffmpeg -filters probe for Path D plan_mix, got %d", filterProbes)
 		}
 		var gotD PlanMixResult
 		if err := json.Unmarshal([]byte(resD.Content[0].Text), &gotD); err != nil {
@@ -260,6 +272,84 @@ func TestPlanMix(t *testing.T) {
 		}
 		if len(entries) != 2 { // tracks/ and cover.png only
 			t.Fatalf("expected zero side-effect files in %s, got %d entries", dir, len(entries))
+		}
+	})
+
+	t.Run("explicit tracks omitting durationSec probes path via ffprobe and preserves displayTitle overrides", func(t *testing.T) {
+		dir := t.TempDir()
+		track1 := filepath.Join(dir, "01_Night_Rain.mp3")
+		track2 := filepath.Join(dir, "02_Dawn.mp3")
+		notMP3 := filepath.Join(dir, "bad.wav")
+		for _, p := range []string{track1, track2, notMP3} {
+			if err := os.WriteFile(p, []byte("audio"), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		var ffprobeCalls atomic.Int32
+		reg := NewRegistry(ServerInfo{Name: "ytmix", Version: "0.1.0"})
+		RegisterPlanTools(reg, PlanDeps{
+			LookPath: okLookPath,
+			Runner: func(_ context.Context, name string, args ...string) ([]byte, error) {
+				if name == "ffprobe" {
+					ffprobeCalls.Add(1)
+					target := args[len(args)-1]
+					if target == track1 {
+						return []byte(`{"format":{"duration":"120.0","tags":{"title":"ID3 Night Rain"}}}`), nil
+					}
+					return []byte(`{"format":{"duration":"80.0","tags":{"title":"ID3 Dawn"}}}`), nil
+				}
+				if strings.Contains(strings.Join(args, " "), "-filters") {
+					return allFiltersOutput, nil
+				}
+				return nil, errors.New("no nvenc")
+			},
+		})
+
+		res, rpcErr, raw := callToolRPC(t, reg, "plan_mix", map[string]any{
+			"tracks": []map[string]any{
+				{"path": track1},
+				{"path": track2, "displayTitle": "Custom Dawn Override"},
+				{"fileName": "03 - Known Duration.mp3", "durationSec": 50},
+			},
+			"crossfade": 5,
+		})
+		if rpcErr != nil || res.IsError {
+			t.Fatalf("unexpected error: rpcErr=%v res=%+v raw=%s", rpcErr, res, raw)
+		}
+		if gotCalls := ffprobeCalls.Load(); gotCalls != 2 {
+			t.Fatalf("expected exactly 2 ffprobe calls for path-only tracks, got %d", gotCalls)
+		}
+
+		var got PlanMixResult
+		if err := json.Unmarshal([]byte(res.Content[0].Text), &got); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		// 120 + 80 + 50 - 2*5 = 240
+		if got.TrackCount != 3 || got.TotalDurationSec != 240 {
+			t.Fatalf("unexpected trackCount/duration: %+v", got)
+		}
+		if got.Chapters[0].Title != "ID3 Night Rain" || got.Chapters[0].DurationSec != 120 || got.Chapters[0].StartSec != 0 {
+			t.Fatalf("chapter 0 = %+v", got.Chapters[0])
+		}
+		if got.Chapters[1].Title != "Custom Dawn Override" || got.Chapters[1].DurationSec != 80 || got.Chapters[1].StartSec != 115 {
+			t.Fatalf("chapter 1 = %+v", got.Chapters[1])
+		}
+		if got.Chapters[2].Title != "Known Duration" || got.Chapters[2].DurationSec != 50 || got.Chapters[2].StartSec != 190 {
+			t.Fatalf("chapter 2 = %+v", got.Chapters[2])
+		}
+
+		// Invalid path-only track returns ErrorToolResult cleanly.
+		for _, badTrack := range []map[string]any{
+			{"path": filepath.Join(dir, "missing.mp3")},
+			{"path": notMP3},
+		} {
+			eRes, eRPCErr, eRaw := callToolRPC(t, reg, "plan_mix", map[string]any{
+				"tracks": []map[string]any{badTrack},
+			})
+			if eRPCErr != nil || !eRes.IsError {
+				t.Fatalf("expected ErrorToolResult for %v, got rpcErr=%v raw=%s", badTrack, eRPCErr, eRaw)
+			}
 		}
 	})
 
@@ -312,6 +402,7 @@ func TestPlanMix(t *testing.T) {
 			map[string]any{"tracks": []map[string]any{}},
 			map[string]any{"audioDir": audioDir, "tracks": []map[string]any{{"fileName": "a.mp3", "durationSec": 10}}},
 			map[string]any{"tracks": []map[string]any{{"fileName": "a.mp3", "durationSec": 0}}},
+			map[string]any{"tracks": []map[string]any{{"fileName": "a.mp3", "durationSec": -1}}},
 			map[string]any{"tracks": []map[string]any{{"durationSec": 10}}},
 			map[string]any{"tracks": []map[string]any{{"fileName": "a.mp3", "durationSec": 10}}, "bg": badBG, "visualizer": "bars"},
 			map[string]any{"tracks": []map[string]any{{"fileName": "a.mp3", "durationSec": 10}}, "crossfade": -1},
@@ -456,6 +547,7 @@ func TestPreviewVisualizerFrame(t *testing.T) {
 		}
 
 		var capturedArgs []string
+		var capturedASS string
 		var failNext bool
 		var lastTempDir string
 
@@ -469,6 +561,9 @@ func TestPreviewVisualizerFrame(t *testing.T) {
 				capturedArgs = append([]string(nil), args...)
 				outPNG := args[len(args)-1]
 				lastTempDir = filepath.Dir(outPNG)
+				if assBytes, err := os.ReadFile(filepath.Join(lastTempDir, "titles.ass")); err == nil {
+					capturedASS = string(assBytes)
+				}
 				if failNext {
 					return nil, errors.New("ffmpeg exploded")
 				}
@@ -479,23 +574,40 @@ func TestPreviewVisualizerFrame(t *testing.T) {
 			},
 		})
 
-		// Real mp3 file
+		// Real mp3 file with overlayTitles, dimTitles, and fadeToBlack
 		resMP3, rpcErr, _ := callToolRPC(t, reg, "preview_visualizer_frame", map[string]any{
-			"audioPath": mp3Path,
-			"offsetSec": 12.5,
+			"audioPath":     mp3Path,
+			"offsetSec":     12.5,
+			"overlayTitles": true,
+			"dimTitles":     true,
+			"titleText":     "Sleep Horizon",
+			"fadeToBlack":   "15s",
 		})
 		if rpcErr != nil || resMP3.IsError {
 			t.Fatalf("mp3 preview error: rpcErr=%v res=%+v", rpcErr, resMP3)
 		}
 		joinedMP3 := strings.Join(capturedArgs, " ")
-		if !strings.Contains(joinedMP3, "-ss 12.5 -i "+mp3Path) || strings.Contains(joinedMP3, "-f lavfi") {
-			t.Fatalf("expected pre-input -ss for mp3 preview, got:\n%s", joinedMP3)
+		for _, want := range []string{
+			"-ss 10.5 -i " + mp3Path,
+			"titles.ass",
+			"fade=t=out:st=4.5:d=15:color=black",
+			"-map [vout] -ss 2 -frames:v 1",
+		} {
+			if !strings.Contains(joinedMP3, want) {
+				t.Fatalf("expected %q in mp3 preview args:\n%s", want, joinedMP3)
+			}
+		}
+		if strings.Contains(joinedMP3, "-f lavfi") {
+			t.Fatalf("unexpected -f lavfi for mp3 preview:\n%s", joinedMP3)
+		}
+		if !strings.Contains(capturedASS, "&H789EB2AF") || !strings.Contains(capturedASS, "Sleep Horizon") {
+			t.Fatalf("expected dim ASS style and title text in titles.ass:\n%s", capturedASS)
 		}
 		var metaMP3 PreviewVisualizerResult
 		if err := json.Unmarshal([]byte(resMP3.Content[1].Text), &metaMP3); err != nil {
 			t.Fatal(err)
 		}
-		if metaMP3.AudioSource != "file" || metaMP3.OffsetSec != 12.5 || metaMP3.Preset != "bars" || !metaMP3.Glow {
+		if metaMP3.AudioSource != "file" || metaMP3.OffsetSec != 12.5 || metaMP3.Preset != "bars" || !metaMP3.Glow || !metaMP3.DimTitles || !metaMP3.OverlayTitles {
 			t.Fatalf("unexpected mp3 metadata: %+v", metaMP3)
 		}
 

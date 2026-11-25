@@ -488,7 +488,6 @@ func runMCPServer(
 	mcp.RegisterPlanTools(srv.Registry, mcp.PlanDeps{
 		LookPath: lookPath,
 		Runner:   runner,
-		GOOS:     goos,
 	})
 	return srv.Serve(ctx)
 }

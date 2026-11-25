@@ -21,11 +21,10 @@ import (
 
 const defaultPreviewOffsetSec = 5.0
 
-// PlanDeps supplies host binary lookup, command execution, and OS metadata for dry-run planning and preview tools.
+// PlanDeps supplies host binary lookup and command execution for dry-run planning and preview tools.
 type PlanDeps struct {
 	LookPath func(string) (string, error)
 	Runner   CommandRunner
-	GOOS     string
 }
 
 type planTrackInput struct {
@@ -126,7 +125,27 @@ func RegisterPlanTools(r *Registry, deps PlanDeps) {
 		return
 	}
 
-	r.RegisterTool(Tool{
+	r.RegisterTool(planMixToolDefinition(), func(ctx context.Context, args json.RawMessage) (CallToolResult, error) {
+		return handlePlanMix(ctx, args, deps)
+	})
+
+	r.RegisterTool(previewVisualizerToolDefinition(), func(ctx context.Context, args json.RawMessage) (CallToolResult, error) {
+		return handlePreviewVisualizerFrame(ctx, args, deps)
+	})
+}
+
+func readOnlyLocalAnnotations(title string) *ToolAnnotations {
+	return &ToolAnnotations{
+		Title:           title,
+		ReadOnlyHint:    BoolPtr(true),
+		DestructiveHint: BoolPtr(false),
+		IdempotentHint:  BoolPtr(true),
+		OpenWorldHint:   BoolPtr(false),
+	}
+}
+
+func planMixToolDefinition() Tool {
+	return Tool{
 		Name:        "plan_mix",
 		Description: "Dry-run simulator for a Mix without writing output files. Selects the exact Rendering Path (Path A/B/C/D), computes render.MixEstimate and speed trade-offs, and previews Crossfade-adjusted Chapter Timestamps and Title Overlay cue counts.",
 		InputSchema: map[string]any{
@@ -138,7 +157,7 @@ func RegisterPlanTools(r *Registry, deps PlanDeps) {
 				},
 				"tracks": map[string]any{
 					"type":        "array",
-					"description": "Explicit ordered list of Tracks to simulate (mutually exclusive with audioDir).",
+					"description": "Explicit ordered list of Tracks to simulate (mutually exclusive with audioDir). Each item requires durationSec > 0 or a local .mp3 path to probe.",
 					"minItems":    1,
 					"items": map[string]any{
 						"type": "object",
@@ -153,15 +172,14 @@ func RegisterPlanTools(r *Registry, deps PlanDeps) {
 							},
 							"durationSec": map[string]any{
 								"type":             "number",
-								"description":      "Track duration in seconds (> 0).",
+								"description":      "Track duration in seconds (> 0). Optional when path is provided for ffprobe.",
 								"exclusiveMinimum": 0,
 							},
 							"path": map[string]any{
 								"type":        "string",
-								"description": "Optional local path to the .mp3 Track.",
+								"description": "Optional local path to the .mp3 Track (probed via ffprobe if durationSec is omitted).",
 							},
 						},
-						"required":             []string{"durationSec"},
 						"additionalProperties": false,
 					},
 				},
@@ -237,18 +255,12 @@ func RegisterPlanTools(r *Registry, deps PlanDeps) {
 			},
 			"additionalProperties": false,
 		},
-		Annotations: &ToolAnnotations{
-			Title:           "Plan Mix (Dry Run)",
-			ReadOnlyHint:    BoolPtr(true),
-			DestructiveHint: BoolPtr(false),
-			IdempotentHint:  BoolPtr(true),
-			OpenWorldHint:   BoolPtr(false),
-		},
-	}, func(ctx context.Context, args json.RawMessage) (CallToolResult, error) {
-		return handlePlanMix(ctx, args, deps)
-	})
+		Annotations: readOnlyLocalAnnotations("Plan Mix (Dry Run)"),
+	}
+}
 
-	r.RegisterTool(Tool{
+func previewVisualizerToolDefinition() Tool {
+	return Tool{
 		Name:        "preview_visualizer_frame",
 		Description: "Render a single PNG preview frame of any available Path D Auto Visualizer preset and Color Theme using either a sample .mp3 Track or synthetic stereo audio, returning the image as a base64 PNG plus metadata.",
 		InputSchema: map[string]any{
@@ -312,16 +324,8 @@ func RegisterPlanTools(r *Registry, deps PlanDeps) {
 			},
 			"additionalProperties": false,
 		},
-		Annotations: &ToolAnnotations{
-			Title:           "Preview Path D Visualizer Frame",
-			ReadOnlyHint:    BoolPtr(true),
-			DestructiveHint: BoolPtr(false),
-			IdempotentHint:  BoolPtr(true),
-			OpenWorldHint:   BoolPtr(false),
-		},
-	}, func(ctx context.Context, args json.RawMessage) (CallToolResult, error) {
-		return handlePreviewVisualizerFrame(ctx, args, deps)
-	})
+		Annotations: readOnlyLocalAnnotations("Preview Path D Visualizer Frame"),
+	}
 }
 
 func parseOptionalDuration(raw, fieldName string) (time.Duration, error) {
@@ -339,12 +343,137 @@ func parseOptionalDuration(raw, fieldName string) (time.Duration, error) {
 	return d, nil
 }
 
+func resolveGlowAndBrightness(glowPtr *bool, brightnessPtr *int, brightnessField string) (bool, int, error) {
+	glow := true
+	if glowPtr != nil {
+		glow = *glowPtr
+	}
+	brightness := render.DefaultVisualizerBrightness
+	if brightnessPtr != nil {
+		brightness = *brightnessPtr
+		if brightness < render.MinVisualizerBrightness || brightness > render.MaxVisualizerBrightness {
+			return false, 0, InvalidParamsError(fmt.Sprintf("%s must be between %d and %d (got %d)", brightnessField, render.MinVisualizerBrightness, render.MaxVisualizerBrightness, brightness))
+		}
+	}
+	return glow, brightness, nil
+}
+
 func lookPathAvailable(lookPath func(string) (string, error), bin string) bool {
 	if lookPath == nil {
 		return false
 	}
 	_, err := lookPath(bin)
 	return err == nil
+}
+
+func mapToolError(err error) (CallToolResult, error) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return CallToolResult{}, err
+	}
+	var rpcErr *RPCError
+	if errors.As(err, &rpcErr) {
+		return CallToolResult{}, rpcErr
+	}
+	return ErrorToolResult(err.Error()), nil
+}
+
+func resolvePlanTracks(ctx context.Context, in planMixArgs, deps PlanDeps, hasFFprobe bool) ([]probe.Track, error) {
+	audioDir := strings.TrimSpace(in.AudioDir)
+	if audioDir != "" {
+		info, statErr := os.Stat(audioDir)
+		if statErr != nil {
+			return nil, fmt.Errorf("cannot access audioDir %q: %w", audioDir, statErr)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("audioDir %q is not a directory", audioDir)
+		}
+		if deps.LookPath != nil && !hasFFprobe {
+			return nil, errors.New(`required binary "ffprobe" not found on PATH`)
+		}
+		return probe.ProbeTracks(ctx, audioDir, in.Shuffle, nil, deps.Runner)
+	}
+
+	tracks := make([]probe.Track, len(in.Tracks))
+	type pendingProbe struct {
+		index           int
+		hasCustomTitle  bool
+		customTitle     string
+		namedTrackInput probe.NamedTrackFile
+	}
+	var pending []pendingProbe
+
+	for i, item := range in.Tracks {
+		if math.IsNaN(item.DurationSec) || math.IsInf(item.DurationSec, 0) || item.DurationSec < 0 {
+			return nil, InvalidParamsError(fmt.Sprintf("tracks[%d].durationSec must be a finite number >= 0", i))
+		}
+		fileName := strings.TrimSpace(item.FileName)
+		trackPath := strings.TrimSpace(item.Path)
+		displayTitle := strings.TrimSpace(item.DisplayTitle)
+
+		if item.DurationSec == 0 {
+			if trackPath == "" {
+				return nil, InvalidParamsError(fmt.Sprintf("tracks[%d] must provide durationSec > 0 or a non-empty path", i))
+			}
+			if err := probe.ValidateTrackFile(trackPath); err != nil {
+				return nil, fmt.Errorf("tracks[%d]: %w", i, err)
+			}
+			if fileName == "" {
+				fileName = filepath.Base(trackPath)
+			}
+			pending = append(pending, pendingProbe{
+				index:          i,
+				hasCustomTitle: displayTitle != "",
+				customTitle:    displayTitle,
+				namedTrackInput: probe.NamedTrackFile{
+					Path:     trackPath,
+					FileName: fileName,
+				},
+			})
+			continue
+		}
+
+		if fileName == "" && trackPath != "" {
+			fileName = filepath.Base(trackPath)
+		}
+		if displayTitle == "" {
+			if fileName == "" {
+				return nil, InvalidParamsError(fmt.Sprintf("tracks[%d]: fileName, path, or displayTitle is required", i))
+			}
+			displayTitle = probe.ResolveDisplayTitle("", fileName)
+		}
+		tracks[i] = probe.Track{
+			Path:         trackPath,
+			FileName:     fileName,
+			Duration:     item.DurationSec,
+			DisplayTitle: displayTitle,
+		}
+	}
+
+	if len(pending) > 0 {
+		if deps.LookPath != nil && !hasFFprobe {
+			return nil, errors.New(`required binary "ffprobe" not found on PATH`)
+		}
+		if deps.Runner == nil {
+			return nil, errors.New("ffprobe runner is required when explicit tracks omit durationSec")
+		}
+		namedFiles := make([]probe.NamedTrackFile, len(pending))
+		for i, p := range pending {
+			namedFiles[i] = p.namedTrackInput
+		}
+		probed, err := probe.ProbeNamedTrackFiles(ctx, namedFiles, deps.Runner)
+		if err != nil {
+			return nil, err
+		}
+		for i, p := range pending {
+			tr := probed[i]
+			if p.hasCustomTitle {
+				tr.DisplayTitle = p.customTitle
+			}
+			tracks[p.index] = tr
+		}
+	}
+
+	return tracks, nil
 }
 
 func handlePlanMix(ctx context.Context, args json.RawMessage, deps PlanDeps) (CallToolResult, error) {
@@ -388,16 +517,9 @@ func handlePlanMix(ctx context.Context, args json.RawMessage, deps PlanDeps) (Ca
 		return CallToolResult{}, err
 	}
 
-	vizGlow := true
-	if in.VisualizerGlow != nil {
-		vizGlow = *in.VisualizerGlow
-	}
-	vizBrightness := render.DefaultVisualizerBrightness
-	if in.VisualizerBrightness != nil {
-		vizBrightness = *in.VisualizerBrightness
-		if vizBrightness < render.MinVisualizerBrightness || vizBrightness > render.MaxVisualizerBrightness {
-			return CallToolResult{}, InvalidParamsError(fmt.Sprintf("visualizerBrightness must be between %d and %d (got %d)", render.MinVisualizerBrightness, render.MaxVisualizerBrightness, vizBrightness))
-		}
+	vizGlow, vizBrightness, err := resolveGlowAndBrightness(in.VisualizerGlow, in.VisualizerBrightness, "visualizerBrightness")
+	if err != nil {
+		return CallToolResult{}, err
 	}
 
 	fontName := strings.TrimSpace(in.FontName)
@@ -446,59 +568,9 @@ func handlePlanMix(ctx context.Context, args json.RawMessage, deps PlanDeps) (Ca
 	hasFFmpeg := lookPathAvailable(deps.LookPath, "ffmpeg")
 	hasFFprobe := lookPathAvailable(deps.LookPath, "ffprobe")
 
-	if pathKind == render.PathD && hasFFmpeg && deps.Runner != nil {
-		if err := mixer.ValidateVisualizerFilters(ctx, cfg, deps.Runner, nil); err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return CallToolResult{}, err
-			}
-			return ErrorToolResult(err.Error()), nil
-		}
-	}
-
-	var tracks []probe.Track
-	if hasAudioDir {
-		info, statErr := os.Stat(audioDir)
-		if statErr != nil {
-			return ErrorToolResult(fmt.Sprintf("cannot access audioDir %q: %v", audioDir, statErr)), nil
-		}
-		if !info.IsDir() {
-			return ErrorToolResult(fmt.Sprintf("audioDir %q is not a directory", audioDir)), nil
-		}
-		if deps.LookPath != nil && !hasFFprobe {
-			return ErrorToolResult(`required binary "ffprobe" not found on PATH`), nil
-		}
-		tracks, err = probe.ProbeTracks(ctx, audioDir, in.Shuffle, nil, deps.Runner)
-		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return CallToolResult{}, err
-			}
-			return ErrorToolResult(err.Error()), nil
-		}
-	} else {
-		tracks = make([]probe.Track, len(in.Tracks))
-		for i, item := range in.Tracks {
-			if math.IsNaN(item.DurationSec) || math.IsInf(item.DurationSec, 0) || item.DurationSec <= 0 {
-				return CallToolResult{}, InvalidParamsError(fmt.Sprintf("tracks[%d].durationSec must be a finite number > 0", i))
-			}
-			fileName := strings.TrimSpace(item.FileName)
-			trackPath := strings.TrimSpace(item.Path)
-			if fileName == "" && trackPath != "" {
-				fileName = filepath.Base(trackPath)
-			}
-			displayTitle := strings.TrimSpace(item.DisplayTitle)
-			if displayTitle == "" {
-				if fileName == "" {
-					return CallToolResult{}, InvalidParamsError(fmt.Sprintf("tracks[%d]: fileName, path, or displayTitle is required", i))
-				}
-				displayTitle = probe.ResolveDisplayTitle("", fileName)
-			}
-			tracks[i] = probe.Track{
-				Path:         trackPath,
-				FileName:     fileName,
-				Duration:     item.DurationSec,
-				DisplayTitle: displayTitle,
-			}
-		}
+	tracks, err := resolvePlanTracks(ctx, in, deps, hasFFprobe)
+	if err != nil {
+		return mapToolError(err)
 	}
 
 	var bgMetaPtr *probe.BackgroundMeta
@@ -519,10 +591,7 @@ func handlePlanMix(ctx context.Context, args json.RawMessage, deps PlanDeps) (Ca
 	}
 	est, err := mixer.EstimateConfig(ctx, cfg, tracks, bgMetaPtr, okLookPath, estRunner)
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return CallToolResult{}, err
-		}
-		return ErrorToolResult(err.Error()), nil
+		return mapToolError(err)
 	}
 
 	chapterTracks := make([]subtitle.ChapterTrack, len(tracks))
@@ -550,9 +619,6 @@ func handlePlanMix(ctx context.Context, args json.RawMessage, deps PlanDeps) (Ca
 		cueCount = len(sched.Cues)
 	}
 
-	warnings := buildPlanWarnings(tracks, cfg, pathKind, hasFFmpeg)
-	tradeOffNotes := buildPlanTradeOffNotes(tracks, cfg, normVizCfg, pathKind)
-
 	result := PlanMixResult{
 		RenderingPath:       string(pathKind),
 		RenderingPathDetail: describeRenderingPath(pathKind),
@@ -571,8 +637,8 @@ func handlePlanMix(ctx context.Context, args json.RawMessage, deps PlanDeps) (Ca
 			TitleDurationSec: in.TitleDuration,
 			FontName:         fontName,
 		},
-		TradeOffNotes: tradeOffNotes,
-		Warnings:      warnings,
+		TradeOffNotes: buildPlanTradeOffNotes(tracks, cfg, normVizCfg, pathKind),
+		Warnings:      buildPlanWarnings(tracks, cfg, pathKind, hasFFmpeg),
 	}
 	return JSONToolResult(result)
 }
@@ -690,16 +756,9 @@ func handlePreviewVisualizerFrame(ctx context.Context, args json.RawMessage, dep
 		}
 	}
 
-	glow := true
-	if in.Glow != nil {
-		glow = *in.Glow
-	}
-	brightness := render.DefaultVisualizerBrightness
-	if in.Brightness != nil {
-		brightness = *in.Brightness
-		if brightness < render.MinVisualizerBrightness || brightness > render.MaxVisualizerBrightness {
-			return CallToolResult{}, InvalidParamsError(fmt.Sprintf("brightness must be between %d and %d (got %d)", render.MinVisualizerBrightness, render.MaxVisualizerBrightness, brightness))
-		}
+	glow, brightness, err := resolveGlowAndBrightness(in.Glow, in.Brightness, "brightness")
+	if err != nil {
+		return CallToolResult{}, err
 	}
 
 	fadeToBlack, err := parseOptionalDuration(in.FadeToBlack, "fadeToBlack")
@@ -737,10 +796,7 @@ func handlePreviewVisualizerFrame(ctx context.Context, args json.RawMessage, dep
 
 	filters, err := render.DetectFilters(ctx, deps.Runner)
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return CallToolResult{}, err
-		}
-		return ErrorToolResult(err.Error()), nil
+		return mapToolError(err)
 	}
 	if ok, missing := render.PresetAvailable(normCfg.Preset, filters); !ok {
 		return ErrorToolResult(fmt.Sprintf("auto visualizer %q requires FFmpeg filter %q which is not available in this ffmpeg build", normCfg.Preset, missing)), nil
@@ -783,7 +839,16 @@ func handlePreviewVisualizerFrame(ctx context.Context, args json.RawMessage, dep
 	}
 
 	outPNGPath := filepath.Join(tempDir, "preview.png")
-	ffmpegArgs, err := render.BuildPathDPreviewArgs(audioInput, isLavfi, assPath, outPNGPath, in.OverlayTitles, offsetSec, totalDuration, normCfg)
+	ffmpegArgs, err := render.BuildPathDPreviewArgs(render.PreviewOptions{
+		AudioInput:    audioInput,
+		IsLavfi:       isLavfi,
+		ASSPath:       assPath,
+		OutPNGPath:    outPNGPath,
+		OverlayTitles: in.OverlayTitles,
+		OffsetSec:     offsetSec,
+		TotalDuration: totalDuration,
+		Config:        normCfg,
+	})
 	if err != nil {
 		return ErrorToolResult(err.Error()), nil
 	}

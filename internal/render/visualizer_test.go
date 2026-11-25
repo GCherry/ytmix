@@ -503,122 +503,181 @@ func TestPathDAllPresetsFFmpegSmoke(t *testing.T) {
 
 func TestBuildPathDPreviewArgs(t *testing.T) {
 	cases := []struct {
-		name          string
-		audioInput    string
-		isLavfi       bool
-		assPath       string
-		outPNGPath    string
-		overlayTitles bool
-		offsetSec     float64
-		totalDuration float64
-		cfg           VisualizerConfig
-		wantSubstrs   []string
-		omitSubstrs   []string
-		wantErr       bool
+		name        string
+		opts        PreviewOptions
+		wantSubstrs []string
+		omitSubstrs []string
+		wantErr     bool
 	}{
 		{
-			name:        "black preset defaults without subtitles or offset",
-			outPNGPath:  "preview.png",
-			cfg:         VisualizerConfig{Preset: "black", Resolution: "1440p", Brightness: 100},
+			name: "black preset defaults without subtitles or offset",
+			opts: PreviewOptions{
+				OutPNGPath: "preview.png",
+				Config:     VisualizerConfig{Preset: "black", Resolution: "1440p", Brightness: 100},
+			},
 			wantSubstrs: []string{"-f lavfi -i color=c=black:s=2560x1440:r=10", "-vf format=yuv420p", "-frames:v 1 preview.png"},
 			omitSubstrs: []string{"-ss", "-filter_complex", "subtitles="},
 		},
 		{
-			name:          "black preset with title overlay, fade, and offset",
-			assPath:       `C:\tmp\titles.ass`,
-			outPNGPath:    "black_sub.png",
-			overlayTitles: true,
-			offsetSec:     5.0,
-			totalDuration: 120.0,
-			cfg:           VisualizerConfig{Preset: "black", FadeToBlack: 60 * time.Second},
-			wantSubstrs:   []string{"-f lavfi -i color=c=black:s=1920x1080:r=10", "subtitles='C\\:/tmp/titles.ass',fade=t=out:st=60:d=15:color=black,format=yuv420p", "-ss 5 -frames:v 1 black_sub.png"},
+			name: "black preset with title overlay, fade, and offset",
+			opts: PreviewOptions{
+				ASSPath:       `C:\tmp\titles.ass`,
+				OutPNGPath:    "black_sub.png",
+				OverlayTitles: true,
+				OffsetSec:     5.0,
+				TotalDuration: 120.0,
+				Config:        VisualizerConfig{Preset: "black", FadeToBlack: 60 * time.Second},
+			},
+			wantSubstrs: []string{"-f lavfi -i color=c=black:s=1920x1080:r=10", "subtitles='C\\:/tmp/titles.ass',fade=t=out:st=60:d=15:color=black,format=yuv420p", "-ss 5 -frames:v 1 black_sub.png"},
 		},
 		{
-			name:          "audio-reactive preset with lavfi source and output offset",
-			audioInput:    "aevalsrc=0:c=stereo:s=48000:d=5.5",
-			isLavfi:       true,
-			assPath:       "/tmp/titles.ass",
-			outPNGPath:    "/tmp/out.png",
-			overlayTitles: true,
-			offsetSec:     0.25,
-			totalDuration: 60.0,
-			cfg:           VisualizerConfig{Preset: "ember", Theme: "oled-ember", Resolution: "1080p", Glow: true, Brightness: 45},
-			wantSubstrs:   []string{"-f lavfi -i aevalsrc=0:c=stereo:s=48000:d=5.5", "-filter_complex", "colorchannelmixer=rr=0.45:gg=0.45:bb=0.45", "subtitles='/tmp/titles.ass'", "-map [vout] -ss 0.25 -frames:v 1 /tmp/out.png"},
+			name: "audio-reactive preset with lavfi source and output offset",
+			opts: PreviewOptions{
+				AudioInput:    "aevalsrc=0:c=stereo:s=48000:d=5.5",
+				IsLavfi:       true,
+				ASSPath:       "/tmp/titles.ass",
+				OutPNGPath:    "/tmp/out.png",
+				OverlayTitles: true,
+				OffsetSec:     0.25,
+				TotalDuration: 60.0,
+				Config:        VisualizerConfig{Preset: "ember", Theme: "oled-ember", Resolution: "1080p", Glow: true, Brightness: 45},
+			},
+			wantSubstrs: []string{"-f lavfi -i aevalsrc=0:c=stereo:s=48000:d=5.5", "-filter_complex", "colorchannelmixer=rr=0.45:gg=0.45:bb=0.45", "subtitles='/tmp/titles.ass'", "-map [vout] -ss 0.25 -frames:v 1 /tmp/out.png"},
 		},
 		{
-			name:        "audio-reactive preset with lavfi source and zero offset omits -ss",
-			audioInput:  "aevalsrc=0:c=stereo:s=48000:d=1.0",
-			isLavfi:     true,
-			outPNGPath:  "/tmp/out_zero.png",
-			offsetSec:   0,
-			cfg:         VisualizerConfig{Preset: "bars"},
+			name: "audio-reactive preset with lavfi source and zero offset omits -ss",
+			opts: PreviewOptions{
+				AudioInput: "aevalsrc=0:c=stereo:s=48000:d=1.0",
+				IsLavfi:    true,
+				OutPNGPath: "/tmp/out_zero.png",
+				OffsetSec:  0,
+				Config:     VisualizerConfig{Preset: "bars"},
+			},
 			wantSubstrs: []string{"-f lavfi -i aevalsrc=0:c=stereo:s=48000:d=1.0", "-map [vout] -frames:v 1 /tmp/out_zero.png"},
 			omitSubstrs: []string{"-ss"},
 		},
 		{
-			name:          "audio-reactive preset with mp3 file uses pre-input -ss",
-			audioInput:    "/music/track.mp3",
-			isLavfi:       false,
-			outPNGPath:    "/tmp/mp3_preview.png",
-			offsetSec:     12.5,
-			totalDuration: 180.0,
-			cfg:           VisualizerConfig{Preset: "waves", Theme: "midnight-cyan", Resolution: "4k", Glow: false, Brightness: 80},
-			wantSubstrs:   []string{"-ss 12.5 -i /music/track.mp3", "-filter_complex", "s=3840x2160", "-map [vout] -frames:v 1 /tmp/mp3_preview.png"},
-			omitSubstrs:   []string{"-f lavfi"},
-		},
-		{
-			name:       "audio-reactive preset with mp3 file and zero offset omits -ss",
-			audioInput: "/music/track.mp3",
-			isLavfi:    false,
-			outPNGPath: "/tmp/mp3_zero.png",
-			offsetSec:  0,
-			cfg:        VisualizerConfig{Preset: "bars"},
-			omitSubstrs: []string{
-				"-ss",
+			name: "audio-reactive preset with mp3 file at 5s uses 3s pre-input seek and 2s output seek with overlay and fade",
+			opts: PreviewOptions{
+				AudioInput:    "/music/track.mp3",
+				IsLavfi:       false,
+				ASSPath:       "/tmp/titles.ass",
+				OutPNGPath:    "/tmp/mp3_5s.png",
+				OverlayTitles: true,
+				OffsetSec:     5.0,
+				TotalDuration: 120.0,
+				Config:        VisualizerConfig{Preset: "bars", FadeToBlack: 4 * time.Second},
 			},
+			wantSubstrs: []string{"-ss 3 -i /music/track.mp3", "subtitles='/tmp/titles.ass'", "fade=t=out:st=1:d=15:color=black", "-map [vout] -ss 2 -frames:v 1 /tmp/mp3_5s.png"},
+			omitSubstrs: []string{"-f lavfi"},
 		},
 		{
-			name:       "invalid preset returns error",
-			audioInput: "song.mp3",
-			outPNGPath: "out.png",
-			cfg:        VisualizerConfig{Preset: "bogus"},
-			wantErr:    true,
+			name: "audio-reactive preset with mp3 file and fade earlier than preSeek clamps fade to 10ms",
+			opts: PreviewOptions{
+				AudioInput:    "/music/track.mp3",
+				IsLavfi:       false,
+				OutPNGPath:    "/tmp/mp3_fade_clamped.png",
+				OffsetSec:     12.5,
+				TotalDuration: 18.0,
+				Config:        VisualizerConfig{Preset: "waves", Theme: "midnight-cyan", Resolution: "4k", Glow: false, Brightness: 80, FadeToBlack: 3 * time.Second},
+			},
+			wantSubstrs: []string{"-ss 10.5 -i /music/track.mp3", "s=3840x2160", "fade=t=out:st=0.01:d=7.49:color=black", "-map [vout] -ss 2 -frames:v 1 /tmp/mp3_fade_clamped.png"},
+			omitSubstrs: []string{"-f lavfi"},
 		},
 		{
-			name:       "missing output PNG path returns error",
-			audioInput: "song.mp3",
-			outPNGPath: "   ",
-			cfg:        VisualizerConfig{Preset: "bars"},
-			wantErr:    true,
+			name: "audio-reactive preset with mp3 file at 1.5s uses output seek only",
+			opts: PreviewOptions{
+				AudioInput: "/music/track.mp3",
+				IsLavfi:    false,
+				OutPNGPath: "/tmp/mp3_1_5s.png",
+				OffsetSec:  1.5,
+				Config:     VisualizerConfig{Preset: "bars"},
+			},
+			wantSubstrs: []string{"-y -hide_banner -loglevel error -i /music/track.mp3", "-map [vout] -ss 1.5 -frames:v 1 /tmp/mp3_1_5s.png"},
 		},
 		{
-			name:       "missing audio input for non-black preset returns error",
-			audioInput: "",
-			outPNGPath: "out.png",
-			cfg:        VisualizerConfig{Preset: "bars"},
-			wantErr:    true,
+			name: "audio-reactive preset with mp3 file and zero offset omits -ss",
+			opts: PreviewOptions{
+				AudioInput: "/music/track.mp3",
+				IsLavfi:    false,
+				OutPNGPath: "/tmp/mp3_zero.png",
+				OffsetSec:  0,
+				Config:     VisualizerConfig{Preset: "bars"},
+			},
+			omitSubstrs: []string{"-ss"},
 		},
 		{
-			name:       "negative offsetSec returns error",
-			audioInput: "song.mp3",
-			outPNGPath: "out.png",
-			offsetSec:  -1,
-			cfg:        VisualizerConfig{Preset: "bars"},
-			wantErr:    true,
+			name: "overlayTitles enabled without assPath returns error",
+			opts: PreviewOptions{
+				AudioInput:    "song.mp3",
+				OutPNGPath:    "out.png",
+				OverlayTitles: true,
+				Config:        VisualizerConfig{Preset: "bars"},
+			},
+			wantErr: true,
 		},
 		{
-			name:       "NaN offsetSec returns error",
-			audioInput: "song.mp3",
-			outPNGPath: "out.png",
-			offsetSec:  math.NaN(),
-			cfg:        VisualizerConfig{Preset: "bars"},
-			wantErr:    true,
+			name: "invalid preset returns error",
+			opts: PreviewOptions{
+				AudioInput: "song.mp3",
+				OutPNGPath: "out.png",
+				Config:     VisualizerConfig{Preset: "bogus"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing output PNG path returns error",
+			opts: PreviewOptions{
+				AudioInput: "song.mp3",
+				OutPNGPath: "   ",
+				Config:     VisualizerConfig{Preset: "bars"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing audio input for non-black preset returns error",
+			opts: PreviewOptions{
+				AudioInput: "",
+				OutPNGPath: "out.png",
+				Config:     VisualizerConfig{Preset: "bars"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative offsetSec returns error",
+			opts: PreviewOptions{
+				AudioInput: "song.mp3",
+				OutPNGPath: "out.png",
+				OffsetSec:  -1,
+				Config:     VisualizerConfig{Preset: "bars"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "NaN offsetSec returns error",
+			opts: PreviewOptions{
+				AudioInput: "song.mp3",
+				OutPNGPath: "out.png",
+				OffsetSec:  math.NaN(),
+				Config:     VisualizerConfig{Preset: "bars"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative totalDuration returns error",
+			opts: PreviewOptions{
+				AudioInput:    "song.mp3",
+				OutPNGPath:    "out.png",
+				TotalDuration: -1,
+				Config:        VisualizerConfig{Preset: "bars"},
+			},
+			wantErr: true,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			args, err := BuildPathDPreviewArgs(tc.audioInput, tc.isLavfi, tc.assPath, tc.outPNGPath, tc.overlayTitles, tc.offsetSec, tc.totalDuration, tc.cfg)
+			args, err := BuildPathDPreviewArgs(tc.opts)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got args=%v", args)
