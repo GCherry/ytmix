@@ -560,9 +560,9 @@ func TestTrackIntakeAndConcurrency(t *testing.T) {
 func TestProbeEmbeddedArt(t *testing.T) {
 	t.Run("parses attached_pic streams deterministically and handles missing streams", func(t *testing.T) {
 		cases := []struct {
-			name      string
-			payload   string
-			want      EmbeddedArt
+			name    string
+			payload string
+			want    EmbeddedArt
 		}{
 			{
 				name:    "missing streams array (backward-compatible stub)",

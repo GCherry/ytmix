@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -339,12 +340,12 @@ func TestRunEstimate(t *testing.T) {
 		}
 		outDir := filepath.Join(workDir, "never-created-seg")
 
-		var sawAttachedPicProbe bool
+		var sawAttachedPicProbe atomic.Bool
 		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
 			joined := strings.Join(args, " ")
 			if name == "ffprobe" {
 				if strings.Contains(joined, "attached_pic") {
-					sawAttachedPicProbe = true
+					sawAttachedPicProbe.Store(true)
 				}
 				target := args[len(args)-1]
 				if strings.HasSuffix(target, "01 - Cover.mp3") {
@@ -373,7 +374,7 @@ func TestRunEstimate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("RunEstimate segmented error: %v", err)
 		}
-		if !sawAttachedPicProbe {
+		if !sawAttachedPicProbe.Load() {
 			t.Fatal("expected segmented RunEstimate to probe tracks with attached_pic")
 		}
 		if _, err := os.Stat(outDir); !os.IsNotExist(err) {

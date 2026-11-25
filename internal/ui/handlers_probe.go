@@ -804,8 +804,9 @@ func (s *Server) ensureSessionTrackExtractedArt(ctx context.Context, sessionID, 
 	if strings.EqualFold(tr.EmbeddedArtCodec, "png") {
 		ext = ".png"
 	}
-	artPath := filepath.Join(tempDir, fmt.Sprintf("id3_art_%s%s", trackID, ext))
-	tmpFile, err := os.CreateTemp(tempDir, fmt.Sprintf("id3_tmp_%s_*%s", trackID, ext))
+	seq := s.store.mediaSeq.Add(1)
+	artPath := filepath.Join(tempDir, fmt.Sprintf("id3_art_%d%s", seq, ext))
+	tmpFile, err := os.CreateTemp(tempDir, fmt.Sprintf("id3_tmp_%d_*%s", seq, ext))
 	if err != nil {
 		return "", "", fmt.Errorf("create temp file for ID3 artwork: %w", err)
 	}
