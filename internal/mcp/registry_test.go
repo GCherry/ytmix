@@ -550,4 +550,35 @@ func TestRegistryToolsResourcesPrompts(t *testing.T) {
 			t.Fatalf("expected server to remain responsive after panic, got %s", pingResp)
 		}
 	})
+
+	t.Run("UnregisterResource removes registered URI and ignores nil or empty", func(t *testing.T) {
+		var nilReg *Registry
+		nilReg.UnregisterResource("ytmix://ignored")
+
+		r := NewRegistry(ServerInfo{Name: "ytmix", Version: "0.1.0"})
+		r.RegisterResource(Resource{URI: "ytmix://jobs/job_1", Name: "Job 1"}, func(_ context.Context, uri string) ([]ResourceContent, error) {
+			return []ResourceContent{{URI: uri, Text: "{}"}}, nil
+		})
+		r.UnregisterResource("")
+		r.UnregisterResource("   ")
+
+		readBefore := r.HandleMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"ytmix://jobs/job_1"}}`))
+		if strings.Contains(string(readBefore), `"error"`) {
+			t.Fatalf("expected resource to be readable before unregister, got %s", readBefore)
+		}
+
+		r.UnregisterResource("ytmix://jobs/job_1")
+		readAfter := r.HandleMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"ytmix://jobs/job_1"}}`))
+		var env struct {
+			Error *RPCError `json:"error"`
+		}
+		if err := json.Unmarshal(readAfter, &env); err != nil || env.Error == nil || env.Error.Code != ErrCodeResourceNotFound {
+			t.Fatalf("expected -32002 after unregister, got %s", readAfter)
+		}
+
+		listAfter := r.HandleMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":3,"method":"resources/list"}`))
+		if strings.Contains(string(listAfter), "ytmix://jobs/job_1") {
+			t.Fatalf("expected unregistered resource omitted from resources/list, got %s", listAfter)
+		}
+	})
 }

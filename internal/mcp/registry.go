@@ -253,6 +253,16 @@ func (r *Registry) RegisterResource(def Resource, reader ResourceReader) {
 	r.resources[def.URI] = registeredResource{def: def, reader: reader}
 }
 
+// UnregisterResource removes a previously registered MCP resource by URI.
+func (r *Registry) UnregisterResource(uri string) {
+	if r == nil || strings.TrimSpace(uri) == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.resources, uri)
+}
+
 // RegisterPrompt registers (or replaces) an MCP prompt by name.
 func (r *Registry) RegisterPrompt(def Prompt, getter PromptGetter) {
 	if r == nil || strings.TrimSpace(def.Name) == "" || getter == nil {
