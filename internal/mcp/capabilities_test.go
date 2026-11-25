@@ -164,8 +164,20 @@ func TestGetCapabilities(t *testing.T) {
 			})
 
 			listResp := reg.HandleMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
-			if !strings.Contains(string(listResp), `"name":"get_capabilities"`) {
+			var listEnv struct {
+				Result struct {
+					Tools []Tool `json:"tools"`
+				} `json:"result"`
+			}
+			if err := json.Unmarshal(listResp, &listEnv); err != nil {
+				t.Fatalf("unmarshal tools/list: %v (%s)", err, listResp)
+			}
+			if len(listEnv.Result.Tools) != 1 || listEnv.Result.Tools[0].Name != "get_capabilities" {
 				t.Fatalf("tools/list missing get_capabilities: %s", listResp)
+			}
+			ann := listEnv.Result.Tools[0].Annotations
+			if ann == nil || ann.ReadOnlyHint == nil || !*ann.ReadOnlyHint || ann.DestructiveHint == nil || *ann.DestructiveHint {
+				t.Fatalf("expected read-only non-destructive annotations on get_capabilities, got %+v", ann)
 			}
 
 			callResp := reg.HandleMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_capabilities","arguments":{}}}`))
@@ -227,6 +239,37 @@ func TestGetCapabilities(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("caches FFmpeg encoder and filter probes across repeated calls", func(t *testing.T) {
+		var runnerCalls int
+		reg := NewRegistry(ServerInfo{Name: "ytmix", Version: "0.1.0"})
+		RegisterCapabilitiesTool(reg, CapabilitiesDeps{
+			GOOS:     "linux",
+			LookPath: func(bin string) (string, error) { return "/usr/bin/" + bin, nil },
+			Runner: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+				runnerCalls++
+				if strings.Contains(strings.Join(args, " "), "-filters") {
+					return allFiltersOutput, nil
+				}
+				return nil, errors.New("no nvenc")
+			},
+		})
+
+		for i := range 2 {
+			resp := reg.HandleMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_capabilities","arguments":{}}}`))
+			if !strings.Contains(string(resp), `"status":"ok"`) {
+				t.Fatalf("call %d unexpected response: %s", i, resp)
+			}
+		}
+		if runnerCalls == 0 {
+			t.Fatal("expected initial probe to call runner")
+		}
+		firstCalls := runnerCalls
+		_ = reg.HandleMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_capabilities","arguments":{}}}`))
+		if runnerCalls != firstCalls {
+			t.Fatalf("expected cached probe on subsequent call: calls went from %d to %d", firstCalls, runnerCalls)
+		}
+	})
 
 	t.Run("rejects unexpected arguments and accepts omitted or null arguments", func(t *testing.T) {
 		reg := NewRegistry(ServerInfo{Name: "ytmix", Version: "0.1.0"})

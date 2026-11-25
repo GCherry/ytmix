@@ -208,4 +208,25 @@ func TestServerServe(t *testing.T) {
 			t.Fatalf("expected write diagnostic in stderr, got %q", errOut.String())
 		}
 	})
+
+	t.Run("rejects messages exceeding MaxMessageBytes cleanly to stderr", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		oversized := `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"pad":"` + strings.Repeat("x", 128) + `"}}` + "\n"
+		srv := NewServer(ServerConfig{
+			In:              strings.NewReader(oversized),
+			Out:             &out,
+			ErrOut:          &errOut,
+			MaxMessageBytes: 64,
+		})
+		err := srv.Serve(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "exceeds 64 bytes") {
+			t.Fatalf("expected max message size error, got %v", err)
+		}
+		if out.Len() != 0 {
+			t.Fatalf("expected zero stdout bytes on oversized message, got %q", out.String())
+		}
+		if !strings.Contains(errOut.String(), "exceeds 64 bytes") {
+			t.Fatalf("expected diagnostic in stderr, got %q", errOut.String())
+		}
+	})
 }

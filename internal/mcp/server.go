@@ -11,22 +11,26 @@ import (
 	"sync"
 )
 
+const defaultMaxMessageBytes = 16 << 20 // 16 MiB
+
 // ServerConfig configures an MCP stdio Server.
 type ServerConfig struct {
-	In       io.Reader
-	Out      io.Writer
-	ErrOut   io.Writer
-	Info     ServerInfo
-	Registry *Registry
+	In              io.Reader
+	Out             io.Writer
+	ErrOut          io.Writer
+	Info            ServerInfo
+	Registry        *Registry
+	MaxMessageBytes int
 }
 
 // Server serves MCP JSON-RPC 2.0 requests over newline-delimited stdio streams.
 type Server struct {
 	*Registry
-	in      io.Reader
-	out     io.Writer
-	errOut  io.Writer
-	writeMu sync.Mutex
+	in              io.Reader
+	out             io.Writer
+	errOut          io.Writer
+	maxMessageBytes int
+	writeMu         sync.Mutex
 }
 
 // NewServer constructs an MCP stdio Server around cfg.Registry (or a fresh Registry if nil).
@@ -47,17 +51,39 @@ func NewServer(cfg ServerConfig) *Server {
 	if errOut == nil {
 		errOut = io.Discard
 	}
+	maxMsg := cfg.MaxMessageBytes
+	if maxMsg <= 0 {
+		maxMsg = defaultMaxMessageBytes
+	}
 	return &Server{
-		Registry: reg,
-		in:       in,
-		out:      out,
-		errOut:   errOut,
+		Registry:        reg,
+		in:              in,
+		out:             out,
+		errOut:          errOut,
+		maxMessageBytes: maxMsg,
 	}
 }
 
 type readLineResult struct {
 	line []byte
 	err  error
+}
+
+func readLineBounded(r *bufio.Reader, maxBytes int) ([]byte, error) {
+	var buf bytes.Buffer
+	for {
+		frag, err := r.ReadSlice('\n')
+		if len(frag) > maxBytes-buf.Len() {
+			return nil, fmt.Errorf("JSON-RPC message exceeds %d bytes", maxBytes)
+		}
+		if len(frag) > 0 {
+			buf.Write(frag)
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		return buf.Bytes(), err
+	}
 }
 
 // Serve runs the newline-delimited JSON-RPC 2.0 loop until EOF, stream error, or ctx cancellation.
@@ -76,9 +102,13 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	go func() {
 		defer close(lines)
-		reader := bufio.NewReaderSize(s.in, 64*1024)
+		bufSize := min(64*1024, s.maxMessageBytes)
+		if bufSize < 1 {
+			bufSize = 1
+		}
+		reader := bufio.NewReaderSize(s.in, bufSize)
 		for {
-			line, err := reader.ReadBytes('\n')
+			line, err := readLineBounded(reader, s.maxMessageBytes)
 			if len(line) > 0 {
 				select {
 				case lines <- readLineResult{line: line}:

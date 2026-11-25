@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"sync"
@@ -14,7 +15,7 @@ import (
 
 const (
 	// DefaultProtocolVersion is the preferred MCP protocol version negotiated during initialize.
-	DefaultProtocolVersion = "2025-03-26"
+	DefaultProtocolVersion = "2025-06-18"
 
 	ErrCodeParse            = -32700
 	ErrCodeInvalidRequest   = -32600
@@ -25,6 +26,7 @@ const (
 )
 
 var supportedProtocolVersions = map[string]bool{
+	"2025-06-18": true,
 	"2025-03-26": true,
 	"2024-11-05": true,
 }
@@ -60,11 +62,26 @@ func ResourceNotFoundError(uri string) *RPCError {
 	return &RPCError{Code: ErrCodeResourceNotFound, Message: fmt.Sprintf("resource not found: %s", uri)}
 }
 
+// BoolPtr returns a pointer to v for optional ToolAnnotations hint fields.
+func BoolPtr(v bool) *bool {
+	return &v
+}
+
+// ToolAnnotations provides optional behavioral hints for MCP clients.
+type ToolAnnotations struct {
+	Title           string `json:"title,omitempty"`
+	ReadOnlyHint    *bool  `json:"readOnlyHint,omitempty"`
+	DestructiveHint *bool  `json:"destructiveHint,omitempty"`
+	IdempotentHint  *bool  `json:"idempotentHint,omitempty"`
+	OpenWorldHint   *bool  `json:"openWorldHint,omitempty"`
+}
+
 // Tool describes an MCP tool exposed via tools/list and invoked via tools/call.
 type Tool struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	InputSchema any    `json:"inputSchema"`
+	Name        string           `json:"name"`
+	Description string           `json:"description,omitempty"`
+	InputSchema any              `json:"inputSchema"`
+	Annotations *ToolAnnotations `json:"annotations,omitempty"`
 }
 
 // ContentBlock represents a single MCP content item in a tool result.
@@ -400,9 +417,6 @@ func (r *Registry) handleSingleObject(ctx context.Context, raw []byte) (rpcRespo
 	}
 
 	if req.JSONRPC != "2.0" {
-		if !hasID {
-			return rpcResponse{}, false
-		}
 		return rpcResponse{
 			JSONRPC: "2.0",
 			ID:      respID,
@@ -410,9 +424,6 @@ func (r *Registry) handleSingleObject(ctx context.Context, raw []byte) (rpcRespo
 		}, true
 	}
 	if strings.TrimSpace(req.Method) == "" {
-		if !hasID {
-			return rpcResponse{}, false
-		}
 		return rpcResponse{
 			JSONRPC: "2.0",
 			ID:      respID,
@@ -471,6 +482,30 @@ func decodeObjectParams(params json.RawMessage, method string, dst any) *RPCErro
 	return nil
 }
 
+// DecodeToolArgs unmarshals a tool call's raw JSON object into T, rejecting unknown fields and trailing tokens.
+func DecodeToolArgs[T any](args json.RawMessage) (T, error) {
+	var zero T
+	trimmed := bytes.TrimSpace(args)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, nullID) {
+		trimmed = json.RawMessage("{}")
+	}
+	if !hasJSONObjectPrefix(trimmed) {
+		return zero, InvalidParamsError("invalid tool arguments: expected JSON object")
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.DisallowUnknownFields()
+	var out T
+	if err := dec.Decode(&out); err != nil {
+		return zero, InvalidParamsError(fmt.Sprintf("invalid tool arguments: %v", err))
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return zero, InvalidParamsError("invalid tool arguments: unexpected trailing data")
+	}
+	return out, nil
+}
+
 func mapHandlerRPCError(err error) *RPCError {
 	var rpcErr *RPCError
 	if errors.As(err, &rpcErr) {
@@ -479,36 +514,45 @@ func mapHandlerRPCError(err error) *RPCError {
 	return &RPCError{Code: ErrCodeInternal, Message: err.Error()}
 }
 
-func (r *Registry) dispatchRequest(ctx context.Context, method string, params json.RawMessage) (any, *RPCError) {
+func (r *Registry) dispatchRequest(ctx context.Context, method string, params json.RawMessage) (res any, rpcErr *RPCError) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			res = nil
+			rpcErr = &RPCError{
+				Code:    ErrCodeInternal,
+				Message: fmt.Sprintf("internal error: panic in %s: %v", method, rec),
+			}
+		}
+	}()
 
 	switch method {
 	case "initialize":
 		return r.handleInitialize(params)
 	case "ping":
-		if rpcErr := validateOptionalObjectParams(params); rpcErr != nil {
-			return nil, rpcErr
+		if err := validateOptionalObjectParams(params); err != nil {
+			return nil, err
 		}
 		return map[string]any{}, nil
 	case "tools/list":
-		if rpcErr := validateOptionalObjectParams(params); rpcErr != nil {
-			return nil, rpcErr
+		if err := validateOptionalObjectParams(params); err != nil {
+			return nil, err
 		}
 		return r.handleToolsList(), nil
 	case "tools/call":
 		return r.handleToolsCall(ctx, params)
 	case "resources/list":
-		if rpcErr := validateOptionalObjectParams(params); rpcErr != nil {
-			return nil, rpcErr
+		if err := validateOptionalObjectParams(params); err != nil {
+			return nil, err
 		}
 		return r.handleResourcesList(), nil
 	case "resources/read":
 		return r.handleResourcesRead(ctx, params)
 	case "prompts/list":
-		if rpcErr := validateOptionalObjectParams(params); rpcErr != nil {
-			return nil, rpcErr
+		if err := validateOptionalObjectParams(params); err != nil {
+			return nil, err
 		}
 		return r.handlePromptsList(), nil
 	case "prompts/get":

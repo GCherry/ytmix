@@ -18,6 +18,11 @@ func TestRegistryLifecycleAndErrors(t *testing.T) {
 			wantVersion string
 		}{
 			{
+				name:        "accepts 2025-06-18",
+				req:         `{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"antigravity","version":"1.0"}}}`,
+				wantVersion: "2025-06-18",
+			},
+			{
 				name:        "accepts 2025-03-26",
 				req:         `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"claude","version":"1.0"}}}`,
 				wantVersion: "2025-03-26",
@@ -129,6 +134,24 @@ func TestRegistryLifecycleAndErrors(t *testing.T) {
 			{
 				name:     "invalid request non-object",
 				input:    `123`,
+				wantCode: ErrCodeInvalidRequest,
+				wantID:   "null",
+			},
+			{
+				name:     "invalid request empty object without id",
+				input:    `{}`,
+				wantCode: ErrCodeInvalidRequest,
+				wantID:   "null",
+			},
+			{
+				name:     "invalid request wrong jsonrpc version without id",
+				input:    `{"jsonrpc":"1.0","method":"ping"}`,
+				wantCode: ErrCodeInvalidRequest,
+				wantID:   "null",
+			},
+			{
+				name:     "invalid request empty method without id",
+				input:    `{"jsonrpc":"2.0","method":""}`,
 				wantCode: ErrCodeInvalidRequest,
 				wantID:   "null",
 			},
@@ -458,6 +481,73 @@ func TestRegistryToolsResourcesPrompts(t *testing.T) {
 		}
 		if err := json.Unmarshal(emptyBatch, &env); err != nil || env.Error == nil || env.Error.Code != ErrCodeInvalidRequest {
 			t.Fatalf("expected -32600 for empty batch, got %s", emptyBatch)
+		}
+	})
+
+	t.Run("DecodeToolArgs validates structs and rejects unknown fields or trailing tokens", func(t *testing.T) {
+		type sampleArgs struct {
+			AudioDir string `json:"audioDir"`
+		}
+
+		got, err := DecodeToolArgs[sampleArgs](json.RawMessage(`{"audioDir":"/tmp/tracks"}`))
+		if err != nil || got.AudioDir != "/tmp/tracks" {
+			t.Fatalf("expected valid decode, got=%+v err=%v", got, err)
+		}
+
+		if emptyGot, err := DecodeToolArgs[sampleArgs](nil); err != nil || emptyGot.AudioDir != "" {
+			t.Fatalf("expected empty nil args to decode cleanly, got=%+v err=%v", emptyGot, err)
+		}
+
+		for _, raw := range []string{
+			`{"audioDir":"/tmp","extra":true}`,
+			`{"audioDir":123}`,
+			`{"audioDir":"/tmp"}{"trailing":1}`,
+			`[]`,
+		} {
+			if _, err := DecodeToolArgs[sampleArgs](json.RawMessage(raw)); err == nil {
+				t.Fatalf("expected InvalidParamsError for %s", raw)
+			}
+		}
+	})
+
+	t.Run("recovers panics in tool, resource, and prompt handlers without crashing", func(t *testing.T) {
+		panicReg := NewRegistry(ServerInfo{Name: "ytmix", Version: "0.1.0"})
+		panicReg.RegisterTool(Tool{
+			Name:        "boom_tool",
+			InputSchema: map[string]any{"type": "object"},
+		}, func(_ context.Context, _ json.RawMessage) (CallToolResult, error) {
+			panic("tool exploded")
+		})
+		panicReg.RegisterResource(Resource{
+			URI:  "ytmix://boom",
+			Name: "Boom",
+		}, func(_ context.Context, _ string) ([]ResourceContent, error) {
+			panic("resource exploded")
+		})
+		panicReg.RegisterPrompt(Prompt{
+			Name: "boom_prompt",
+		}, func(_ context.Context, _ map[string]string) (PromptResult, error) {
+			panic("prompt exploded")
+		})
+
+		for _, req := range []string{
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"boom_tool"}}`,
+			`{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"ytmix://boom"}}`,
+			`{"jsonrpc":"2.0","id":3,"method":"prompts/get","params":{"name":"boom_prompt"}}`,
+		} {
+			resp := panicReg.HandleMessage(context.Background(), []byte(req))
+			var env struct {
+				Error *RPCError `json:"error"`
+			}
+			if err := json.Unmarshal(resp, &env); err != nil || env.Error == nil || env.Error.Code != ErrCodeInternal {
+				t.Fatalf("expected -32603 internal error for panicking request %s, got %s", req, resp)
+			}
+		}
+
+		// Verify registry still responds normally after panic recovery.
+		pingResp := panicReg.HandleMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":4,"method":"ping"}`))
+		if !strings.Contains(string(pingResp), `"result":{}`) {
+			t.Fatalf("expected server to remain responsive after panic, got %s", pingResp)
 		}
 	})
 }

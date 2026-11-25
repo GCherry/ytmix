@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/GCherry/ytmix/internal/render"
 )
@@ -48,11 +49,80 @@ type CapabilitiesResult struct {
 	VisualizerResolutions   []render.ResolutionSpec `json:"visualizerResolutions"`
 }
 
+type capabilitiesProbeCache struct {
+	mu            sync.Mutex
+	probed        bool
+	encoder       EncoderCapability
+	pathDEncoder  EncoderCapability
+	availFilters  map[string]bool
+	filtersProbed bool
+}
+
+func (c *capabilitiesProbeCache) probeFFmpeg(ctx context.Context, goos string, runner CommandRunner) (EncoderCapability, EncoderCapability, map[string]bool, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.probed {
+		return cloneEncoderCapability(c.encoder), cloneEncoderCapability(c.pathDEncoder), cloneFilterMap(c.availFilters), c.filtersProbed
+	}
+
+	enc, pathDEnc, availFilters, filtersProbed := probeFFmpegDetails(ctx, goos, runner)
+	if ctx.Err() == nil {
+		c.encoder = cloneEncoderCapability(enc)
+		c.pathDEncoder = cloneEncoderCapability(pathDEnc)
+		c.availFilters = cloneFilterMap(availFilters)
+		c.filtersProbed = filtersProbed
+		c.probed = true
+	}
+	return enc, pathDEnc, availFilters, filtersProbed
+}
+
+func cloneEncoderCapability(enc EncoderCapability) EncoderCapability {
+	return EncoderCapability{
+		Name: enc.Name,
+		Args: append([]string(nil), enc.Args...),
+	}
+}
+
+func cloneFilterMap(in map[string]bool) map[string]bool {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]bool, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func probeFFmpegDetails(ctx context.Context, goos string, runner CommandRunner) (EncoderCapability, EncoderCapability, map[string]bool, bool) {
+	detectedEnc := render.DetectEncoder(ctx, goos, runner)
+	enc := EncoderCapability{
+		Name: detectedEnc.Name,
+		Args: append([]string(nil), detectedEnc.Args...),
+	}
+
+	detectedPathDEnc := render.DetectPathDEncoder(ctx, goos, render.DefaultVisualizerResolution, runner)
+	pathDEnc := EncoderCapability{
+		Name: detectedPathDEnc.Name,
+		Args: append([]string(nil), detectedPathDEnc.Args...),
+	}
+
+	var availFilters map[string]bool
+	var filtersProbed bool
+	if filters, err := render.DetectFilters(ctx, runner); err == nil {
+		availFilters = filters
+		filtersProbed = true
+	}
+	return enc, pathDEnc, availFilters, filtersProbed
+}
+
 // RegisterCapabilitiesTool registers the read-only get_capabilities discovery tool on r.
 func RegisterCapabilitiesTool(r *Registry, deps CapabilitiesDeps) {
 	if r == nil {
 		return
 	}
+	var cache capabilitiesProbeCache
 	r.RegisterTool(Tool{
 		Name:        "get_capabilities",
 		Description: "Inspect local FFmpeg/FFprobe availability, hardware H.264 encoders, Path D Auto Visualizer presets, Color Themes, resolutions, and supported Background Visual extensions.",
@@ -61,26 +131,31 @@ func RegisterCapabilitiesTool(r *Registry, deps CapabilitiesDeps) {
 			"properties":           map[string]any{},
 			"additionalProperties": false,
 		},
+		Annotations: &ToolAnnotations{
+			Title:           "Get ytmix Capabilities",
+			ReadOnlyHint:    BoolPtr(true),
+			DestructiveHint: BoolPtr(false),
+			IdempotentHint:  BoolPtr(true),
+			OpenWorldHint:   BoolPtr(false),
+		},
 	}, func(ctx context.Context, args json.RawMessage) (CallToolResult, error) {
 		if ctx != nil && ctx.Err() != nil {
 			return CallToolResult{}, ctx.Err()
 		}
-		if len(args) > 0 {
-			var extra map[string]any
-			if err := json.Unmarshal(args, &extra); err != nil {
-				return CallToolResult{}, InvalidParamsError("invalid get_capabilities arguments")
-			}
-			if len(extra) > 0 {
-				return CallToolResult{}, InvalidParamsError("get_capabilities does not accept any arguments")
-			}
+		if _, err := DecodeToolArgs[struct{}](args); err != nil {
+			return CallToolResult{}, err
 		}
-		caps := BuildCapabilities(ctx, deps)
+		caps := buildCapabilitiesWithCache(ctx, deps, &cache)
 		return JSONToolResult(caps)
 	})
 }
 
 // BuildCapabilities probes host binaries, encoders, and FFmpeg filters and returns ytmix capabilities.
 func BuildCapabilities(ctx context.Context, deps CapabilitiesDeps) CapabilitiesResult {
+	return buildCapabilitiesWithCache(ctx, deps, nil)
+}
+
+func buildCapabilitiesWithCache(ctx context.Context, deps CapabilitiesDeps, cache *capabilitiesProbeCache) CapabilitiesResult {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -108,21 +183,10 @@ func BuildCapabilities(ctx context.Context, deps CapabilitiesDeps) CapabilitiesR
 	var filtersProbed bool
 
 	if hasFFmpeg && deps.Runner != nil {
-		detectedEnc := render.DetectEncoder(ctx, goos, deps.Runner)
-		enc = EncoderCapability{
-			Name: detectedEnc.Name,
-			Args: append([]string(nil), detectedEnc.Args...),
-		}
-
-		detectedPathDEnc := render.DetectPathDEncoder(ctx, goos, render.DefaultVisualizerResolution, deps.Runner)
-		pathDEnc = EncoderCapability{
-			Name: detectedPathDEnc.Name,
-			Args: append([]string(nil), detectedPathDEnc.Args...),
-		}
-
-		if filters, err := render.DetectFilters(ctx, deps.Runner); err == nil {
-			availFilters = filters
-			filtersProbed = true
+		if cache != nil {
+			enc, pathDEnc, availFilters, filtersProbed = cache.probeFFmpeg(ctx, goos, deps.Runner)
+		} else {
+			enc, pathDEnc, availFilters, filtersProbed = probeFFmpegDetails(ctx, goos, deps.Runner)
 		}
 	}
 
