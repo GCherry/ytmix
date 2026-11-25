@@ -42,7 +42,7 @@ type renderConfigRequest struct {
 	VisualizerBrightness *int               `json:"visualizerBrightness"`
 	FadeToBlackMinutes   float64            `json:"fadeToBlackMinutes"`
 	DimTitles            bool               `json:"dimTitles"`
-	Segmented            bool               `json:"segmented"`
+	Segmented            *bool              `json:"segmented"`
 	TrackTransition      string             `json:"trackTransition"`
 	TrackMediaLayout     string             `json:"trackMediaLayout"`
 	TrackOverrides       []trackOverrideDTO `json:"trackOverrides"`
@@ -180,7 +180,7 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else if localAllowed && safeAudioDir != "" {
-		if req.Segmented || len(req.TrackOverrides) > 0 {
+		if resolveIsSegmented(req.Segmented, req.TrackOverrides, nil) {
 			tracks, err = mixer.ProbeTracksWithArt(r.Context(), safeAudioDir, req.Shuffle, nil, s.cfg.Runner)
 		} else {
 			tracks, err = mixer.ProbeTracks(r.Context(), safeAudioDir, req.Shuffle, nil, s.cfg.Runner)
@@ -205,7 +205,7 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	isSegmented := req.Segmented || len(req.TrackOverrides) > 0 || hasSessionMediaOverrides(sessMedia)
+	isSegmented := resolveIsSegmented(req.Segmented, req.TrackOverrides, sessMedia)
 	var (
 		trackMediaMode string
 		trackOverrides []mixer.TrackMediaOverride
@@ -377,11 +377,21 @@ func resolveEffectiveBGMode(bgModeRaw, layer0ModeRaw string) (string, error) {
 
 func hasSessionMediaOverrides(media []sessionTrackMedia) bool {
 	for _, tm := range media {
-		if tm.source == "upload" || tm.source == "local" || tm.explicitEmpty || tm.layerMode != "" {
+		if tm.source == "upload" || tm.source == "local" || tm.explicitEmpty || tm.layerPinned {
 			return true
 		}
 	}
 	return false
+}
+
+func resolveIsSegmented(segmented *bool, overrides []trackOverrideDTO, sessMedia []sessionTrackMedia) bool {
+	if segmented != nil {
+		if !*segmented && len(overrides) == 0 {
+			return false
+		}
+		return *segmented || len(overrides) > 0
+	}
+	return len(overrides) > 0 || hasSessionMediaOverrides(sessMedia)
 }
 
 func validateOverrideSource(raw string) (string, error) {
@@ -431,7 +441,9 @@ func resolveTrackSourceAndLayer(
 	ov trackOverrideDTO,
 	hasOv bool,
 ) (effSource string, effLayer render.TrackLayerMode, err error) {
-	effLayer = tm.layerMode
+	if tm.layerPinned {
+		effLayer = tm.layerMode
+	}
 	if hasOv && strings.TrimSpace(ov.LayerMode) != "" {
 		effLayer, err = render.ValidateTrackLayerMode(render.TrackLayerMode(ov.LayerMode))
 		if err != nil {
@@ -449,6 +461,98 @@ func resolveTrackSourceAndLayer(
 		}
 	}
 	return effSource, effLayer, nil
+}
+
+type resolvedUITrack struct {
+	mediaPath     string
+	mediaKind     render.BackgroundKind
+	layerMode     render.TrackLayerMode
+	explicitEmpty bool
+	isID3         bool
+	effSource     string
+}
+
+func resolveUITrackItem(
+	tr mixer.Track,
+	tm sessionTrackMedia,
+	ov trackOverrideDTO,
+	hasOv bool,
+	localAllowed bool,
+	tempDir string,
+	checkUploadFile bool,
+) (resolvedUITrack, int, error) {
+	effSource, effLayer, err := resolveTrackSourceAndLayer(tm, ov, hasOv)
+	if err != nil {
+		return resolvedUITrack{}, http.StatusBadRequest, err
+	}
+
+	isExplicitEmpty := effLayer == render.LayerBackdrop ||
+		effSource == "backdrop" ||
+		(tm.explicitEmpty && (!hasOv || (strings.TrimSpace(ov.Source) == "" && strings.TrimSpace(ov.LayerMode) == "")))
+
+	res := resolvedUITrack{
+		layerMode: effLayer,
+		effSource: effSource,
+	}
+
+	switch {
+	case isExplicitEmpty:
+		res.layerMode = render.LayerBackdrop
+		res.explicitEmpty = true
+	case effSource == "upload":
+		if tm.source != "upload" || tm.filePath == "" || (checkUploadFile && tempDir == "") {
+			return resolvedUITrack{}, http.StatusBadRequest, fmt.Errorf("track %q has no uploaded visual media", tr.DisplayTitle)
+		}
+		if checkUploadFile {
+			f, openErr := openFileInDir(tempDir, tm.filePath)
+			if openErr != nil {
+				return resolvedUITrack{}, http.StatusBadRequest, fmt.Errorf("track %q uploaded visual unavailable: %w", tr.DisplayTitle, openErr)
+			}
+			_ = f.Close()
+		}
+		res.mediaKind = tm.mediaKind
+		res.mediaPath = tm.filePath
+	case effSource == "local":
+		if !localAllowed {
+			return resolvedUITrack{}, http.StatusForbidden, errors.New("local Track media is disabled on non-loopback or --host 0.0.0.0 sessions")
+		}
+		if tm.source != "local" || tm.filePath == "" {
+			return resolvedUITrack{}, http.StatusBadRequest, fmt.Errorf("track %q has no local visual media", tr.DisplayTitle)
+		}
+		res.mediaKind = tm.mediaKind
+		res.mediaPath = tm.filePath
+	case effSource == "sidecar":
+		if !localAllowed {
+			return resolvedUITrack{}, http.StatusForbidden, errors.New("local sidecar media is disabled on non-loopback or --host 0.0.0.0 sessions")
+		}
+		if tm.sidecarPath == "" {
+			return resolvedUITrack{}, http.StatusBadRequest, fmt.Errorf("track %q has no sidecar media", tr.DisplayTitle)
+		}
+		res.mediaKind = tm.sidecarKind
+		res.mediaPath = tm.sidecarPath
+	case effSource == "id3":
+		if !tr.HasEmbeddedArt {
+			return resolvedUITrack{}, http.StatusBadRequest, fmt.Errorf("track %q has no embedded ID3 art", tr.DisplayTitle)
+		}
+		res.mediaKind = render.BackgroundKindImage
+		res.isID3 = true
+	default:
+		if tm.defaultMediaSource == "sidecar" && tm.sidecarPath != "" && localAllowed {
+			res.mediaKind = tm.sidecarKind
+			res.mediaPath = tm.sidecarPath
+		} else if tm.defaultMediaSource == "id3" && tr.HasEmbeddedArt {
+			res.mediaKind = render.BackgroundKindImage
+			res.isID3 = true
+		} else {
+			if effLayer == render.LayerFullscreen || effLayer == render.LayerArtCard {
+				return resolvedUITrack{}, http.StatusBadRequest, fmt.Errorf("track %q requires visual media for layer mode %q", tr.DisplayTitle, effLayer)
+			}
+			res.layerMode = render.LayerBackdrop
+			res.explicitEmpty = true
+		}
+	}
+
+	return res, http.StatusOK, nil
 }
 
 func buildEstimateSegments(
@@ -492,79 +596,19 @@ func buildEstimateSegments(
 			tid = trackIDs[i]
 		}
 		ov, hasOv := byID[tid]
-		effSource, effLayer, err := resolveTrackSourceAndLayer(tm, ov, hasOv)
+		resolved, status, err := resolveUITrackItem(tr, tm, ov, hasOv, localAllowed, "", false)
 		if err != nil {
-			return nil, nil, http.StatusBadRequest, err
+			return nil, nil, status, err
 		}
 
-		var (
-			mediaKind render.BackgroundKind
-			layerMode render.TrackLayerMode
-			mediaPath string
-			isID3     bool
-		)
-
-		isExplicitEmpty := effLayer == render.LayerBackdrop ||
-			effSource == "backdrop" ||
-			(tm.explicitEmpty && (!hasOv || (strings.TrimSpace(ov.Source) == "" && strings.TrimSpace(ov.LayerMode) == "")))
-
-		switch {
-		case isExplicitEmpty:
-			layerMode = render.LayerBackdrop
-		case effSource == "upload":
-			if tm.source != "upload" || tm.filePath == "" {
-				return nil, nil, http.StatusBadRequest, fmt.Errorf("track %q has no uploaded visual media", tr.DisplayTitle)
-			}
-			mediaKind = tm.mediaKind
-			mediaPath = tm.filePath
-		case effSource == "local":
-			if !localAllowed {
-				return nil, nil, http.StatusForbidden, errors.New("local Track media is disabled on non-loopback or --host 0.0.0.0 sessions")
-			}
-			if tm.source != "local" || tm.filePath == "" {
-				return nil, nil, http.StatusBadRequest, fmt.Errorf("track %q has no local visual media", tr.DisplayTitle)
-			}
-			mediaKind = tm.mediaKind
-			mediaPath = tm.filePath
-		case effSource == "sidecar":
-			if !localAllowed {
-				return nil, nil, http.StatusForbidden, errors.New("local sidecar media is disabled on non-loopback or --host 0.0.0.0 sessions")
-			}
-			if tm.sidecarPath == "" {
-				return nil, nil, http.StatusBadRequest, fmt.Errorf("track %q has no sidecar media", tr.DisplayTitle)
-			}
-			mediaKind = tm.sidecarKind
-			mediaPath = tm.sidecarPath
-		case effSource == "id3":
-			if !tr.HasEmbeddedArt {
-				return nil, nil, http.StatusBadRequest, fmt.Errorf("track %q has no embedded ID3 art", tr.DisplayTitle)
-			}
-			mediaKind = render.BackgroundKindImage
-			isID3 = true
-		default:
-			if tm.defaultMediaSource == "sidecar" && tm.sidecarPath != "" && localAllowed {
-				mediaKind = tm.sidecarKind
-				mediaPath = tm.sidecarPath
-			} else if tm.defaultMediaSource == "id3" && tr.HasEmbeddedArt {
-				mediaKind = render.BackgroundKindImage
-				isID3 = true
-			} else {
-				if effLayer == render.LayerFullscreen || effLayer == render.LayerArtCard {
-					return nil, nil, http.StatusBadRequest, fmt.Errorf("track %q requires visual media for layer mode %q", tr.DisplayTitle, effLayer)
-				}
-				layerMode = render.LayerBackdrop
-			}
-		}
-
+		layerMode := resolved.layerMode
 		if layerMode == "" {
 			switch {
-			case effLayer != "":
-				layerMode = effLayer
 			case layoutMode == mixer.TrackMediaLayoutFullscreen:
 				layerMode = render.LayerFullscreen
 			case layoutMode == mixer.TrackMediaLayoutCard:
 				layerMode = render.LayerArtCard
-			case isID3:
+			case resolved.isID3:
 				layerMode = render.LayerArtCard
 			case tm.defaultLayerMode != "" && tm.defaultLayerMode != render.LayerBackdrop:
 				layerMode = tm.defaultLayerMode
@@ -577,15 +621,15 @@ func buildEstimateSegments(
 			Index:         i,
 			StartSec:      sched.Starts[i],
 			SlotDuration:  slotDur,
-			MediaPath:     mediaPath,
-			MediaKind:     mediaKind,
+			MediaPath:     resolved.mediaPath,
+			MediaKind:     resolved.mediaKind,
 			LayerMode:     layerMode,
 			OverlayTitles: overlayTitles,
 		}
 		segInputs[i] = render.SegmentEstimateInput{
 			SlotDurationSec: slotDur,
 			LayerMode:       layerMode,
-			MediaKind:       mediaKind,
+			MediaKind:       resolved.mediaKind,
 			OverlayTitles:   overlayTitles,
 		}
 	}
@@ -616,100 +660,26 @@ func (s *Server) resolveRenderTrackOverrides(
 			tm = sessMedia[i]
 		}
 		ov, hasOv := byID[tid]
-		effSource, effLayer, err := resolveTrackSourceAndLayer(tm, ov, hasOv)
+		resolved, status, err := resolveUITrackItem(tr, tm, ov, hasOv, localAllowed, tempDir, true)
 		if err != nil {
-			return nil, http.StatusBadRequest, err
+			return nil, status, err
 		}
 
-		isExplicitEmpty := effLayer == render.LayerBackdrop ||
-			effSource == "backdrop" ||
-			(tm.explicitEmpty && (!hasOv || (strings.TrimSpace(ov.Source) == "" && strings.TrimSpace(ov.LayerMode) == "")))
-
-		switch {
-		case isExplicitEmpty:
-			out[i] = mixer.TrackMediaOverride{
-				TrackIndex:    i,
-				LayerMode:     render.LayerBackdrop,
-				ExplicitEmpty: true,
-			}
-		case effSource == "upload":
-			if tm.source != "upload" || tm.filePath == "" || tempDir == "" {
-				return nil, http.StatusBadRequest, fmt.Errorf("track %q has no uploaded visual media", tr.DisplayTitle)
-			}
-			f, openErr := openFileInDir(tempDir, tm.filePath)
-			if openErr != nil {
-				return nil, http.StatusBadRequest, fmt.Errorf("track %q uploaded visual unavailable: %w", tr.DisplayTitle, openErr)
-			}
-			_ = f.Close()
-			out[i] = mixer.TrackMediaOverride{
-				TrackIndex: i,
-				MediaPath:  tm.filePath,
-				MediaKind:  tm.mediaKind,
-				LayerMode:  effLayer,
-			}
-		case effSource == "local":
-			if !localAllowed {
-				return nil, http.StatusForbidden, errors.New("local Track media is disabled on non-loopback or --host 0.0.0.0 sessions")
-			}
-			if tm.source != "local" || tm.filePath == "" {
-				return nil, http.StatusBadRequest, fmt.Errorf("track %q has no local visual media", tr.DisplayTitle)
-			}
-			out[i] = mixer.TrackMediaOverride{
-				TrackIndex: i,
-				MediaPath:  tm.filePath,
-				MediaKind:  tm.mediaKind,
-				LayerMode:  effLayer,
-			}
-		case effSource == "sidecar":
-			if !localAllowed {
-				return nil, http.StatusForbidden, errors.New("local sidecar media is disabled on non-loopback or --host 0.0.0.0 sessions")
-			}
-			if tm.sidecarPath == "" {
-				return nil, http.StatusBadRequest, fmt.Errorf("track %q has no sidecar media", tr.DisplayTitle)
-			}
-			out[i] = mixer.TrackMediaOverride{
-				TrackIndex: i,
-				MediaPath:  tm.sidecarPath,
-				MediaKind:  tm.sidecarKind,
-				LayerMode:  effLayer,
-			}
-		case effSource == "id3":
-			if !tr.HasEmbeddedArt {
-				return nil, http.StatusBadRequest, fmt.Errorf("track %q has no embedded ID3 art", tr.DisplayTitle)
-			}
+		mediaPath := resolved.mediaPath
+		if resolved.isID3 && resolved.effSource == "id3" {
 			_, artPath, extractErr := s.ensureSessionTrackExtractedArt(ctx, sessionID, tid, tr, tm)
 			if extractErr != nil {
 				return nil, http.StatusInternalServerError, fmt.Errorf("extract embedded ID3 art for %q: %w", tr.DisplayTitle, extractErr)
 			}
-			out[i] = mixer.TrackMediaOverride{
-				TrackIndex: i,
-				MediaPath:  artPath,
-				MediaKind:  render.BackgroundKindImage,
-				LayerMode:  effLayer,
-			}
-		default:
-			if tm.defaultMediaSource == "sidecar" && tm.sidecarPath != "" && localAllowed {
-				out[i] = mixer.TrackMediaOverride{
-					TrackIndex: i,
-					MediaPath:  tm.sidecarPath,
-					MediaKind:  tm.sidecarKind,
-					LayerMode:  effLayer,
-				}
-			} else if tm.defaultMediaSource == "id3" && tr.HasEmbeddedArt {
-				out[i] = mixer.TrackMediaOverride{
-					TrackIndex: i,
-					LayerMode:  effLayer,
-				}
-			} else {
-				if effLayer == render.LayerFullscreen || effLayer == render.LayerArtCard {
-					return nil, http.StatusBadRequest, fmt.Errorf("track %q requires visual media for layer mode %q", tr.DisplayTitle, effLayer)
-				}
-				out[i] = mixer.TrackMediaOverride{
-					TrackIndex:    i,
-					LayerMode:     render.LayerBackdrop,
-					ExplicitEmpty: true,
-				}
-			}
+			mediaPath = artPath
+		}
+
+		out[i] = mixer.TrackMediaOverride{
+			TrackIndex:    i,
+			MediaPath:     mediaPath,
+			MediaKind:     resolved.mediaKind,
+			LayerMode:     resolved.layerMode,
+			ExplicitEmpty: resolved.explicitEmpty,
 		}
 	}
 	return out, http.StatusOK, nil

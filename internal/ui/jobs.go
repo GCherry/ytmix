@@ -29,6 +29,7 @@ type sessionTrackMedia struct {
 	mediaKind        render.BackgroundKind
 	mediaName        string
 	layerMode        render.TrackLayerMode
+	layerPinned      bool
 	explicitEmpty    bool
 	extractedArtPath string
 

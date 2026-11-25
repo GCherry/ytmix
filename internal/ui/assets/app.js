@@ -532,6 +532,7 @@
         mediaName,
         mediaKind,
         layerMode: defMode,
+        layerModePinned: false,
         explicitEmpty: false,
         previewSrc: t.previewUrl || "",
       };
@@ -786,7 +787,17 @@
     renderAll();
   }
 
-  function applyTrackMediaResponse(trackId, data) {
+  function effectiveTrackLayerMode(tr) {
+    if (!tr) return "backdrop";
+    if (tr.explicitEmpty) return "backdrop";
+    if (!tr.previewSrc && (tr.mediaSource === "inherit" || !tr.mediaSource)) return "backdrop";
+    if (tr.layerModePinned && tr.layerMode) return tr.layerMode;
+    if (state.trackMediaLayout === "fullscreen") return "fullscreen";
+    if (state.trackMediaLayout === "card") return "card";
+    return tr.layerMode || tr.defaultLayerMode || "fullscreen";
+  }
+
+  function applyTrackMediaResponse(trackId, data, pinned) {
     const idx = state.tracks.findIndex((t) => t.id === trackId);
     if (idx < 0) return;
     const tr = state.tracks[idx];
@@ -794,6 +805,7 @@
     tr.mediaName = data.mediaName || "";
     tr.mediaKind = data.mediaKind || "";
     tr.layerMode = data.layerMode || "backdrop";
+    tr.layerModePinned = Boolean(pinned);
     tr.explicitEmpty = Boolean(data.explicitEmpty);
     tr.previewSrc = data.previewUrl ? `${data.previewUrl}?v=${++state.mediaBustCounter}` : "";
     state.trackMediaError = "";
@@ -817,7 +829,7 @@
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Track media upload failed");
-      applyTrackMediaResponse(trackId, data);
+      applyTrackMediaResponse(trackId, data, false);
       state.perTrackEnabled = true;
       renderAll();
     } catch (err) {
@@ -842,7 +854,7 @@
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to bind local Track media");
-      applyTrackMediaResponse(trackId, data);
+      applyTrackMediaResponse(trackId, data, false);
       state.perTrackEnabled = true;
       renderAll();
     } catch (err) {
@@ -861,7 +873,7 @@
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to restore default Track media");
-      applyTrackMediaResponse(trackId, data);
+      applyTrackMediaResponse(trackId, data, false);
       state.perTrackEnabled = true;
       renderAll();
     } catch (err) {
@@ -881,7 +893,7 @@
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Failed to set L0 Only");
-        applyTrackMediaResponse(trackId, data);
+        applyTrackMediaResponse(trackId, data, true);
         state.perTrackEnabled = true;
         renderAll();
       } catch (err) {
@@ -908,7 +920,7 @@
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to update layer mode");
-      applyTrackMediaResponse(trackId, data);
+      applyTrackMediaResponse(trackId, data, true);
       state.perTrackEnabled = true;
       renderAll();
     } catch (err) {
@@ -1095,7 +1107,7 @@
 
       const pills = document.createElement("div");
       pills.className = "mode-pills";
-      const effectiveMode = tr.explicitEmpty ? "backdrop" : (tr.layerMode || "backdrop");
+      const effectiveMode = effectiveTrackLayerMode(tr);
       [
         { id: "fullscreen", label: "Fullscreen" },
         { id: "card", label: "Art Card" },
@@ -1468,8 +1480,9 @@
     const l1CardVid = $("stage-l1-card-video");
 
     const tr = state.tracks[state.selectedTrackIdx];
-    const l1Active = Boolean(state.perTrackEnabled && tr && !tr.explicitEmpty && tr.layerMode !== "backdrop" && tr.previewSrc);
-    const l1Mode = l1Active ? (tr.layerMode === "card" ? "card" : "fullscreen") : "backdrop";
+    const resolvedMode = effectiveTrackLayerMode(tr);
+    const l1Active = Boolean(state.perTrackEnabled && tr && !tr.explicitEmpty && resolvedMode !== "backdrop" && tr.previewSrc);
+    const l1Mode = l1Active ? (resolvedMode === "card" ? "card" : "fullscreen") : "backdrop";
     const showL0 = !(l1Active && l1Mode === "fullscreen");
 
     if (frame) {
@@ -1599,7 +1612,7 @@
     }
 
     const tracks = state.tracks.map((tr) => {
-      const effectiveMode = tr.explicitEmpty ? "backdrop" : (tr.layerMode || "backdrop");
+      const effectiveMode = effectiveTrackLayerMode(tr);
       const entry = {
         file: tr.fileName,
         layerMode: effectiveMode,
@@ -1673,9 +1686,9 @@
     if (state.perTrackEnabled) {
       const hasCustom = state.tracks.some((t) =>
         t.explicitEmpty ||
+        t.layerModePinned ||
         t.mediaSource === "upload" ||
-        t.mediaSource === "local" ||
-        (t.defaultLayerMode && t.layerMode && t.layerMode !== t.defaultLayerMode)
+        t.mediaSource === "local"
       );
       parts.push("--track-media", hasCustom ? "track_media_manifest.json" : "auto");
       if (state.trackMediaLayout && state.trackMediaLayout !== "auto") {
@@ -1780,7 +1793,7 @@
     if (!state.perTrackEnabled || !state.sessionId) return [];
     return state.tracks.map((tr) => ({
       trackId: tr.id,
-      layerMode: tr.explicitEmpty ? "backdrop" : (tr.layerMode || "backdrop"),
+      layerMode: tr.explicitEmpty ? "backdrop" : (tr.layerModePinned ? (tr.layerMode || "") : ""),
       source: tr.explicitEmpty ? "backdrop" : (tr.mediaSource || "inherit"),
     }));
   }

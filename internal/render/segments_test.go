@@ -254,8 +254,14 @@ func TestResolveSegmentedFPSAndDimensions(t *testing.T) {
 		wantH int
 	}{
 		{
-			name:  "Layer0Black defaults to 1920x1080",
+			name:  "Layer0Black honors Visualizer.Resolution 4k and defaults to 1920x1080 when empty",
 			opts:  SegmentedRenderOptions{Layer0: Layer0Spec{Mode: Layer0Black, Visualizer: VisualizerConfig{Resolution: Resolution4K}}},
+			wantW: 3840,
+			wantH: 2160,
+		},
+		{
+			name:  "Layer0Black defaults to 1920x1080 when resolution omitted",
+			opts:  SegmentedRenderOptions{Layer0: Layer0Spec{Mode: Layer0Black}},
 			wantW: 1920,
 			wantH: 1080,
 		},

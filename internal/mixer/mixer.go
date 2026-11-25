@@ -1070,13 +1070,7 @@ func decodeImageDimensions(path string) (int, int) {
 }
 
 func resolveAutoLayerMode(isEmbeddedID3 bool, width, height int) render.TrackLayerMode {
-	if isEmbeddedID3 {
-		return render.LayerArtCard
-	}
-	if width > 0 && height > 0 && float64(width)/float64(height) <= 1.25 {
-		return render.LayerArtCard
-	}
-	return render.LayerFullscreen
+	return render.ResolveAutoTrackLayerMode(isEmbeddedID3, width, height)
 }
 
 func effectiveTrackLayout(cfg Config, manifest TrackMediaManifest) (TrackMediaLayout, error) {
@@ -1323,7 +1317,7 @@ func resolveTrackSegmentsWithMeta(
 				case layout == TrackMediaLayoutCard:
 					layerMode = render.LayerArtCard
 				default:
-					layerMode = resolveAutoLayerMode(isEmbeddedID3, mediaW, mediaH)
+					layerMode = render.ResolveAutoTrackLayerMode(isEmbeddedID3, mediaW, mediaH)
 				}
 			}
 		}

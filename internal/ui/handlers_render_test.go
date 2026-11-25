@@ -648,4 +648,72 @@ func TestEstimateAndRenderSegmentedAndBlackModes(t *testing.T) {
 	if lanRenderRec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for LAN render with source=local override, got %d: %s", lanRenderRec.Code, lanRenderRec.Body.String())
 	}
+
+	// 7. Regression: explicit segmented=false after uploading Track media keeps non-segmented Path D.
+	var upMediaBuf bytes.Buffer
+	upMediaMW := multipart.NewWriter(&upMediaBuf)
+	mediaPart, err := upMediaMW.CreateFormFile("file", "square.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = mediaPart.Write([]byte("fake-png"))
+	_ = upMediaMW.Close()
+	upMediaReq := httptest.NewRequest(http.MethodPost, "/api/sessions/"+probed.SessionID+"/tracks/"+probed.Tracks[0].ID+"/media", &upMediaBuf)
+	upMediaReq.Header.Set("Content-Type", upMediaMW.FormDataContentType())
+	upMediaReq.RemoteAddr = "127.0.0.1:50000"
+	upMediaRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(upMediaRec, upMediaReq)
+	if upMediaRec.Code != http.StatusOK {
+		t.Fatalf("upload track media failed: %d %s", upMediaRec.Code, upMediaRec.Body.String())
+	}
+
+	// 7a. Unpinned upload with trackMediaLayout=fullscreen applies fullscreen rather than staying pinned to card.
+	unpinnedEstBody, _ := json.Marshal(map[string]any{
+		"sessionId":        probed.SessionID,
+		"trackIds":         []string{probed.Tracks[0].ID, probed.Tracks[1].ID},
+		"layer0Mode":       "black",
+		"segmented":        true,
+		"trackMediaLayout": "fullscreen",
+		"trackOverrides": []map[string]any{
+			{"trackId": probed.Tracks[0].ID, "layerMode": "", "source": "upload"},
+			{"trackId": probed.Tracks[1].ID, "layerMode": "backdrop", "source": "backdrop"},
+		},
+	})
+	unpinnedEstReq := httptest.NewRequest(http.MethodPost, "/api/estimate", bytes.NewReader(unpinnedEstBody))
+	unpinnedEstReq.Header.Set("Content-Type", "application/json")
+	unpinnedEstReq.RemoteAddr = "127.0.0.1:50000"
+	unpinnedEstRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(unpinnedEstRec, unpinnedEstReq)
+	if unpinnedEstRec.Code != http.StatusOK {
+		t.Fatalf("unpinned layout estimate failed: %d %s", unpinnedEstRec.Code, unpinnedEstRec.Body.String())
+	}
+
+	// 7b. Explicit segmented=false overrides prior upload in session and runs standard Path D.
+	offBody, _ := json.Marshal(map[string]any{
+		"sessionId":            probed.SessionID,
+		"trackIds":             []string{probed.Tracks[0].ID, probed.Tracks[1].ID},
+		"bgMode":               "visualizer",
+		"visualizer":           "bars",
+		"visualizerTheme":      "studio-mint",
+		"visualizerResolution": "1080p",
+		"segmented":            false,
+	})
+	offReq := httptest.NewRequest(http.MethodPost, "/api/render", bytes.NewReader(offBody))
+	offReq.Header.Set("Content-Type", "application/json")
+	offReq.RemoteAddr = "127.0.0.1:50000"
+	offRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(offRec, offReq)
+	if offRec.Code != http.StatusAccepted {
+		t.Fatalf("non-segmented render after upload failed: %d %s", offRec.Code, offRec.Body.String())
+	}
+	var offStarted renderStartResponse
+	_ = json.Unmarshal(offRec.Body.Bytes(), &offStarted)
+	if offStarted.Segmented {
+		t.Fatalf("expected segmented=false when explicitly disabled, got segmented=true")
+	}
+	offSSE := newSSERecorder()
+	srv.Handler().ServeHTTP(offSSE, httptest.NewRequest(http.MethodGet, offStarted.EventsURL, nil))
+	if !strings.Contains(offSSE.String(), "event: complete") {
+		t.Fatalf("expected complete SSE for non-segmented render, got:\n%s", offSSE.String())
+	}
 }

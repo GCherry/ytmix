@@ -370,4 +370,30 @@ func TestEstimateMix(t *testing.T) {
 			t.Fatalf("expected slower calibrated speed (6x) to raise VideoSec (%v > %v)", estCal.VideoSec, est1.VideoSec)
 		}
 	})
+
+	t.Run("Layer0Black honors Visualizer.Resolution 4k in segmented estimation", func(t *testing.T) {
+		est1080 := EstimateMix(EstimateInput{
+			EncoderName:    "libx264",
+			MixDurationSec: 300,
+			TotalAudioSec:  300,
+			TrackCount:     1,
+			CPUCores:       8,
+			Segmented:      true,
+			Layer0:         Layer0Spec{Mode: Layer0Black, Visualizer: VisualizerConfig{Preset: "black", Resolution: Resolution1080p}},
+			Segments:       []SegmentEstimateInput{{SlotDurationSec: 300, LayerMode: LayerBackdrop}},
+		}, nil)
+		est4K := EstimateMix(EstimateInput{
+			EncoderName:    "libx264",
+			MixDurationSec: 300,
+			TotalAudioSec:  300,
+			TrackCount:     1,
+			CPUCores:       8,
+			Segmented:      true,
+			Layer0:         Layer0Spec{Mode: Layer0Black, Visualizer: VisualizerConfig{Preset: "black", Resolution: Resolution4K}},
+			Segments:       []SegmentEstimateInput{{SlotDurationSec: 300, LayerMode: LayerBackdrop}},
+		}, nil)
+		if est4K.VideoSec <= est1080.VideoSec {
+			t.Fatalf("expected 4K Layer0Black estimate (%v) > 1080p (%v)", est4K.VideoSec, est1080.VideoSec)
+		}
+	})
 }

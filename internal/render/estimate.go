@@ -184,42 +184,15 @@ func visualizerComplexity(cfg VisualizerConfig) float64 {
 }
 
 func resolveSegmentedEstimateFPS(in EstimateInput) int {
-	l0Mode := normalizeLayer0Mode(in.Layer0.Mode)
-	l0VizPreset := strings.ToLower(strings.TrimSpace(in.Layer0.Visualizer.Preset))
-	if l0VizPreset == "" {
-		l0VizPreset = DefaultVisualizerPreset
-	}
-	l0IsVideo := l0Mode == Layer0Media && in.Layer0.BGKind == BackgroundKindVideo
-	l0IsReactiveViz := l0Mode == Layer0Visualizer && l0VizPreset != "black"
-
-	anyTitles := in.OverlayTitles
-	for _, seg := range in.Segments {
-		if seg.OverlayTitles {
-			anyTitles = true
-		}
-		mode, err := ValidateTrackLayerMode(seg.LayerMode)
-		if err != nil {
-			mode = LayerBackdrop
-		}
-		switch mode {
-		case LayerFullscreen:
-			if seg.MediaKind == BackgroundKindVideo {
-				return 30
-			}
-		case LayerArtCard:
-			if seg.MediaKind == BackgroundKindVideo || l0IsVideo || l0IsReactiveViz {
-				return 30
-			}
-		case LayerBackdrop:
-			if l0IsVideo || l0IsReactiveViz {
-				return 30
-			}
+	items := make([]segmentedFPSItem, len(in.Segments))
+	for i, seg := range in.Segments {
+		items[i] = segmentedFPSItem{
+			OverlayTitles: seg.OverlayTitles,
+			LayerMode:     seg.LayerMode,
+			MediaKind:     seg.MediaKind,
 		}
 	}
-	if anyTitles {
-		return 10
-	}
-	return 2
+	return resolveUniformSegmentedFPS(in.Layer0, in.Layer0.BGKind, in.OverlayTitles, items)
 }
 
 func estimateSegmentedVideo(in EstimateInput, enc string, fCPU, mixDur float64, cal map[string]CalibrationEntry) (videoSec, videoWorkSec float64, calibrated bool) {
@@ -235,7 +208,7 @@ func estimateSegmentedVideo(in EstimateInput, enc string, fCPU, mixDur float64, 
 	uniformFPS := resolveSegmentedEstimateFPS(in)
 	l0Mode := normalizeLayer0Mode(in.Layer0.Mode)
 	res := Resolution1080p
-	if l0Mode == Layer0Visualizer {
+	if l0Mode == Layer0Visualizer || l0Mode == Layer0Black {
 		res = normalizeResolution(in.Layer0.Visualizer.Resolution)
 	}
 	vizCfg := in.Layer0.Visualizer

@@ -184,37 +184,37 @@ func normalizeLayer0Mode(mode Layer0Mode) Layer0Mode {
 	return norm
 }
 
-// ResolveSegmentedFPS chooses the uniform frame rate across all segments in a segmented Mix:
-// 30 fps if any segment effectively renders a video loop or audio-reactive Auto Visualizer,
-// 10 fps if all segments are static/black and any has Title Overlays enabled, or 2 fps otherwise.
-func ResolveSegmentedFPS(opts SegmentedRenderOptions) int {
-	l0Mode := normalizeLayer0Mode(opts.Layer0.Mode)
-	l0BGKind := resolveMediaKind(opts.Layer0.BGPath, opts.Layer0.BGKind)
-	l0VizPreset := strings.ToLower(strings.TrimSpace(opts.Layer0.Visualizer.Preset))
+type segmentedFPSItem struct {
+	OverlayTitles bool
+	LayerMode     TrackLayerMode
+	MediaKind     BackgroundKind
+}
+
+func resolveUniformSegmentedFPS(layer0 Layer0Spec, l0BGKind BackgroundKind, defaultOverlayTitles bool, items []segmentedFPSItem) int {
+	l0Mode := normalizeLayer0Mode(layer0.Mode)
+	l0VizPreset := strings.ToLower(strings.TrimSpace(layer0.Visualizer.Preset))
 	if l0VizPreset == "" {
 		l0VizPreset = DefaultVisualizerPreset
 	}
 	l0IsVideo := l0Mode == Layer0Media && l0BGKind == BackgroundKindVideo
 	l0IsReactiveViz := l0Mode == Layer0Visualizer && l0VizPreset != "black"
 
-	anyTitles := false
-	for _, seg := range opts.Segments {
-		if seg.OverlayTitles {
+	anyTitles := defaultOverlayTitles
+	for _, item := range items {
+		if item.OverlayTitles {
 			anyTitles = true
 		}
-		layerMode, err := ValidateTrackLayerMode(seg.LayerMode)
+		layerMode, err := ValidateTrackLayerMode(item.LayerMode)
 		if err != nil {
 			layerMode = LayerBackdrop
 		}
-		segKind := resolveMediaKind(seg.MediaPath, seg.MediaKind)
-
 		switch layerMode {
 		case LayerFullscreen:
-			if segKind == BackgroundKindVideo {
+			if item.MediaKind == BackgroundKindVideo {
 				return 30
 			}
 		case LayerArtCard:
-			if segKind == BackgroundKindVideo || l0IsVideo || l0IsReactiveViz {
+			if item.MediaKind == BackgroundKindVideo || l0IsVideo || l0IsReactiveViz {
 				return 30
 			}
 		case LayerBackdrop:
@@ -223,17 +223,45 @@ func ResolveSegmentedFPS(opts SegmentedRenderOptions) int {
 			}
 		}
 	}
-
 	if anyTitles {
 		return 10
 	}
 	return 2
 }
 
+// ResolveAutoTrackLayerMode returns the default Layer 1 mode for auto-discovered media:
+// Art Card for embedded ID3 artwork or near-square images (aspect ratio <= 1.25), Fullscreen otherwise.
+func ResolveAutoTrackLayerMode(isEmbeddedID3 bool, width, height int) TrackLayerMode {
+	if isEmbeddedID3 {
+		return LayerArtCard
+	}
+	if width > 0 && height > 0 && float64(width)/float64(height) <= 1.25 {
+		return LayerArtCard
+	}
+	return LayerFullscreen
+}
+
+// ResolveSegmentedFPS chooses the uniform frame rate across all segments in a segmented Mix:
+// 30 fps if any segment effectively renders a video loop or audio-reactive Auto Visualizer,
+// 10 fps if all segments are static/black and any has Title Overlays enabled, or 2 fps otherwise.
+func ResolveSegmentedFPS(opts SegmentedRenderOptions) int {
+	l0BGKind := resolveMediaKind(opts.Layer0.BGPath, opts.Layer0.BGKind)
+	items := make([]segmentedFPSItem, len(opts.Segments))
+	for i, seg := range opts.Segments {
+		items[i] = segmentedFPSItem{
+			OverlayTitles: seg.OverlayTitles,
+			LayerMode:     seg.LayerMode,
+			MediaKind:     resolveMediaKind(seg.MediaPath, seg.MediaKind),
+		}
+	}
+	return resolveUniformSegmentedFPS(opts.Layer0, l0BGKind, false, items)
+}
+
 // ResolveSegmentedDimensions returns the uniform output width and height for a segmented Mix.
-// It uses the Visualizer resolution preset when Layer 0 is Visualizer, otherwise 1920x1080.
+// It uses the Visualizer resolution preset when Layer 0 is Visualizer or Black, otherwise 1920x1080.
 func ResolveSegmentedDimensions(opts SegmentedRenderOptions) (int, int) {
-	if normalizeLayer0Mode(opts.Layer0.Mode) == Layer0Visualizer {
+	l0Mode := normalizeLayer0Mode(opts.Layer0.Mode)
+	if l0Mode == Layer0Visualizer || l0Mode == Layer0Black {
 		res := resolveResolutionOrDefault(opts.Layer0.Visualizer.Resolution)
 		return evenDim(res.Width), evenDim(res.Height)
 	}
@@ -455,89 +483,82 @@ func BuildSegmentArgs(
 		args = append(args, "-vf", strings.Join(vfParts, ","), "-map", "0:v:0")
 
 	case LayerBackdrop:
-		switch normLayer0.Mode {
-		case Layer0Black:
-			args = append(args, "-f", "lavfi", "-i", fmt.Sprintf("color=c=black:s=%dx%d:r=%d", width, height, fps))
-			vfParts := []string{"setsar=1"}
-			vfParts = append(vfParts, buildSegmentPostFilters(seg, normTransition, fadeToBlack, totalMixDuration, false)...)
-			args = append(args, "-vf", strings.Join(vfParts, ","), "-map", "0:v:0")
-
-		case Layer0Media:
-			args = append(args, buildMediaInputArgs(normLayer0.BGPath, normLayer0.BGKind, fps)...)
-			vfParts := []string{
-				fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=%d", width, height, width, height, fps),
-			}
-			vfParts = append(vfParts, buildSegmentPostFilters(seg, normTransition, fadeToBlack, totalMixDuration, false)...)
-			args = append(args, "-vf", strings.Join(vfParts, ","), "-map", "0:v:0")
-
-		case Layer0Visualizer:
-			if normLayer0.Visualizer.Preset == "black" {
-				args = append(args, "-f", "lavfi", "-i", fmt.Sprintf("color=c=black:s=%dx%d:r=%d", width, height, fps))
-				vfParts := []string{"setsar=1"}
-				vfParts = append(vfParts, buildSegmentPostFilters(seg, normTransition, fadeToBlack, totalMixDuration, false)...)
-				args = append(args, "-vf", strings.Join(vfParts, ","), "-map", "0:v:0")
-			} else {
-				args = append(args,
-					"-ss", formatFFmpegSeconds(seg.StartSec),
-					"-t", formatFFmpegSeconds(seg.SlotDuration),
-					"-i", mergedAudioPath,
-				)
-				vizChain, l0Label := buildLayer0VisualizerChain(normLayer0.Visualizer, width, height, fps)
-				post := buildSegmentPostFilters(seg, normTransition, fadeToBlack, totalMixDuration, true)
-				fc := fmt.Sprintf("%s;%s%s[vout]", vizChain, l0Label, strings.Join(post, ","))
-				args = append(args, "-filter_complex", fc, "-map", "[vout]")
-			}
+		l0Args, isFC, graphArg, mapTarget := buildLayer0SegmentGraph(normLayer0, seg, mergedAudioPath, transition, fadeToBlack, totalMixDuration, width, height, fps, false)
+		if isFC {
+			return appendSegmentOutputFlags(append(l0Args, "-filter_complex", graphArg, "-map", mapTarget), encoderArgs, seg.SlotDuration, segOutPath), nil
 		}
+		return appendSegmentOutputFlags(append(l0Args, "-vf", graphArg, "-map", mapTarget), encoderArgs, seg.SlotDuration, segOutPath), nil
 
 	case LayerArtCard:
-		var fcParts []string
-		var l0Label string
-
-		switch normLayer0.Mode {
-		case Layer0Black:
-			args = append(args, "-f", "lavfi", "-i", fmt.Sprintf("color=c=black:s=%dx%d:r=%d", width, height, fps))
-			fcParts = append(fcParts, "[0:v]setsar=1,format=gbrp[l0]")
-			l0Label = "[l0]"
-
-		case Layer0Media:
-			args = append(args, buildMediaInputArgs(normLayer0.BGPath, normLayer0.BGKind, fps)...)
-			fcParts = append(fcParts, fmt.Sprintf("[0:v]scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=%d,format=gbrp[l0]", width, height, width, height, fps))
-			l0Label = "[l0]"
-
-		case Layer0Visualizer:
-			if normLayer0.Visualizer.Preset == "black" {
-				args = append(args, "-f", "lavfi", "-i", fmt.Sprintf("color=c=black:s=%dx%d:r=%d", width, height, fps))
-				fcParts = append(fcParts, "[0:v]setsar=1,format=gbrp[l0]")
-				l0Label = "[l0]"
-			} else {
-				args = append(args,
-					"-ss", formatFFmpegSeconds(seg.StartSec),
-					"-t", formatFFmpegSeconds(seg.SlotDuration),
-					"-i", mergedAudioPath,
-				)
-				vizChain, outLabel := buildLayer0VisualizerChain(normLayer0.Visualizer, width, height, fps)
-				fcParts = append(fcParts, vizChain)
-				l0Label = outLabel
-			}
-		}
-
-		args = append(args, buildMediaInputArgs(seg.MediaPath, segKind, fps)...)
+		l0Args, _, l0Graph, l0Label := buildLayer0SegmentGraph(normLayer0, seg, mergedAudioPath, transition, fadeToBlack, totalMixDuration, width, height, fps, true)
+		args = append(l0Args, buildMediaInputArgs(seg.MediaPath, segKind, fps)...)
 		cardW := evenDim(width * 62 / 100)
 		cardH := evenDim(height * 62 / 100)
-		fcParts = append(fcParts, fmt.Sprintf("[1:v]scale=%d:%d:force_original_aspect_ratio=decrease,setsar=1,fps=%d,format=gbrp,pad=iw+16:ih+16:8:8:color=0x111316@0.85[card]", cardW, cardH, fps))
-
+		fcParts := []string{
+			l0Graph,
+			fmt.Sprintf("[1:v]scale=%d:%d:force_original_aspect_ratio=decrease,setsar=1,fps=%d,format=gbrp,pad=iw+16:ih+16:8:8:color=0x111316@0.85[card]", cardW, cardH, fps),
+		}
 		post := buildSegmentPostFilters(seg, normTransition, fadeToBlack, totalMixDuration, true)
 		fcParts = append(fcParts, fmt.Sprintf("%s[card]overlay=(W-w)/2:(H-h)/2:shortest=1:format=gbrp,%s[vout]", l0Label, strings.Join(post, ",")))
-
 		args = append(args, "-filter_complex", strings.Join(fcParts, ";"), "-map", "[vout]")
 	}
 
+	return appendSegmentOutputFlags(args, encoderArgs, seg.SlotDuration, segOutPath), nil
+}
+
+func appendSegmentOutputFlags(args, encoderArgs []string, slotDuration float64, segOutPath string) []string {
 	args = append(args, encoderArgs...)
 	args = append(args, "-pix_fmt", "yuv420p")
 	args = append(args, bt709ColorArgs...)
 	args = append(args, "-video_track_timescale", "90000")
-	args = append(args, "-t", formatFFmpegSeconds(seg.SlotDuration), "-an", segOutPath)
-	return args, nil
+	args = append(args, "-t", formatFFmpegSeconds(slotDuration), "-an", segOutPath)
+	return args
+}
+
+func buildLayer0SegmentGraph(
+	normLayer0 Layer0Spec,
+	seg TrackSegmentSpec,
+	mergedAudioPath string,
+	transition TrackTransition,
+	fadeToBlack time.Duration,
+	totalMixDuration float64,
+	width, height, fps int,
+	forArtCard bool,
+) (inArgs []string, isFilterComplex bool, graph string, outLabel string) {
+	inArgs = []string{"-y", "-hide_banner", "-loglevel", "error"}
+	useBlack := normLayer0.Mode == Layer0Black || (normLayer0.Mode == Layer0Visualizer && normLayer0.Visualizer.Preset == "black")
+
+	switch {
+	case useBlack:
+		inArgs = append(inArgs, "-f", "lavfi", "-i", fmt.Sprintf("color=c=black:s=%dx%d:r=%d", width, height, fps))
+		if forArtCard {
+			return inArgs, true, "[0:v]setsar=1,format=gbrp[l0]", "[l0]"
+		}
+		vfParts := append([]string{"setsar=1"}, buildSegmentPostFilters(seg, transition, fadeToBlack, totalMixDuration, false)...)
+		return inArgs, false, strings.Join(vfParts, ","), "0:v:0"
+
+	case normLayer0.Mode == Layer0Media:
+		inArgs = append(inArgs, buildMediaInputArgs(normLayer0.BGPath, normLayer0.BGKind, fps)...)
+		scaleFilter := fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=%d", width, height, width, height, fps)
+		if forArtCard {
+			return inArgs, true, fmt.Sprintf("[0:v]%s,format=gbrp[l0]", scaleFilter), "[l0]"
+		}
+		vfParts := append([]string{scaleFilter}, buildSegmentPostFilters(seg, transition, fadeToBlack, totalMixDuration, false)...)
+		return inArgs, false, strings.Join(vfParts, ","), "0:v:0"
+
+	default:
+		inArgs = append(inArgs,
+			"-ss", formatFFmpegSeconds(seg.StartSec),
+			"-t", formatFFmpegSeconds(seg.SlotDuration),
+			"-i", mergedAudioPath,
+		)
+		vizChain, l0Label := buildLayer0VisualizerChain(normLayer0.Visualizer, width, height, fps)
+		if forArtCard {
+			return inArgs, true, vizChain, l0Label
+		}
+		post := buildSegmentPostFilters(seg, transition, fadeToBlack, totalMixDuration, true)
+		return inArgs, true, fmt.Sprintf("%s;%s%s[vout]", vizChain, l0Label, strings.Join(post, ",")), "[vout]"
+	}
 }
 
 // BuildSegmentConcatArgs constructs the FFmpeg arguments to stream-copy concatenated video segments

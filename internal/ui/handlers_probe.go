@@ -96,7 +96,7 @@ type estimateRequest struct {
 	VisualizerTheme      string             `json:"visualizerTheme"`
 	VisualizerResolution string             `json:"visualizerResolution"`
 	VisualizerGlow       *bool              `json:"visualizerGlow"`
-	Segmented            bool               `json:"segmented"`
+	Segmented            *bool              `json:"segmented"`
 	TrackTransition      string             `json:"trackTransition"`
 	TrackMediaLayout     string             `json:"trackMediaLayout"`
 	TrackOverrides       []trackOverrideDTO `json:"trackOverrides"`
@@ -415,6 +415,7 @@ func (s *Server) handleSessionTrackMediaUpload(w http.ResponseWriter, r *http.Re
 		next.mediaKind = kind
 		next.mediaName = filepath.Base(safePath)
 		next.layerMode = layerMode
+		next.layerPinned = parsedMode != ""
 		next.explicitEmpty = layerMode == render.LayerBackdrop
 		stale, err := s.store.setSessionTrackMedia(sessionID, trackID, next)
 		if err != nil {
@@ -436,6 +437,7 @@ func (s *Server) handleSessionTrackMediaUpload(w http.ResponseWriter, r *http.Re
 	next := tm
 	if parsedMode == render.LayerBackdrop {
 		next.layerMode = render.LayerBackdrop
+		next.layerPinned = true
 		next.explicitEmpty = true
 	} else {
 		hasActiveFile := (tm.source == "upload" || tm.source == "local") && tm.filePath != ""
@@ -446,6 +448,7 @@ func (s *Server) handleSessionTrackMediaUpload(w http.ResponseWriter, r *http.Re
 		}
 		next.explicitEmpty = false
 		next.layerMode = parsedMode
+		next.layerPinned = true
 		if !hasActiveFile {
 			next = resetTrackMediaToDefault(next, parsedMode)
 		}
@@ -576,6 +579,7 @@ func (s *Server) handleSessionTrackMediaMultipart(w http.ResponseWriter, r *http
 	next.mediaKind = uploadedKind
 	next.mediaName = uploadedName
 	next.layerMode = layerMode
+	next.layerPinned = rawLayerMode != ""
 	next.explicitEmpty = layerMode == render.LayerBackdrop
 
 	stale, err := s.store.setSessionTrackMedia(sessionID, trackID, next)
@@ -721,6 +725,7 @@ func (s *Server) handleSessionTrackMediaDelete(w http.ResponseWriter, r *http.Re
 		next.mediaKind = ""
 		next.mediaName = ""
 		next.layerMode = render.LayerBackdrop
+		next.layerPinned = true
 		next.explicitEmpty = true
 	} else {
 		next = resetTrackMediaToDefault(tm, "")
@@ -759,8 +764,10 @@ func resetTrackMediaToDefault(tm sessionTrackMedia, overrideLayerMode render.Tra
 	}
 	if overrideLayerMode != "" {
 		next.layerMode = overrideLayerMode
+		next.layerPinned = true
 	} else {
 		next.layerMode = tm.defaultLayerMode
+		next.layerPinned = false
 	}
 	return next
 }
@@ -842,10 +849,7 @@ func resolveAutoLayerModeInDir(dir, path string, kind render.BackgroundKind) ren
 	}
 	defer func() { _ = f.Close() }()
 	w, h := decodeImageDimensionsFromFile(f)
-	if w > 0 && h > 0 && float64(w)/float64(h) <= 1.25 {
-		return render.LayerArtCard
-	}
-	return render.LayerFullscreen
+	return render.ResolveAutoTrackLayerMode(false, w, h)
 }
 
 func (s *Server) resolveAutoLayerModeAllowed(path string, kind render.BackgroundKind) render.TrackLayerMode {
@@ -858,10 +862,7 @@ func (s *Server) resolveAutoLayerModeAllowed(path string, kind render.Background
 	}
 	defer func() { _ = f.Close() }()
 	w, h := decodeImageDimensionsFromFile(f)
-	if w > 0 && h > 0 && float64(w)/float64(h) <= 1.25 {
-		return render.LayerArtCard
-	}
-	return render.LayerFullscreen
+	return render.ResolveAutoTrackLayerMode(false, w, h)
 }
 
 func (s *Server) handleEstimate(w http.ResponseWriter, r *http.Request) {
@@ -909,7 +910,7 @@ func (s *Server) handleEstimate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	isSegmented := req.Segmented || len(req.TrackOverrides) > 0 || hasSessionMediaOverrides(sessMedia)
+	isSegmented := resolveIsSegmented(req.Segmented, req.TrackOverrides, sessMedia)
 
 	rawBGPath := strings.TrimSpace(req.BGPath)
 	rawBGName := strings.TrimSpace(req.BGName)
@@ -1131,7 +1132,7 @@ func sanitizeBGMeta(dto *bgMetaDTO, pathKind render.Path) probe.BackgroundMeta {
 	return out
 }
 
-func estimateMixForTracks(
+func estimateMixWithTracks(
 	pathKind render.Path,
 	encName string,
 	crossfade float64,
@@ -1140,6 +1141,9 @@ func estimateMixForTracks(
 	vizCfg render.VisualizerConfig,
 	tracks []mixer.Track,
 	bgMeta probe.BackgroundMeta,
+	segmented bool,
+	layer0 render.Layer0Spec,
+	segInputs []render.SegmentEstimateInput,
 ) render.MixEstimate {
 	var totalAudioSec float64
 	chapters := make([]subtitle.ChapterTrack, len(tracks))
@@ -1176,7 +1180,23 @@ func estimateMixForTracks(
 			CodecName:   bgMeta.CodecName,
 			PixFmt:      bgMeta.PixFmt,
 		},
+		Segmented: segmented,
+		Layer0:    layer0,
+		Segments:  segInputs,
 	}, cal)
+}
+
+func estimateMixForTracks(
+	pathKind render.Path,
+	encName string,
+	crossfade float64,
+	normalize bool,
+	overlayTitles bool,
+	vizCfg render.VisualizerConfig,
+	tracks []mixer.Track,
+	bgMeta probe.BackgroundMeta,
+) render.MixEstimate {
+	return estimateMixWithTracks(pathKind, encName, crossfade, normalize, overlayTitles, vizCfg, tracks, bgMeta, false, render.Layer0Spec{}, nil)
 }
 
 func estimateSegmentedMixForTracks(
@@ -1190,45 +1210,7 @@ func estimateSegmentedMixForTracks(
 	bgMeta probe.BackgroundMeta,
 	segInputs []render.SegmentEstimateInput,
 ) render.MixEstimate {
-	var totalAudioSec float64
-	chapters := make([]subtitle.ChapterTrack, len(tracks))
-	for i, tr := range tracks {
-		totalAudioSec += tr.Duration
-		chapters[i] = subtitle.ChapterTrack{
-			Title:    tr.DisplayTitle,
-			Duration: tr.Duration,
-		}
-	}
-	mixDurSec := totalAudioSec
-	if len(tracks) > 0 {
-		sched := subtitle.BuildChapterSchedule(chapters, crossfade)
-		mixDurSec = sched.TotalDuration
-	}
-	calPath, _ := mixer.DefaultCalibrationPath()
-	cal := mixer.LoadCalibration(calPath)
-	return render.EstimateMix(render.EstimateInput{
-		Path:           pathKind,
-		EncoderName:    encName,
-		MixDurationSec: mixDurSec,
-		TotalAudioSec:  totalAudioSec,
-		TrackCount:     len(tracks),
-		Normalize:      normalize,
-		Crossfade:      crossfade,
-		OverlayTitles:  overlayTitles,
-		Visualizer:     layer0.Visualizer,
-		CPUCores:       runtime.NumCPU(),
-		BG: render.BackgroundEstimateInput{
-			DurationSec: bgMeta.DurationSec,
-			FPS:         bgMeta.FPS,
-			Width:       bgMeta.Width,
-			Height:      bgMeta.Height,
-			CodecName:   bgMeta.CodecName,
-			PixFmt:      bgMeta.PixFmt,
-		},
-		Segmented: true,
-		Layer0:    layer0,
-		Segments:  segInputs,
-	}, cal)
+	return estimateMixWithTracks(pathKind, encName, crossfade, normalize, overlayTitles, layer0.Visualizer, tracks, bgMeta, true, layer0, segInputs)
 }
 
 func (s *Server) saveSession(source, tempDir string, tracks []mixer.Track) (string, error) {
@@ -1251,12 +1233,14 @@ func (s *Server) saveSession(source, tempDir string, tracks []mixer.Track) (stri
 		}
 		if source == "local" {
 			if sidecarPath, sidecarKind, ok := probe.DiscoverSidecarMedia(tr.Path); ok {
-				kind := render.BackgroundKind(sidecarKind)
-				tm.sidecarPath = sidecarPath
-				tm.sidecarName = filepath.Base(sidecarPath)
-				tm.sidecarKind = kind
-				tm.defaultMediaSource = "sidecar"
-				tm.defaultLayerMode = s.resolveAutoLayerModeAllowed(sidecarPath, kind)
+				if safeSidecar, err := s.resolveAllowedPath(sidecarPath, true); err == nil {
+					kind := render.BackgroundKind(sidecarKind)
+					tm.sidecarPath = safeSidecar
+					tm.sidecarName = filepath.Base(safeSidecar)
+					tm.sidecarKind = kind
+					tm.defaultMediaSource = "sidecar"
+					tm.defaultLayerMode = s.resolveAutoLayerModeAllowed(safeSidecar, kind)
+				}
 			}
 		}
 		if tm.sidecarPath == "" && tr.HasEmbeddedArt {
