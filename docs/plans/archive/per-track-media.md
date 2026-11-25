@@ -8,11 +8,11 @@ Allow each **Track** (`.mp3`) in a compiled `ytmix` **Mix** to attach its own st
 
 The plan file is the source of truth — a chat summary is not a handoff. Last step of every agent, including subagents: mark checkboxes `- [x]`; set phase status; write **Phase Summary**; record **Verification Plan** results. When all phases are done, fill **Final Recap** and **Deployment Plan**, then archive this file to `docs/plans/archive/per-track-media.md` per the `real-work` skill (Section 3).
 
-**Repo:** `ytmix` (`D:\CodingWorkspace\ytmix\ytmix`) — read [`AGENTS.md`](../../AGENTS.md) before building or testing.
+**Repo:** `ytmix` (`D:\CodingWorkspace\ytmix\ytmix`) — read [`AGENTS.md`](../../../AGENTS.md) before building or testing.
 
 **Branch:** `feature/per-track-media` off `main` (worktree: `.worktrees/feature-per-track-media` if parallel work is active).
 
-**Domain docs:** [`GLOSSARY.md`](../../GLOSSARY.md), [`docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md), [`docs/adr/0002-embedded-http-ui-and-sse-telemetry.md`](../adr/0002-embedded-http-ui-and-sse-telemetry.md), [`docs/adr/0003-path-d-ffmpeg-auto-visualizer.md`](../adr/0003-path-d-ffmpeg-auto-visualizer.md), [`docs/specs/ytmix_technical_specification.md`](../specs/ytmix_technical_specification.md).
+**Domain docs:** [`GLOSSARY.md`](../../../GLOSSARY.md), [`docs/adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md`](../../adr/0001-ffmpeg-rendering-paths-and-ass-subtitles.md), [`docs/adr/0002-embedded-http-ui-and-sse-telemetry.md`](../../adr/0002-embedded-http-ui-and-sse-telemetry.md), [`docs/adr/0003-path-d-ffmpeg-auto-visualizer.md`](../../adr/0003-path-d-ffmpeg-auto-visualizer.md), [`docs/specs/ytmix_technical_specification.md`](../../specs/ytmix_technical_specification.md).
 
 **Related skills:** `tdd` (unit & synthetic FFmpeg E2E tests), `code-review` (pre-merge 2-axis review), `domain-modeling` (`GLOSSARY.md` + `docs/adr/0004-...`).
 
@@ -291,6 +291,6 @@ Implemented per-Track media attachment for `GCherry/ytmix#47` on `feature/per-tr
 
 ## Deployment Plan
 
-1. Complete post-build `Reviewer` (`code-review`) and `Planner` `Acceptance Check` on `feature/per-track-media`.
-2. Archive `docs/plans/per-track-media.md` → `docs/plans/archive/per-track-media.md` (updating `docs/plans/README.md`, `docs/plans/archive/README.md`, and relative links) during `Release` pre-merge.
-3. Push `feature/per-track-media` and open a GitHub PR targeting `main` (`Closes #47`), then pause for human merge approval per `Coordinator` Merge Bar rules.
+1. Completed post-build `Reviewer` (`code-review`, `0` blocking findings) and `Planner` `Acceptance Check` (`PASS`, `0` gaps) on `feature/per-track-media`.
+2. Archived `docs/plans/per-track-media.md` → `docs/plans/archive/per-track-media.md` (and updated `docs/plans/README.md` + `docs/plans/archive/README.md`) in the final PR commit.
+3. Open PR targeting `main` (`Closes #47`), watch CI checks, and pause for human merge approval per `Coordinator` Merge Bar rules.
