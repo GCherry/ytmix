@@ -130,10 +130,10 @@ func (s *Server) writeJSONLine(payload []byte) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	buf := make([]byte, len(payload)+1)
-	copy(buf, payload)
-	buf[len(payload)] = '\n'
-	_, err := s.out.Write(buf)
+	if _, err := s.out.Write(payload); err != nil {
+		return err
+	}
+	_, err := s.out.Write([]byte{'\n'})
 	return err
 }
 
@@ -141,5 +141,6 @@ func (s *Server) logErrf(format string, args ...any) {
 	if s.errOut == nil {
 		return
 	}
-	fmt.Fprintf(s.errOut, format+"\n", args...)
+	fmt.Fprintf(s.errOut, format, args...)
+	fmt.Fprintln(s.errOut)
 }
