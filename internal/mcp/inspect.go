@@ -190,8 +190,8 @@ func handleInspectTracks(ctx context.Context, args json.RawMessage, deps Inspect
 		totalDuration += tr.Duration
 		var trackWarnings []string
 
-		if in.Crossfade > 0 {
-			if len(tracks) > 1 && tr.Duration <= in.Crossfade {
+		if in.Crossfade > 0 && len(tracks) > 1 {
+			if tr.Duration <= in.Crossfade {
 				trackWarnings = append(trackWarnings, fmt.Sprintf("duration %.2fs does not exceed crossfade %.2fs (exceeds acrossfade limit)", tr.Duration, in.Crossfade))
 				warnings = append(warnings, fmt.Sprintf("Track %q duration (%.2fs) must exceed crossfade (%.2fs)", tr.FileName, tr.Duration, in.Crossfade))
 			} else if tr.Duration <= 2*in.Crossfade {

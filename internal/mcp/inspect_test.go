@@ -209,7 +209,7 @@ func TestInspectTracks(t *testing.T) {
 		}
 	})
 
-	t.Run("notes single-track acrossfade skip when crossfade > 0", func(t *testing.T) {
+	t.Run("notes single-track acrossfade skip without contradictory overlap warnings when crossfade > 0", func(t *testing.T) {
 		dir := t.TempDir()
 		if err := os.WriteFile(filepath.Join(dir, "Solo.mp3"), []byte("mp3"), 0644); err != nil {
 			t.Fatal(err)
@@ -217,13 +217,15 @@ func TestInspectTracks(t *testing.T) {
 		reg := NewRegistry(ServerInfo{Name: "ytmix", Version: "0.1.0"})
 		RegisterInspectTools(reg, InspectDeps{
 			Runner: func(_ context.Context, _ string, _ ...string) ([]byte, error) {
-				return []byte(`{"format":{"duration":"95.0","tags":{"title":"Solo"}}}`), nil
+				// Intentionally shorter than crossfade (4.0s <= 5.0s) to verify
+				// single-track Mixes do not emit contradictory overlap warnings.
+				return []byte(`{"format":{"duration":"4.0","tags":{"title":"Solo"}}}`), nil
 			},
 		})
 
 		res, rpcErr, _ := callToolRPC(t, reg, "inspect_tracks", map[string]any{
 			"audioDir":  dir,
-			"crossfade": 4,
+			"crossfade": 5,
 		})
 		if rpcErr != nil || res.IsError {
 			t.Fatalf("unexpected error: rpcErr=%v res=%+v", rpcErr, res)
@@ -232,11 +234,14 @@ func TestInspectTracks(t *testing.T) {
 		if err := json.Unmarshal([]byte(res.Content[0].Text), &got); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
-		if got.EstimatedMixDurationSec != 95.0 {
-			t.Fatalf("single-track estimatedMixDurationSec = %v, want 95.0", got.EstimatedMixDurationSec)
+		if got.EstimatedMixDurationSec != 4.0 {
+			t.Fatalf("single-track estimatedMixDurationSec = %v, want 4.0", got.EstimatedMixDurationSec)
+		}
+		if len(got.Tracks[0].Warnings) != 0 {
+			t.Fatalf("expected 0 per-track crossfade warnings on single-track Mix, got %v", got.Tracks[0].Warnings)
 		}
 		if len(got.Warnings) != 1 || !strings.Contains(got.Warnings[0], "skips acrossfade") {
-			t.Fatalf("expected single-track acrossfade skip warning, got %v", got.Warnings)
+			t.Fatalf("expected only single-track acrossfade skip warning, got %v", got.Warnings)
 		}
 	})
 
@@ -315,6 +320,16 @@ func TestInspectBackground(t *testing.T) {
 				wantZeroWarns: true,
 			},
 			{
+				name:            "720p 16:9 static png warns sub-1080p only",
+				fileName:        "small.png",
+				ffprobeJSON:     `{"format":{"duration":"N/A"},"streams":[{"codec_type":"video","codec_name":"png","width":1280,"height":720,"pix_fmt":"rgb24"}]}`,
+				wantKind:        "image",
+				wantExt:         ".png",
+				wantAspect:      "16:9",
+				wantIs16x9:      true,
+				wantWarnSubstrs: []string{"below 1080p"},
+			},
+			{
 				name:            "4:3 sub-1080p video with stray audio stream",
 				fileName:        "loop.mp4",
 				ffprobeJSON:     `{"format":{"duration":"12.5"},"streams":[{"codec_type":"audio","codec_name":"aac"},{"codec_type":"video","codec_name":"h264","width":1280,"height":960,"avg_frame_rate":"30/1","nb_frames":"375","pix_fmt":"yuv420p"}]}`,
@@ -354,6 +369,16 @@ func TestInspectBackground(t *testing.T) {
 				wantAspect:      "16:9",
 				wantIs16x9:      true,
 				wantWarnSubstrs: []string{"below 1080p"},
+			},
+			{
+				name:          "unknown-duration 1080p gif succeeds without duration error",
+				fileName:      "unknown_dur.gif",
+				ffprobeJSON:   `{"format":{"duration":"N/A"},"streams":[{"codec_type":"video","codec_name":"gif","width":1920,"height":1080,"r_frame_rate":"12/1","avg_frame_rate":"0/0"}]}`,
+				wantKind:      "video",
+				wantExt:       ".gif",
+				wantAspect:    "16:9",
+				wantIs16x9:    true,
+				wantZeroWarns: true,
 			},
 			{
 				name:          "4k 16:9 image has zero warnings",

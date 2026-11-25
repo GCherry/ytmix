@@ -151,7 +151,7 @@ func ProbeFile(ctx context.Context, path string, runner func(ctx context.Context
 	}
 
 	dur, err := strconv.ParseFloat(strings.TrimSpace(parsed.Format.Duration), 64)
-	if err != nil || dur <= 0 {
+	if err != nil || math.IsNaN(dur) || math.IsInf(dur, 0) || dur <= 0 {
 		return 0, "", fmt.Errorf("invalid duration %q for %q", parsed.Format.Duration, path)
 	}
 

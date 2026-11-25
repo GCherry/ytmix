@@ -132,6 +132,15 @@ func TestTitleAndTrackDiscovery(t *testing.T) {
 		if ResolveDisplayTitle(title2, p2) != "Second" || dur2 != 90.25 {
 			t.Fatalf("p2 = (%v, %q)", dur2, title2)
 		}
+
+		for _, badDur := range []string{"NaN", "Inf", "+Inf", "-Inf", "0", "-1.5"} {
+			_, _, err := ProbeFile(context.Background(), p1, func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+				return []byte(`{"format":{"duration":"` + badDur + `","tags":{}}}`), nil
+			})
+			if err == nil {
+				t.Fatalf("expected error for invalid duration %q", badDur)
+			}
+		}
 	})
 
 	t.Run("stops immediately when context is cancelled", func(t *testing.T) {
