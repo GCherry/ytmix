@@ -489,5 +489,11 @@ func runMCPServer(
 		LookPath: lookPath,
 		Runner:   runner,
 	})
+	mgr := mcp.RegisterRenderTools(srv.Registry, mcp.RenderDeps{
+		LookPath:     lookPath,
+		Runner:       runner,
+		StreamRunner: mixer.ExecStreamRunner,
+	})
+	defer mgr.Close()
 	return srv.Serve(ctx)
 }
