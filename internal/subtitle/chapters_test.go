@@ -9,12 +9,20 @@ import (
 
 func TestTimestampsCalculationAndFormatting(t *testing.T) {
 	t.Run("cumulative start times without and with crossfade", func(t *testing.T) {
-		titles := []string{"Alpha", "Beta", "Gamma"}
-		durations := []float64{125.0, 90.0, 60.0}
+		tracks := []ChapterTrack{
+			{Title: "Alpha", Duration: 125.0},
+			{Title: "Beta", Duration: 90.0},
+			{Title: "Gamma", Duration: 60.0},
+		}
 
-		noFade := BuildChapterSchedule(titles, durations, 0)
+		noFade := BuildChapterSchedule(tracks, 0)
 		wantStartsNoFade := []float64{0, 125, 215}
-		if !reflect.DeepEqual(noFade.Starts, wantStartsNoFade) || noFade.TotalDuration != 275.0 {
+		wantCuesNoFade := []TitleCue{
+			{Title: "Alpha", Start: 0},
+			{Title: "Beta", Start: 125},
+			{Title: "Gamma", Start: 215},
+		}
+		if !reflect.DeepEqual(noFade.Starts, wantStartsNoFade) || !reflect.DeepEqual(noFade.Cues, wantCuesNoFade) || noFade.TotalDuration != 275.0 {
 			t.Fatalf("noFade = %+v", noFade)
 		}
 		wantTextNoFade := "00:00 Alpha\n02:05 Beta\n03:35 Gamma\n"
@@ -22,7 +30,7 @@ func TestTimestampsCalculationAndFormatting(t *testing.T) {
 			t.Fatalf("noFade.Content =\n%s\nwant:\n%s", noFade.Content, wantTextNoFade)
 		}
 
-		withFade := BuildChapterSchedule(titles, durations, 2.0)
+		withFade := BuildChapterSchedule(tracks, 2.0)
 		wantStartsFade := []float64{0, 123, 211}
 		if !reflect.DeepEqual(withFade.Starts, wantStartsFade) || withFade.TotalDuration != 271.0 {
 			t.Fatalf("withFade = %+v", withFade)
@@ -34,9 +42,10 @@ func TestTimestampsCalculationAndFormatting(t *testing.T) {
 	})
 
 	t.Run("switches from MM:SS to HH:MM:SS at exact 3600s boundary", func(t *testing.T) {
-		titles := []string{"Part One", "Part Two"}
-
-		schedUnder := BuildChapterSchedule(titles, []float64{3540.0, 59.0}, 0)
+		schedUnder := BuildChapterSchedule([]ChapterTrack{
+			{Title: "Part One", Duration: 3540.0},
+			{Title: "Part Two", Duration: 59.0},
+		}, 0)
 		if schedUnder.TotalDuration != 3599.0 {
 			t.Fatalf("expected 3599.0, got %v", schedUnder.TotalDuration)
 		}
@@ -45,7 +54,10 @@ func TestTimestampsCalculationAndFormatting(t *testing.T) {
 			t.Fatalf("underHour =\n%s\nwant:\n%s", schedUnder.Content, wantUnder)
 		}
 
-		schedAt := BuildChapterSchedule(titles, []float64{3540.0, 60.0}, 0)
+		schedAt := BuildChapterSchedule([]ChapterTrack{
+			{Title: "Part One", Duration: 3540.0},
+			{Title: "Part Two", Duration: 60.0},
+		}, 0)
 		if schedAt.TotalDuration != 3600.0 {
 			t.Fatalf("expected 3600.0, got %v", schedAt.TotalDuration)
 		}
@@ -58,9 +70,10 @@ func TestTimestampsCalculationAndFormatting(t *testing.T) {
 	t.Run("writes formatted chapters to --timestamps file", func(t *testing.T) {
 		dir := t.TempDir()
 		outPath := filepath.Join(dir, "custom_timestamps.txt")
-		titles := []string{"Intro", "Outro"}
-		durations := []float64{4.0, 4.0}
-		sched, err := WriteChapters(outPath, titles, durations, 1.0)
+		sched, err := WriteChapters(outPath, []ChapterTrack{
+			{Title: "Intro", Duration: 4.0},
+			{Title: "Outro", Duration: 4.0},
+		}, 1.0)
 		if err != nil {
 			t.Fatalf("WriteChapters error: %v", err)
 		}
@@ -80,7 +93,7 @@ func TestTimestampsCalculationAndFormatting(t *testing.T) {
 	t.Run("creates missing nested parent directories before writing chapters", func(t *testing.T) {
 		dir := t.TempDir()
 		outPath := filepath.Join(dir, "nested", "chapters", "timestamps.txt")
-		if _, err := WriteChapters(outPath, []string{"One"}, []float64{5.0}, 0); err != nil {
+		if _, err := WriteChapters(outPath, []ChapterTrack{{Title: "One", Duration: 5.0}}, 0); err != nil {
 			t.Fatalf("WriteChapters nested dir error: %v", err)
 		}
 		if _, err := os.Stat(outPath); err != nil {

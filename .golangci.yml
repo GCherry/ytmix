@@ -25,6 +25,7 @@ linters:
             - $gostd
             - github.com/GCherry/ytmix$
             - github.com/GCherry/ytmix/
+            - golang.org/x/sync/errgroup
     errcheck:
       check-type-assertions: true
       exclude-functions:

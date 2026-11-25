@@ -3,16 +3,35 @@ package probe
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+
+	"golang.org/x/sync/errgroup"
 )
+
+// Track represents a single discovered .mp3 audio file, its probed duration in seconds,
+// and its resolved Display Title.
+type Track struct {
+	Path         string
+	FileName     string
+	Duration     float64
+	DisplayTitle string
+}
+
+// NamedTrackFile pairs a local .mp3 file path with its original display filename.
+type NamedTrackFile struct {
+	Path     string
+	FileName string
+}
 
 type ffprobeOutput struct {
 	Format struct {
@@ -22,6 +41,28 @@ type ffprobeOutput struct {
 }
 
 var leadingNumberPattern = regexp.MustCompile(`^\d+[\s._-]+`)
+
+func probeConcurrencyLimit() int {
+	return min(max(runtime.GOMAXPROCS(0), 4), 8)
+}
+
+// ValidateTrackFile verifies path references an accessible regular .mp3 file.
+func ValidateTrackFile(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("track file path is empty")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("cannot access Track %q: %w", path, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("track path %q is a directory, expected an .mp3 file", path)
+	}
+	if !strings.EqualFold(filepath.Ext(path), ".mp3") {
+		return fmt.Errorf("unsupported Track extension %q for %q (expected .mp3)", filepath.Ext(path), filepath.Base(path))
+	}
+	return nil
+}
 
 // DiscoverAudioFiles scans audioDir for .mp3 files (case-insensitively), sorts them
 // alphabetically by filename, and optionally shuffles them.
@@ -87,6 +128,9 @@ func ProbeFile(ctx context.Context, path string, runner func(ctx context.Context
 	if err := ctx.Err(); err != nil {
 		return 0, "", err
 	}
+	if runner == nil {
+		return 0, "", errors.New("ffprobe runner is nil")
+	}
 	out, err := runner(
 		ctx,
 		"ffprobe",
@@ -118,6 +162,73 @@ func ProbeFile(ctx context.Context, path string, runner func(ctx context.Context
 	}
 
 	return dur, id3Title, nil
+}
+
+// ProbeTracks discovers .mp3 files in audioDir and probes each Track's duration and Display Title concurrently.
+func ProbeTracks(ctx context.Context, audioDir string, shuffle bool, shuffleFn func(n int, swap func(i, j int)), runner func(ctx context.Context, name string, args ...string) ([]byte, error)) ([]Track, error) {
+	files, err := DiscoverAudioFiles(audioDir, shuffle, shuffleFn)
+	if err != nil {
+		return nil, err
+	}
+	return ProbeTrackFiles(ctx, files, runner)
+}
+
+// ProbeTrackFiles probes an ordered list of .mp3 file paths without re-scanning or re-sorting a directory.
+func ProbeTrackFiles(ctx context.Context, files []string, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) ([]Track, error) {
+	named := make([]NamedTrackFile, len(files))
+	for i, p := range files {
+		named[i] = NamedTrackFile{Path: p, FileName: filepath.Base(p)}
+	}
+	return ProbeNamedTrackFiles(ctx, named, runner)
+}
+
+// ProbeNamedTrackFiles validates and probes an ordered list of .mp3 files concurrently using a bounded errgroup,
+// preserving input Track order and resolving Display Titles from FileName.
+func ProbeNamedTrackFiles(ctx context.Context, files []NamedTrackFile, runner func(ctx context.Context, name string, args ...string) ([]byte, error)) ([]Track, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(files) < 1 {
+		return nil, errors.New("at least one .mp3 Track is required")
+	}
+	if runner == nil {
+		return nil, errors.New("ffprobe runner is nil")
+	}
+	for _, f := range files {
+		if err := ValidateTrackFile(f.Path); err != nil {
+			return nil, err
+		}
+	}
+
+	tracks := make([]Track, len(files))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(probeConcurrencyLimit())
+	for i, f := range files {
+		g.Go(func() error {
+			dur, id3Title, err := ProbeFile(gctx, f.Path, runner)
+			if err != nil {
+				return err
+			}
+			displaySource := f.FileName
+			if strings.TrimSpace(displaySource) == "" {
+				displaySource = filepath.Base(f.Path)
+			}
+			tracks[i] = Track{
+				Path:         f.Path,
+				FileName:     displaySource,
+				Duration:     dur,
+				DisplayTitle: ResolveDisplayTitle(id3Title, displaySource),
+			}
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	return tracks, nil
 }
 
 // BackgroundMeta holds video stream and container metadata probed from a Background Visual.

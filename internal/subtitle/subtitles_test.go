@@ -55,11 +55,13 @@ func TestEscapeASSText(t *testing.T) {
 
 func TestBuildAndWriteASS(t *testing.T) {
 	t.Run("header, style fields, font sanitization, and full-track title-duration=0", func(t *testing.T) {
-		titles := []string{"Dawn {Intro}", `Night \ Horizon`}
-		starts := []float64{0.0, 120.5}
+		cues := []TitleCue{
+			{Title: "Dawn {Intro}", Start: 0.0},
+			{Title: `Night \ Horizon`, Start: 120.5},
+		}
 		totalDuration := 200.25
 
-		ass := BuildASS(titles, starts, totalDuration, 0, "Inter, Bold\n")
+		ass := BuildASS(cues, totalDuration, 0, "Inter, Bold\n")
 
 		for _, wantSub := range []string{
 			"[Script Info]",
@@ -79,15 +81,18 @@ func TestBuildAndWriteASS(t *testing.T) {
 	})
 
 	t.Run("blank font falls back to Arial and title-duration>0 clamps to next boundary", func(t *testing.T) {
-		titles := []string{"Short Track", "Long Track", "Final Track"}
-		starts := []float64{0.0, 3.0, 20.0}
+		cues := []TitleCue{
+			{Title: "Short Track", Start: 0.0},
+			{Title: "Long Track", Start: 3.0},
+			{Title: "Final Track", Start: 20.0},
+		}
 		totalDuration := 24.0
 
 		// titleDuration=10:
 		// Track 0: min(0+10, 3) = 3.0
 		// Track 1: min(3+10, 20) = 13.0
 		// Track 2: min(20+10, 24) = 24.0
-		ass := BuildASS(titles, starts, totalDuration, 10, "   ")
+		ass := BuildASS(cues, totalDuration, 10, "   ")
 
 		if !strings.Contains(ass, "Style: Default,Arial,42,") {
 			t.Errorf("expected default Arial font, got:\n%s", ass)
@@ -105,7 +110,7 @@ func TestBuildAndWriteASS(t *testing.T) {
 
 	t.Run("WriteASS writes script to disk", func(t *testing.T) {
 		outPath := filepath.Join(t.TempDir(), "titles.ass")
-		err := WriteASS(outPath, []string{"Alpha"}, []float64{0.0}, 10.0, 5, "Roboto")
+		err := WriteASS(outPath, []TitleCue{{Title: "Alpha", Start: 0.0}}, 10.0, 5, "Roboto")
 		if err != nil {
 			t.Fatalf("WriteASS failed: %v", err)
 		}
@@ -122,8 +127,7 @@ func TestBuildAndWriteASS(t *testing.T) {
 func TestBuildAndWriteASSWithOptions(t *testing.T) {
 	cases := []struct {
 		name          string
-		titles        []string
-		starts        []float64
+		cues          []TitleCue
 		totalDuration float64
 		opts          ASSOptions
 		wantStyle     string
@@ -133,9 +137,11 @@ func TestBuildAndWriteASSWithOptions(t *testing.T) {
 		wantDialogues []string
 	}{
 		{
-			name:          "dim false keeps default bright style",
-			titles:        []string{"Dawn {Intro}", `Night \ Horizon`},
-			starts:        []float64{0.0, 120.5},
+			name: "dim false keeps default bright style",
+			cues: []TitleCue{
+				{Title: "Dawn {Intro}", Start: 0.0},
+				{Title: `Night \ Horizon`, Start: 120.5},
+			},
 			totalDuration: 200.25,
 			opts: ASSOptions{
 				TitleDuration: 0,
@@ -151,9 +157,11 @@ func TestBuildAndWriteASSWithOptions(t *testing.T) {
 			},
 		},
 		{
-			name:          "dim true emits low-luminance style with font sanitization and escaping",
-			titles:        []string{"Sleep {Drift}\r\nPhase", `Deep \ Rain`},
-			starts:        []float64{0.0, 30.0},
+			name: "dim true emits low-luminance style with font sanitization and escaping",
+			cues: []TitleCue{
+				{Title: "Sleep {Drift}\r\nPhase", Start: 0.0},
+				{Title: `Deep \ Rain`, Start: 30.0},
+			},
 			totalDuration: 90.0,
 			opts: ASSOptions{
 				TitleDuration: 15,
@@ -170,9 +178,10 @@ func TestBuildAndWriteASSWithOptions(t *testing.T) {
 			},
 		},
 		{
-			name:          "dim true with blank font falls back to Arial",
-			titles:        []string{"Quiet Meadow"},
-			starts:        []float64{0.0},
+			name: "dim true with blank font falls back to Arial",
+			cues: []TitleCue{
+				{Title: "Quiet Meadow", Start: 0.0},
+			},
 			totalDuration: 12.0,
 			opts: ASSOptions{
 				TitleDuration: 8,
@@ -191,7 +200,7 @@ func TestBuildAndWriteASSWithOptions(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run("BuildASSWithOptions/"+tc.name, func(t *testing.T) {
-			ass := BuildASSWithOptions(tc.titles, tc.starts, tc.totalDuration, tc.opts)
+			ass := BuildASSWithOptions(tc.cues, tc.totalDuration, tc.opts)
 
 			if !strings.Contains(ass, tc.wantStyle) {
 				t.Errorf("ASS missing expected style %q\nfull ASS:\n%s", tc.wantStyle, ass)
@@ -216,7 +225,7 @@ func TestBuildAndWriteASSWithOptions(t *testing.T) {
 
 		t.Run("WriteASSWithOptions/"+tc.name, func(t *testing.T) {
 			outPath := filepath.Join(t.TempDir(), "titles.ass")
-			if err := WriteASSWithOptions(outPath, tc.titles, tc.starts, tc.totalDuration, tc.opts); err != nil {
+			if err := WriteASSWithOptions(outPath, tc.cues, tc.totalDuration, tc.opts); err != nil {
 				t.Fatalf("WriteASSWithOptions failed: %v", err)
 			}
 			data, err := os.ReadFile(outPath)
@@ -224,7 +233,7 @@ func TestBuildAndWriteASSWithOptions(t *testing.T) {
 				t.Fatalf("read written ASS: %v", err)
 			}
 			got := string(data)
-			want := BuildASSWithOptions(tc.titles, tc.starts, tc.totalDuration, tc.opts)
+			want := BuildASSWithOptions(tc.cues, tc.totalDuration, tc.opts)
 			if got != want {
 				t.Fatalf("written ASS differs from BuildASSWithOptions\ngot:\n%s\nwant:\n%s", got, want)
 			}
@@ -232,10 +241,12 @@ func TestBuildAndWriteASSWithOptions(t *testing.T) {
 	}
 
 	t.Run("BuildASS delegates identically to BuildASSWithOptions with DimTitles false", func(t *testing.T) {
-		titles := []string{"First {Song}", `Second \ Song`}
-		starts := []float64{0.0, 42.5}
-		got := BuildASS(titles, starts, 100.0, 12, "Roboto")
-		want := BuildASSWithOptions(titles, starts, 100.0, ASSOptions{
+		cues := []TitleCue{
+			{Title: "First {Song}", Start: 0.0},
+			{Title: `Second \ Song`, Start: 42.5},
+		}
+		got := BuildASS(cues, 100.0, 12, "Roboto")
+		want := BuildASSWithOptions(cues, 100.0, ASSOptions{
 			TitleDuration: 12,
 			FontName:      "Roboto",
 			DimTitles:     false,

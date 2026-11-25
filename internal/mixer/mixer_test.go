@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -172,12 +174,15 @@ func TestProbeTracks(t *testing.T) {
 		}
 	}
 
+	var mu sync.Mutex
 	var calls [][]string
 	stubRunner := func(_ context.Context, name string, args ...string) ([]byte, error) {
 		if name != "ffprobe" {
 			return nil, errors.New("unexpected binary: " + name)
 		}
+		mu.Lock()
 		calls = append(calls, args)
+		mu.Unlock()
 		target := args[len(args)-1]
 		if strings.HasSuffix(target, "01 - First.mp3") {
 			return []byte(`{"format":{"duration":"125.500000","tags":{"TITLE":"  Dawn Horizon  "}}}`), nil
@@ -193,8 +198,15 @@ func TestProbeTracks(t *testing.T) {
 		t.Fatalf("expected 2 tracks, got %d", len(tracks))
 	}
 	wantArgs := []string{"-v", "error", "-show_entries", "format=duration", "-show_entries", "format_tags=title", "-of", "json", p1}
-	if !reflect.DeepEqual(calls[0], wantArgs) {
-		t.Fatalf("ffprobe args = %v, want %v", calls[0], wantArgs)
+	foundP1Args := false
+	for _, c := range calls {
+		if reflect.DeepEqual(c, wantArgs) {
+			foundP1Args = true
+			break
+		}
+	}
+	if !foundP1Args {
+		t.Fatalf("ffprobe calls %v did not include %v", calls, wantArgs)
 	}
 	if tracks[0].DisplayTitle != "Dawn Horizon" || tracks[0].Duration != 125.5 {
 		t.Fatalf("track[0] = %+v", tracks[0])
@@ -518,10 +530,10 @@ func TestRunPipelineSteps1To5(t *testing.T) {
 			Timestamps: filepath.Join(workDir, "timestamps_3d.txt"),
 			Visualizer: "3dscope",
 		}
-		probedTrack := false
+		var probedTrack atomic.Bool
 		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
 			if name == "ffprobe" {
-				probedTrack = true
+				probedTrack.Store(true)
 				return []byte(`{"format":{"duration":"4.000000","tags":{}}}`), nil
 			}
 			if strings.Contains(strings.Join(args, " "), "-filters") {
@@ -533,7 +545,7 @@ func TestRunPipelineSteps1To5(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "a3dscope") {
 			t.Fatalf("expected missing a3dscope error, got: %v", err)
 		}
-		if probedTrack {
+		if probedTrack.Load() {
 			t.Fatal("expected missing visualizer filter check to fail upfront before probing tracks")
 		}
 	})
@@ -766,6 +778,41 @@ func TestProbeTrackFilesAndRunWithTracks(t *testing.T) {
 		}
 		if string(tsBytes) != "00:00 Second First\n00:10 First Second\n" {
 			t.Fatalf("timestamps =\n%s", string(tsBytes))
+		}
+	})
+
+	t.Run("RunWithTracks resolves blank DisplayTitle from FileName rather than opaque Path", func(t *testing.T) {
+		workDir, audioDir, bgPath := setupStubMixWorkspace(t, "cover.png")
+		opaquePath := filepath.Join(audioDir, "track_0001.mp3")
+		if err := os.WriteFile(opaquePath, []byte("mp3"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		tsPath := filepath.Join(workDir, "timestamps_upload.txt")
+		cfg := Config{
+			BG:         bgPath,
+			Out:        filepath.Join(workDir, "out_upload.mp4"),
+			Timestamps: tsPath,
+		}
+		tracks := []Track{
+			{
+				Path:         opaquePath,
+				FileName:     "03 - Midnight Breeze.mp3",
+				Duration:     12.0,
+				DisplayTitle: "   ",
+			},
+		}
+		runner := func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+			return nil, nil
+		}
+		if err := RunWithTracks(context.Background(), cfg, tracks, nil, okLookPath, runner, nil); err != nil {
+			t.Fatalf("RunWithTracks error: %v", err)
+		}
+		tsBytes, err := os.ReadFile(tsPath)
+		if err != nil {
+			t.Fatalf("read timestamps: %v", err)
+		}
+		if string(tsBytes) != "00:00 Midnight Breeze\n" {
+			t.Fatalf("timestamps = %q, want %q", string(tsBytes), "00:00 Midnight Breeze\n")
 		}
 	})
 
@@ -1040,10 +1087,10 @@ func TestResolveAndPrepareOutputTargets(t *testing.T) {
 	t.Run("Run resolves OutDir and fails upfront before ffprobe when Out is a directory", func(t *testing.T) {
 		workDir, audioDir, bgPath := setupStubMixWorkspace(t, "cover.png")
 		outDir := filepath.Join(workDir, "nested", "release")
-		probeCalled := false
+		var probeCalled atomic.Bool
 		runner := func(_ context.Context, name string, _ ...string) ([]byte, error) {
 			if name == "ffprobe" {
-				probeCalled = true
+				probeCalled.Store(true)
 				return []byte(`{"format":{"duration":"4.000000","tags":{}}}`), nil
 			}
 			return nil, nil
@@ -1059,7 +1106,7 @@ func TestResolveAndPrepareOutputTargets(t *testing.T) {
 		if err := Run(context.Background(), badCfg, nil, okLookPath, runner, nil); err == nil {
 			t.Fatal("expected upfront error for directory --out")
 		}
-		if probeCalled {
+		if probeCalled.Load() {
 			t.Fatal("expected Run to fail upfront before probing tracks")
 		}
 

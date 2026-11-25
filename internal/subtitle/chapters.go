@@ -8,10 +8,23 @@ import (
 	"strings"
 )
 
-// ChapterSchedule holds cumulative Track start times (seconds), total Mix duration,
+// ChapterTrack represents a Track's Display Title and duration in seconds for Chapter Timestamp calculation.
+type ChapterTrack struct {
+	Title    string
+	Duration float64
+}
+
+// TitleCue represents a Track's Display Title and cumulative start offset in seconds for ASS Title Overlays.
+type TitleCue struct {
+	Title string
+	Start float64
+}
+
+// ChapterSchedule holds cumulative Track start times (seconds), paired TitleCues, total Mix duration,
 // and the formatted YouTube Chapter Timestamps text.
 type ChapterSchedule struct {
 	Starts        []float64
+	Cues          []TitleCue
 	TotalDuration float64
 	Content       string
 }
@@ -34,50 +47,51 @@ func FormatChapterTime(seconds float64, includeHours bool) string {
 }
 
 // BuildChapterSchedule computes cumulative Track start times and formats YouTube Chapter Timestamps.
-func BuildChapterSchedule(titles []string, durations []float64, crossfade float64) ChapterSchedule {
-	if len(titles) == 0 || len(durations) == 0 {
+func BuildChapterSchedule(tracks []ChapterTrack, crossfade float64) ChapterSchedule {
+	if len(tracks) == 0 {
 		return ChapterSchedule{}
 	}
-	n := len(titles)
-	if len(durations) < n {
-		n = len(durations)
-	}
 
+	n := len(tracks)
 	starts := make([]float64, n)
+	cues := make([]TitleCue, n)
 	starts[0] = 0.0
+	cues[0] = TitleCue{Title: tracks[0].Title, Start: 0.0}
 	for i := 1; i < n; i++ {
-		nextStart := starts[i-1] + durations[i-1] - crossfade
+		nextStart := starts[i-1] + tracks[i-1].Duration - crossfade
 		if nextStart < 0 {
 			nextStart = 0
 		}
 		starts[i] = nextStart
+		cues[i] = TitleCue{Title: tracks[i].Title, Start: nextStart}
 	}
 
-	totalDuration := starts[n-1] + durations[n-1]
+	totalDuration := starts[n-1] + tracks[n-1].Duration
 	includeHours := totalDuration >= 3600.0
 
 	var b strings.Builder
 	for i := 0; i < n; i++ {
 		b.WriteString(FormatChapterTime(starts[i], includeHours))
 		b.WriteByte(' ')
-		b.WriteString(titles[i])
+		b.WriteString(tracks[i].Title)
 		b.WriteByte('\n')
 	}
 
 	return ChapterSchedule{
 		Starts:        starts,
+		Cues:          cues,
 		TotalDuration: totalDuration,
 		Content:       b.String(),
 	}
 }
 
 // WriteChapters calculates the ChapterSchedule and writes it to path.
-func WriteChapters(path string, titles []string, durations []float64, crossfade float64) (ChapterSchedule, error) {
+func WriteChapters(path string, tracks []ChapterTrack, crossfade float64) (ChapterSchedule, error) {
 	// #nosec G301 -- user-facing output directory uses standard 0755 permissions.
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return ChapterSchedule{}, fmt.Errorf("create parent directory for Chapter Timestamps %q: %w", path, err)
 	}
-	sched := BuildChapterSchedule(titles, durations, crossfade)
+	sched := BuildChapterSchedule(tracks, crossfade)
 	// #nosec G306 -- timestamps.txt is a non-sensitive user-facing Chapter Timestamps artifact intended to be world-readable.
 	if err := os.WriteFile(path, []byte(sched.Content), 0644); err != nil {
 		return ChapterSchedule{}, fmt.Errorf("write Chapter Timestamps to %q: %w", path, err)

@@ -62,7 +62,7 @@ type ASSOptions struct {
 
 // BuildASSWithOptions builds an Advanced SubStation Alpha (.ass) subtitle script for bottom-left
 // Track Title Overlays with 500ms fade-in/out tags using the provided ASSOptions.
-func BuildASSWithOptions(titles []string, starts []float64, totalDuration float64, opts ASSOptions) string {
+func BuildASSWithOptions(cues []TitleCue, totalDuration float64, opts ASSOptions) string {
 	font := sanitizeFontName(opts.FontName)
 	primaryColour := "&H00FFFFFF"
 	outlineColour := "&H00000000"
@@ -94,12 +94,11 @@ func BuildASSWithOptions(titles []string, starts []float64, totalDuration float6
 	b.WriteString("[Events]\n")
 	b.WriteString("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
 
-	n := min(len(titles), len(starts))
-	for i := 0; i < n; i++ {
-		start := starts[i]
+	for i, cue := range cues {
+		start := cue.Start
 		nextBoundary := totalDuration
-		if i+1 < len(starts) && i+1 < n {
-			nextBoundary = starts[i+1]
+		if i+1 < len(cues) {
+			nextBoundary = cues[i+1].Start
 		}
 		end := nextBoundary
 		if opts.TitleDuration > 0 {
@@ -115,7 +114,7 @@ func BuildASSWithOptions(titles []string, starts []float64, totalDuration float6
 			"Dialogue: 0,%s,%s,Default,,0,0,0,,{\\fad(500,500)}♪ %s\n",
 			FormatASSTime(start),
 			FormatASSTime(end),
-			EscapeASSText(titles[i]),
+			EscapeASSText(cue.Title),
 		)
 	}
 
@@ -124,16 +123,16 @@ func BuildASSWithOptions(titles []string, starts []float64, totalDuration float6
 
 // BuildASS builds an Advanced SubStation Alpha (.ass) subtitle script for bottom-left
 // Track Title Overlays with 500ms fade-in/out tags.
-func BuildASS(titles []string, starts []float64, totalDuration float64, titleDuration int, fontName string) string {
-	return BuildASSWithOptions(titles, starts, totalDuration, ASSOptions{
+func BuildASS(cues []TitleCue, totalDuration float64, titleDuration int, fontName string) string {
+	return BuildASSWithOptions(cues, totalDuration, ASSOptions{
 		TitleDuration: titleDuration,
 		FontName:      fontName,
 	})
 }
 
 // WriteASSWithOptions generates an ASS subtitle script with opts and writes it to path.
-func WriteASSWithOptions(path string, titles []string, starts []float64, totalDuration float64, opts ASSOptions) error {
-	content := BuildASSWithOptions(titles, starts, totalDuration, opts)
+func WriteASSWithOptions(path string, cues []TitleCue, totalDuration float64, opts ASSOptions) error {
+	content := BuildASSWithOptions(cues, totalDuration, opts)
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		return fmt.Errorf("write ASS subtitles to %q: %w", path, err)
 	}
@@ -141,8 +140,8 @@ func WriteASSWithOptions(path string, titles []string, starts []float64, totalDu
 }
 
 // WriteASS generates an ASS subtitle script and writes it to path.
-func WriteASS(path string, titles []string, starts []float64, totalDuration float64, titleDuration int, fontName string) error {
-	return WriteASSWithOptions(path, titles, starts, totalDuration, ASSOptions{
+func WriteASS(path string, cues []TitleCue, totalDuration float64, titleDuration int, fontName string) error {
+	return WriteASSWithOptions(path, cues, totalDuration, ASSOptions{
 		TitleDuration: titleDuration,
 		FontName:      fontName,
 	})

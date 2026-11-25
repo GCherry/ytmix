@@ -7,8 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestTitleAndTrackDiscovery(t *testing.T) {
@@ -296,6 +299,168 @@ func TestProbeBackgroundVisual(t *testing.T) {
 
 		if _, err := ProbeBackgroundVisual(context.Background(), "loop.mp4", nil); err == nil {
 			t.Fatal("expected error for nil runner")
+		}
+	})
+}
+
+func TestTrackIntakeAndConcurrency(t *testing.T) {
+	t.Run("ValidateTrackFile rejects empty, missing, directory, and non-mp3 files", func(t *testing.T) {
+		dir := t.TempDir()
+		mp3Path := filepath.Join(dir, "01 - Valid.MP3")
+		wavPath := filepath.Join(dir, "02 - Invalid.wav")
+		subDir := filepath.Join(dir, "folder.mp3")
+		for _, p := range []string{mp3Path, wavPath} {
+			if err := os.WriteFile(p, []byte("x"), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.Mkdir(subDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := ValidateTrackFile("   "); err == nil {
+			t.Fatal("expected error for empty path")
+		}
+		if err := ValidateTrackFile(filepath.Join(dir, "missing.mp3")); err == nil {
+			t.Fatal("expected error for missing file")
+		}
+		if err := ValidateTrackFile(subDir); err == nil {
+			t.Fatal("expected error for directory")
+		}
+		if err := ValidateTrackFile(wavPath); err == nil {
+			t.Fatal("expected error for non-mp3 extension")
+		}
+		if err := ValidateTrackFile(mp3Path); err != nil {
+			t.Fatalf("expected valid mp3 path, got %v", err)
+		}
+	})
+
+	t.Run("ProbeNamedTrackFiles preserves input order under out-of-order completion and uses FileName fallback", func(t *testing.T) {
+		dir := t.TempDir()
+		p1 := filepath.Join(dir, "track_0001.mp3")
+		p2 := filepath.Join(dir, "track_0002.mp3")
+		p3 := filepath.Join(dir, "03 - Direct.mp3")
+		for _, p := range []string{p1, p2, p3} {
+			if err := os.WriteFile(p, []byte("mp3"), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		runner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name != "ffprobe" {
+				return nil, errors.New("unexpected binary: " + name)
+			}
+			target := args[len(args)-1]
+			switch target {
+			case p1:
+				time.Sleep(20 * time.Millisecond)
+				return []byte(`{"format":{"duration":"10.0","tags":{}}}`), nil
+			case p2:
+				time.Sleep(5 * time.Millisecond)
+				return []byte(`{"format":{"duration":"20.0","tags":{"title":"Tagged Two"}}}`), nil
+			default:
+				return []byte(`{"format":{"duration":"30.0","tags":{}}}`), nil
+			}
+		}
+
+		tracks, err := ProbeNamedTrackFiles(context.Background(), []NamedTrackFile{
+			{Path: p1, FileName: "01 - Uploaded First.mp3"},
+			{Path: p2, FileName: "02 - Uploaded Second.mp3"},
+			{Path: p3, FileName: ""},
+		}, runner)
+		if err != nil {
+			t.Fatalf("ProbeNamedTrackFiles error: %v", err)
+		}
+		if len(tracks) != 3 {
+			t.Fatalf("expected 3 tracks, got %d", len(tracks))
+		}
+		if tracks[0].Path != p1 || tracks[0].FileName != "01 - Uploaded First.mp3" || tracks[0].DisplayTitle != "Uploaded First" || tracks[0].Duration != 10.0 {
+			t.Fatalf("tracks[0] = %+v", tracks[0])
+		}
+		if tracks[1].Path != p2 || tracks[1].FileName != "02 - Uploaded Second.mp3" || tracks[1].DisplayTitle != "Tagged Two" || tracks[1].Duration != 20.0 {
+			t.Fatalf("tracks[1] = %+v", tracks[1])
+		}
+		if tracks[2].Path != p3 || tracks[2].FileName != "03 - Direct.mp3" || tracks[2].DisplayTitle != "Direct" || tracks[2].Duration != 30.0 {
+			t.Fatalf("tracks[2] = %+v", tracks[2])
+		}
+	})
+
+	t.Run("ProbeTrackFiles bounds concurrency and fails fast on error", func(t *testing.T) {
+		dir := t.TempDir()
+		const n = 16
+		files := make([]string, n)
+		for i := 0; i < n; i++ {
+			p := filepath.Join(dir, "t"+string(rune('a'+i))+".mp3")
+			if err := os.WriteFile(p, []byte("mp3"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			files[i] = p
+		}
+
+		prevProcs := runtime.GOMAXPROCS(4)
+		defer runtime.GOMAXPROCS(prevProcs)
+		wantLimit := probeConcurrencyLimit()
+
+		var active atomic.Int32
+		var maxActive atomic.Int32
+		runner := func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+			cur := active.Add(1)
+			for {
+				prev := maxActive.Load()
+				if cur <= prev || maxActive.CompareAndSwap(prev, cur) {
+					break
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+			active.Add(-1)
+			return []byte(`{"format":{"duration":"5.0","tags":{}}}`), nil
+		}
+
+		tracks, err := ProbeTrackFiles(context.Background(), files, runner)
+		if err != nil {
+			t.Fatalf("ProbeTrackFiles error: %v", err)
+		}
+		if len(tracks) != n {
+			t.Fatalf("expected %d tracks, got %d", n, len(tracks))
+		}
+		if gotMax := int(maxActive.Load()); gotMax > wantLimit || gotMax < 2 {
+			t.Fatalf("max concurrent probes = %d (want 2..%d)", gotMax, wantLimit)
+		}
+
+		failErr := errors.New("probe boom")
+		failRunner := func(ctx context.Context, _ string, args ...string) ([]byte, error) {
+			if strings.HasSuffix(args[len(args)-1], "ta.mp3") {
+				return nil, failErr
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(10 * time.Millisecond):
+				return []byte(`{"format":{"duration":"5.0","tags":{}}}`), nil
+			}
+		}
+		if _, err := ProbeTrackFiles(context.Background(), files, failRunner); !errors.Is(err, failErr) {
+			t.Fatalf("expected failErr, got %v", err)
+		}
+	})
+
+	t.Run("ProbeTracks discovers and probes directory and rejects nil runner", func(t *testing.T) {
+		dir := t.TempDir()
+		p1 := filepath.Join(dir, "01 - Alpha.mp3")
+		if err := os.WriteFile(p1, []byte("mp3"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ProbeTracks(context.Background(), dir, false, nil, nil); err == nil {
+			t.Fatal("expected error for nil runner")
+		}
+		tracks, err := ProbeTracks(context.Background(), dir, false, nil, func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+			return []byte(`{"format":{"duration":"7.5","tags":{}}}`), nil
+		})
+		if err != nil {
+			t.Fatalf("ProbeTracks error: %v", err)
+		}
+		if len(tracks) != 1 || tracks[0].DisplayTitle != "Alpha" || tracks[0].Duration != 7.5 {
+			t.Fatalf("unexpected tracks: %+v", tracks)
 		}
 	})
 }

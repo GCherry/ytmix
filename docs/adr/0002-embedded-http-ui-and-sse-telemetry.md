@@ -6,7 +6,7 @@ Status: accepted
 
 ## Considered Options
 
-- **Zero-dependency stdlib `net/http` + `embed.FS` + vanilla HTML/CSS/JS vs. SPA bundler (Vite/React) or Wails/CGo:** An external SPA toolchain or Wails/WebView wrapper adds Node/npm or native GUI build dependencies, breaking `ytmix`'s single-binary zero-dependency constraint (`go.mod` enforced by `depguard`) and complicating cross-platform CI on Linux/macOS/Windows.
+- **Stdlib `net/http` + `embed.FS` + vanilla HTML/CSS/JS vs. SPA bundler (Vite/React) or Wails/CGo:** An external SPA toolchain or Wails/WebView wrapper adds Node/npm or native GUI build dependencies, violating `ytmix`'s minimal, vetted pure-Go dependency policy (`go.mod` enforced by strict `depguard` allowlist—permitting only vetted zero-CGo helpers such as `golang.org/x/sync/errgroup`) and complicating cross-platform CI on Linux/macOS/Windows.
 - **Server-Sent Events (`text/event-stream`) vs. WebSockets:** `ytmix` only needs unidirectional server-to-browser pipeline progress (`[1/5]`–`[5/5]` steps, completion metadata, and errors). SSE runs over standard `net/http` (`http.Flusher`) with zero third-party packages and native browser `EventSource` support.
 - **`mixer.RunWithTracks` + opaque `sessionId`/`trackId` tokens vs. re-scanning `AudioDir` or trusting client paths:** `mixer.Run` re-discovers and alphabetically sorts (or shuffles) `--audio-dir`, which would discard browser Track reordering (`↑`/`↓`) and Track removals (`×`). Adding `mixer.RunWithTracks` preserves the caller's exact Track slice while sharing the 5-step pipeline, and opaque server-side tokens prevent upload clients from submitting arbitrary server filesystem paths.
 

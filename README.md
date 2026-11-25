@@ -1,10 +1,10 @@
 # ytmix
 
-`ytmix` is a high-performance, zero-dependency Go (`1.24+`) CLI tool that wraps `ffmpeg` and `ffprobe` to compile a directory of `.mp3` audio files and either a Background Visual (static image or short looping video/GIF) or an auto-generated music-reactive visualizer into a 1080p `.mp4` Mix ready for YouTube upload, alongside a YouTube-formatted Chapter Timestamps file (`timestamps.txt`).
+`ytmix` is a high-performance, minimal-dependency Go (`1.24+`) CLI tool that wraps `ffmpeg` and `ffprobe` to compile a directory of `.mp3` audio files and either a Background Visual (static image or short looping video/GIF) or an auto-generated music-reactive visualizer into a 1080p `.mp4` Mix ready for YouTube upload, alongside a YouTube-formatted Chapter Timestamps file (`timestamps.txt`).
 
 ## Features
 
-- **Zero external Go dependencies:** Pure Go standard library CLI wrapping system `ffmpeg` and `ffprobe` (zero CGo, zero external CDN assets in the embedded UI).
+- **Minimal, vetted pure-Go dependencies:** Built on the Go standard library plus `golang.org/x/sync/errgroup` for bounded concurrent probing/normalization (zero CGo, zero external CDN assets in the embedded UI), wrapping system `ffmpeg` and `ffprobe`.
 - **Smart 4-Path Video Rendering:**
   - **Path A (Stream Copy Loop):** Pre-normalizes a short `.mp4`/`.mov`/`.gif` loop once to 1080p and muxes it across the entire Mix with `-stream_loop -1 -c:v copy` (renders a 60-minute Mix in seconds with zero frame re-encoding).
   - **Path B (Hardware-Accelerated Overlay Loop):** Burns dynamic `.ass` Title Overlays over a looping visual using `h264_videotoolbox` (macOS), `h264_nvenc` (Windows/Linux), or `libx264` fallback.
