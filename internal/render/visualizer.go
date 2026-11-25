@@ -778,3 +778,66 @@ func BuildPathDArgs(mergedAudioPath, assPath, outPath string, overlayTitles bool
 	args = append(args, "-movflags", "+faststart", "-c:a", "copy", "-shortest", outPath)
 	return args, nil
 }
+
+// BuildPathDPreviewArgs constructs the FFmpeg CLI arguments to render a single PNG preview frame
+// for a Path D Auto Visualizer preset from either a real audio file or a lavfi synthetic audio source.
+func BuildPathDPreviewArgs(audioInput string, isLavfi bool, assPath string, outPNGPath string, overlayTitles bool, offsetSec float64, totalDuration float64, cfg VisualizerConfig) ([]string, error) {
+	if math.IsNaN(offsetSec) || math.IsInf(offsetSec, 0) || offsetSec < 0 {
+		return nil, fmt.Errorf("preview offsetSec must be finite and >= 0 (got %v)", offsetSec)
+	}
+	if strings.TrimSpace(outPNGPath) == "" {
+		return nil, errors.New("output PNG path is required")
+	}
+	normCfg, err := ValidateVisualizerConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	if normCfg.Preset == "black" {
+		res := resolveResolutionOrDefault(normCfg.Resolution)
+		var vfParts []string
+		if overlayTitles {
+			vfParts = append(vfParts, fmt.Sprintf("subtitles='%s'", EscapeFFmpegFilterPath(assPath)))
+		}
+		if fade := BuildPathDFadeFilter(normCfg.FadeToBlack, totalDuration); fade != "" {
+			vfParts = append(vfParts, fade)
+		}
+		vfParts = append(vfParts, "format=yuv420p")
+
+		args := []string{
+			"-y", "-hide_banner", "-loglevel", "error",
+			"-f", "lavfi",
+			"-i", fmt.Sprintf("color=c=black:s=%dx%d:r=10", res.Width, res.Height),
+			"-vf", strings.Join(vfParts, ","),
+		}
+		if offsetSec > 0 {
+			args = append(args, "-ss", formatFFmpegSeconds(offsetSec))
+		}
+		args = append(args, "-frames:v", "1", outPNGPath)
+		return args, nil
+	}
+
+	if strings.TrimSpace(audioInput) == "" {
+		return nil, errors.New("audio input is required")
+	}
+	fc, err := BuildPathDFilterComplex(assPath, overlayTitles, totalDuration, normCfg)
+	if err != nil {
+		return nil, err
+	}
+
+	args := []string{"-y", "-hide_banner", "-loglevel", "error"}
+	if isLavfi {
+		args = append(args, "-f", "lavfi", "-i", audioInput)
+	} else {
+		if offsetSec > 0 {
+			args = append(args, "-ss", formatFFmpegSeconds(offsetSec))
+		}
+		args = append(args, "-i", audioInput)
+	}
+	args = append(args, "-filter_complex", fc, "-map", "[vout]")
+	if isLavfi && offsetSec > 0 {
+		args = append(args, "-ss", formatFFmpegSeconds(offsetSec))
+	}
+	args = append(args, "-frames:v", "1", outPNGPath)
+	return args, nil
+}

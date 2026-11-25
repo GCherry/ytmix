@@ -3,6 +3,7 @@ package render
 import (
 	"context"
 	"errors"
+	"math"
 	"os/exec"
 	"path/filepath"
 	"reflect"
@@ -495,6 +496,148 @@ func TestPathDAllPresetsFFmpegSmoke(t *testing.T) {
 			cmd := exec.CommandContext(ctx, "ffmpeg", nullArgs...)
 			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("ffmpeg failed for preset %q: %v\nargs: %v\noutput:\n%s", spec.ID, err, nullArgs, string(out))
+			}
+		})
+	}
+}
+
+func TestBuildPathDPreviewArgs(t *testing.T) {
+	cases := []struct {
+		name          string
+		audioInput    string
+		isLavfi       bool
+		assPath       string
+		outPNGPath    string
+		overlayTitles bool
+		offsetSec     float64
+		totalDuration float64
+		cfg           VisualizerConfig
+		wantSubstrs   []string
+		omitSubstrs   []string
+		wantErr       bool
+	}{
+		{
+			name:        "black preset defaults without subtitles or offset",
+			outPNGPath:  "preview.png",
+			cfg:         VisualizerConfig{Preset: "black", Resolution: "1440p", Brightness: 100},
+			wantSubstrs: []string{"-f lavfi -i color=c=black:s=2560x1440:r=10", "-vf format=yuv420p", "-frames:v 1 preview.png"},
+			omitSubstrs: []string{"-ss", "-filter_complex", "subtitles="},
+		},
+		{
+			name:          "black preset with title overlay, fade, and offset",
+			assPath:       `C:\tmp\titles.ass`,
+			outPNGPath:    "black_sub.png",
+			overlayTitles: true,
+			offsetSec:     5.0,
+			totalDuration: 120.0,
+			cfg:           VisualizerConfig{Preset: "black", FadeToBlack: 60 * time.Second},
+			wantSubstrs:   []string{"-f lavfi -i color=c=black:s=1920x1080:r=10", "subtitles='C\\:/tmp/titles.ass',fade=t=out:st=60:d=15:color=black,format=yuv420p", "-ss 5 -frames:v 1 black_sub.png"},
+		},
+		{
+			name:          "audio-reactive preset with lavfi source and output offset",
+			audioInput:    "aevalsrc=0:c=stereo:s=48000:d=5.5",
+			isLavfi:       true,
+			assPath:       "/tmp/titles.ass",
+			outPNGPath:    "/tmp/out.png",
+			overlayTitles: true,
+			offsetSec:     0.25,
+			totalDuration: 60.0,
+			cfg:           VisualizerConfig{Preset: "ember", Theme: "oled-ember", Resolution: "1080p", Glow: true, Brightness: 45},
+			wantSubstrs:   []string{"-f lavfi -i aevalsrc=0:c=stereo:s=48000:d=5.5", "-filter_complex", "colorchannelmixer=rr=0.45:gg=0.45:bb=0.45", "subtitles='/tmp/titles.ass'", "-map [vout] -ss 0.25 -frames:v 1 /tmp/out.png"},
+		},
+		{
+			name:        "audio-reactive preset with lavfi source and zero offset omits -ss",
+			audioInput:  "aevalsrc=0:c=stereo:s=48000:d=1.0",
+			isLavfi:     true,
+			outPNGPath:  "/tmp/out_zero.png",
+			offsetSec:   0,
+			cfg:         VisualizerConfig{Preset: "bars"},
+			wantSubstrs: []string{"-f lavfi -i aevalsrc=0:c=stereo:s=48000:d=1.0", "-map [vout] -frames:v 1 /tmp/out_zero.png"},
+			omitSubstrs: []string{"-ss"},
+		},
+		{
+			name:          "audio-reactive preset with mp3 file uses pre-input -ss",
+			audioInput:    "/music/track.mp3",
+			isLavfi:       false,
+			outPNGPath:    "/tmp/mp3_preview.png",
+			offsetSec:     12.5,
+			totalDuration: 180.0,
+			cfg:           VisualizerConfig{Preset: "waves", Theme: "midnight-cyan", Resolution: "4k", Glow: false, Brightness: 80},
+			wantSubstrs:   []string{"-ss 12.5 -i /music/track.mp3", "-filter_complex", "s=3840x2160", "-map [vout] -frames:v 1 /tmp/mp3_preview.png"},
+			omitSubstrs:   []string{"-f lavfi"},
+		},
+		{
+			name:       "audio-reactive preset with mp3 file and zero offset omits -ss",
+			audioInput: "/music/track.mp3",
+			isLavfi:    false,
+			outPNGPath: "/tmp/mp3_zero.png",
+			offsetSec:  0,
+			cfg:        VisualizerConfig{Preset: "bars"},
+			omitSubstrs: []string{
+				"-ss",
+			},
+		},
+		{
+			name:       "invalid preset returns error",
+			audioInput: "song.mp3",
+			outPNGPath: "out.png",
+			cfg:        VisualizerConfig{Preset: "bogus"},
+			wantErr:    true,
+		},
+		{
+			name:       "missing output PNG path returns error",
+			audioInput: "song.mp3",
+			outPNGPath: "   ",
+			cfg:        VisualizerConfig{Preset: "bars"},
+			wantErr:    true,
+		},
+		{
+			name:       "missing audio input for non-black preset returns error",
+			audioInput: "",
+			outPNGPath: "out.png",
+			cfg:        VisualizerConfig{Preset: "bars"},
+			wantErr:    true,
+		},
+		{
+			name:       "negative offsetSec returns error",
+			audioInput: "song.mp3",
+			outPNGPath: "out.png",
+			offsetSec:  -1,
+			cfg:        VisualizerConfig{Preset: "bars"},
+			wantErr:    true,
+		},
+		{
+			name:       "NaN offsetSec returns error",
+			audioInput: "song.mp3",
+			outPNGPath: "out.png",
+			offsetSec:  math.NaN(),
+			cfg:        VisualizerConfig{Preset: "bars"},
+			wantErr:    true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			args, err := BuildPathDPreviewArgs(tc.audioInput, tc.isLavfi, tc.assPath, tc.outPNGPath, tc.overlayTitles, tc.offsetSec, tc.totalDuration, tc.cfg)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got args=%v", args)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			joined := strings.Join(args, " ")
+			for _, want := range tc.wantSubstrs {
+				if !strings.Contains(joined, want) {
+					t.Fatalf("expected %q in args:\n%s", want, joined)
+				}
+			}
+			for _, omit := range tc.omitSubstrs {
+				if strings.Contains(joined, omit) {
+					t.Fatalf("did not expect %q in args:\n%s", omit, joined)
+				}
 			}
 		})
 	}
