@@ -482,5 +482,8 @@ func runMCPServer(
 		Runner:   runner,
 		GOOS:     goos,
 	})
+	mcp.RegisterInspectTools(srv.Registry, mcp.InspectDeps{
+		Runner: runner,
+	})
 	return srv.Serve(ctx)
 }

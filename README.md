@@ -101,6 +101,8 @@ Run `./ytmix --list-visualizers` to inspect live FFmpeg filter availability on y
 - **Supported MCP Methods:** `initialize` (`2025-06-18`, `2025-03-26`, `2024-11-05`), `notifications/initialized`, `ping`, `tools/list`, `tools/call`, `resources/list`, `resources/read`, `prompts/list`, and `prompts/get`.
 - **Registered Tools:**
   - `get_capabilities` *(read-only, idempotent)* — probes `ffmpeg` and `ffprobe` availability, detected H.264 encoder (`h264_videotoolbox`, `h264_nvenc`, or `libx264` fallback) and Path D encoder info, all 14 Path D Auto Visualizer presets with live filter availability, 7 Color Themes, 3 output resolutions (`1080p`, `1440p`, `4k`), supported Background Visual extensions, and host `GOOS`.
+  - `inspect_tracks` *(read-only, idempotent)* — audits an `audioDir` of `.mp3` Tracks in default sorted order via `ffprobe`, returning durations, `rawId3Title` vs. resolved `displayTitle`, total and Crossfade-adjusted `estimatedMixDurationSec`, and pre-flight warnings (Tracks `<= crossfade` or `<= 2 * crossfade`, single-track Crossfade skips, and messy filenames lacking ID3 title tags).
+  - `inspect_background` *(read-only, idempotent)* — probes a Background Visual (`bgPath`) via `ffprobe`, returning media `kind` (`image` or `video`), dimensions, reduced `aspectRatio`, `is16x9`, duration, `fps`, `codec`, `pixFmt`, `nbFrames`, `hasAudio`, and pre-flight warnings (non-16:9 aspect ratios, sub-1080p resolution, missing dimensions, or looping videos containing stray audio streams).
 
 Example MCP client configuration (`mcpServers`):
 
