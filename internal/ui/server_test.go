@@ -247,7 +247,7 @@ func TestHealthCachesEncoderProbe(t *testing.T) {
 	var wg sync.WaitGroup
 	encoders := make([]string, requests)
 	codes := make([]int, requests)
-	for i := 0; i < requests; i++ {
+	for i := range requests {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -270,7 +270,7 @@ func TestHealthCachesEncoderProbe(t *testing.T) {
 	if got := filterProbes.Load(); got != 1 {
 		t.Fatalf("expected ffmpeg filter probe once across %d health checks, got %d", requests, got)
 	}
-	for i := 0; i < requests; i++ {
+	for i := range requests {
 		if codes[i] != http.StatusOK || encoders[i] != "h264_nvenc" {
 			t.Fatalf("request %d: status=%d encoder=%q", i, codes[i], encoders[i])
 		}
@@ -2151,8 +2151,8 @@ func TestRenderSSENormalizeProgressAndCompletionAccuracy(t *testing.T) {
 func makeTestPNGBytes(t *testing.T, w, h int) []byte {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			img.Set(x, y, color.RGBA{R: 62, G: 230, B: 181, A: 255})
 		}
 	}

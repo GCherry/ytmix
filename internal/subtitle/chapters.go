@@ -31,10 +31,7 @@ type ChapterSchedule struct {
 
 // FormatChapterTime formats seconds as MM:SS or HH:MM:SS.
 func FormatChapterTime(seconds float64, includeHours bool) string {
-	totalSec := int(math.Round(seconds))
-	if totalSec < 0 {
-		totalSec = 0
-	}
+	totalSec := max(int(math.Round(seconds)), 0)
 	if includeHours {
 		hours := totalSec / 3600
 		mins := (totalSec % 3600) / 60
@@ -70,7 +67,7 @@ func BuildChapterSchedule(tracks []ChapterTrack, crossfade float64) ChapterSched
 	includeHours := totalDuration >= 3600.0
 
 	var b strings.Builder
-	for i := 0; i < n; i++ {
+	for i := range n {
 		b.WriteString(FormatChapterTime(starts[i], includeHours))
 		b.WriteByte(' ')
 		b.WriteString(tracks[i].Title)

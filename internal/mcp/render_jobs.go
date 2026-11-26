@@ -547,10 +547,10 @@ func startRenderToolDefinition() Tool {
 		},
 		Annotations: &ToolAnnotations{
 			Title:           "Start Async Mix Render",
-			ReadOnlyHint:    BoolPtr(false),
-			DestructiveHint: BoolPtr(false),
-			IdempotentHint:  BoolPtr(false),
-			OpenWorldHint:   BoolPtr(false),
+			ReadOnlyHint:    new(false),
+			DestructiveHint: new(false),
+			IdempotentHint:  new(false),
+			OpenWorldHint:   new(false),
 		},
 	}
 }
@@ -591,10 +591,10 @@ func cancelRenderToolDefinition() Tool {
 		},
 		Annotations: &ToolAnnotations{
 			Title:           "Cancel Async Mix Render",
-			ReadOnlyHint:    BoolPtr(false),
-			DestructiveHint: BoolPtr(false),
-			IdempotentHint:  BoolPtr(true),
-			OpenWorldHint:   BoolPtr(false),
+			ReadOnlyHint:    new(false),
+			DestructiveHint: new(false),
+			IdempotentHint:  new(true),
+			OpenWorldHint:   new(false),
 		},
 	}
 }
@@ -1333,7 +1333,7 @@ func (m *RenderJobManager) handleVerifyMix(ctx context.Context, args json.RawMes
 	chapterCount := 0
 	if timestampsPath != "" {
 		tsValid, count, tsErrs := verifyTimestampsFile(timestampsPath, durSec)
-		timestampsValidPtr = BoolPtr(tsValid)
+		timestampsValidPtr = new(tsValid)
 		chapterCount = count
 		errs = append(errs, tsErrs...)
 	}

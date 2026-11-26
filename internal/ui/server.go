@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -304,9 +305,7 @@ func (s *Server) detectFilters(ctx context.Context) map[string]bool {
 		s.cachedFilters = filters
 	})
 	cloned := make(map[string]bool, len(s.cachedFilters))
-	for k, v := range s.cachedFilters {
-		cloned[k] = v
-	}
+	maps.Copy(cloned, s.cachedFilters)
 	return cloned
 }
 

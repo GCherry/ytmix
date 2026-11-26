@@ -102,10 +102,7 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	go func() {
 		defer close(lines)
-		bufSize := min(64*1024, s.maxMessageBytes)
-		if bufSize < 1 {
-			bufSize = 1
-		}
+		bufSize := max(min(64*1024, s.maxMessageBytes), 1)
 		reader := bufio.NewReaderSize(s.in, bufSize)
 		for {
 			line, err := readLineBounded(reader, s.maxMessageBytes)

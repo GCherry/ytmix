@@ -699,10 +699,7 @@ func buildPrimaryPresetChain(spec VisualizerSpec, theme ThemeSpec, res Resolutio
 	case "vu":
 		vuW := evenDim(w * 85 / 100)
 		vuH := evenDim(h * 16 / 100)
-		border := h / 240
-		if border < 4 {
-			border = 4
-		}
+		border := max(h/240, 4)
 		return fmt.Sprintf("[0:a]showvolume=w=%d:h=%d:r=30:t=0:v=0:b=%d:dm=1.5:dmc=%s,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=gbrp[vbase]", vuW, vuH, border, theme.secondaryHex, w, h), false
 	default:
 		return "", false

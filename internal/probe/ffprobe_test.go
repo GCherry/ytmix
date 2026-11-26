@@ -481,7 +481,7 @@ func TestTrackIntakeAndConcurrency(t *testing.T) {
 		dir := t.TempDir()
 		const n = 16
 		files := make([]string, n)
-		for i := 0; i < n; i++ {
+		for i := range n {
 			p := filepath.Join(dir, "t"+string(rune('a'+i))+".mp3")
 			if err := os.WriteFile(p, []byte("mp3"), 0644); err != nil {
 				t.Fatal(err)

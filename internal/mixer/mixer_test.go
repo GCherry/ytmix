@@ -343,11 +343,11 @@ func TestRunPipelineSteps1To5(t *testing.T) {
 			if strings.Contains(joined, "subtitles=") {
 				renderArgs = args
 				for _, a := range args {
-					if idx := strings.Index(a, "subtitles='"); idx >= 0 {
+					if _, after, ok := strings.Cut(a, "subtitles='"); ok {
 						// Read the titles.ass from tempDir before Run returns and cleans it up.
-						rest := a[idx+len("subtitles='"):]
-						if end := strings.Index(rest, "'"); end >= 0 {
-							escapedPath := rest[:end]
+						rest := after
+						if before, _, ok := strings.Cut(rest, "'"); ok {
+							escapedPath := before
 							// Unescape for test verification on Windows/POSIX.
 							assPath := strings.ReplaceAll(escapedPath, `\:`, `:`)
 							assPath = strings.ReplaceAll(assPath, `\'`, `'`)
@@ -491,10 +491,10 @@ func TestRunPipelineSteps1To5(t *testing.T) {
 			if strings.Contains(joined, "-filter_complex") {
 				renderArgs = args
 				for _, a := range args {
-					if idx := strings.Index(a, "subtitles='"); idx >= 0 {
-						rest := a[idx+len("subtitles='"):]
-						if end := strings.Index(rest, "'"); end >= 0 {
-							assPath := strings.ReplaceAll(rest[:end], `\:`, `:`)
+					if _, after, ok := strings.Cut(a, "subtitles='"); ok {
+						rest := after
+						if before, _, ok := strings.Cut(rest, "'"); ok {
+							assPath := strings.ReplaceAll(before, `\:`, `:`)
 							assPath = strings.ReplaceAll(assPath, `\'`, `'`)
 							data, err := os.ReadFile(assPath)
 							if err != nil {

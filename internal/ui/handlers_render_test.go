@@ -201,7 +201,7 @@ func TestHandleRenderEventsStopsOnDisconnectAndWriteErrors(t *testing.T) {
 
 	t.Run("stops replay immediately on write error", func(t *testing.T) {
 		job := newRenderJob("job_err", t.TempDir(), "out.mp4", "out.mp4", "ts.txt", "ts.txt", "Path C", func() {})
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			job.emit("log", map[string]any{"index": i})
 		}
 		job.finish(jobComplete, "", "complete", map[string]any{"jobId": job.id})
@@ -223,7 +223,7 @@ func TestHandleRenderEventsStopsOnDisconnectAndWriteErrors(t *testing.T) {
 
 	t.Run("stops history replay immediately when request context is already canceled", func(t *testing.T) {
 		job := newRenderJob("job_ctx", t.TempDir(), "out.mp4", "out.mp4", "ts.txt", "ts.txt", "Path C", func() {})
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			job.emit("log", map[string]any{"index": i})
 		}
 		if err := srv.store.claimRenderSlot(job, ""); err != nil {

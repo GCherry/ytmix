@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"runtime"
 	"strings"
 	"sync"
@@ -89,9 +90,7 @@ func cloneFilterMap(in map[string]bool) map[string]bool {
 		return nil
 	}
 	out := make(map[string]bool, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }
 
@@ -133,10 +132,10 @@ func RegisterCapabilitiesTool(r *Registry, deps CapabilitiesDeps) {
 		},
 		Annotations: &ToolAnnotations{
 			Title:           "Get ytmix Capabilities",
-			ReadOnlyHint:    BoolPtr(true),
-			DestructiveHint: BoolPtr(false),
-			IdempotentHint:  BoolPtr(true),
-			OpenWorldHint:   BoolPtr(false),
+			ReadOnlyHint:    new(true),
+			DestructiveHint: new(false),
+			IdempotentHint:  new(true),
+			OpenWorldHint:   new(false),
 		},
 	}, func(ctx context.Context, args json.RawMessage) (CallToolResult, error) {
 		if ctx != nil && ctx.Err() != nil {

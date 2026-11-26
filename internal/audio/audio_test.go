@@ -126,7 +126,7 @@ func TestAudioNormalizationAndMerge(t *testing.T) {
 		tempDir := t.TempDir()
 		const n = 8
 		tracks := make([]probe.Track, n)
-		for i := 0; i < n; i++ {
+		for i := range n {
 			tracks[i] = probe.Track{
 				Path:         filepath.Join(tempDir, fmt.Sprintf("%02d.mp3", i)),
 				FileName:     fmt.Sprintf("%02d.mp3", i),
@@ -184,7 +184,7 @@ func TestAudioNormalizationAndMerge(t *testing.T) {
 		if !reflect.DeepEqual(progressCalls, wantProgress) {
 			t.Fatalf("progressCalls = %v, want %v", progressCalls, wantProgress)
 		}
-		for i := 0; i < n; i++ {
+		for i := range n {
 			wantDur := float64(10+i) + 0.5
 			if got[i].Duration != wantDur || got[i].DisplayTitle != fmt.Sprintf("Track %d", i) || !strings.HasSuffix(got[i].Path, fmt.Sprintf("norm_%04d.wav", i)) {
 				t.Fatalf("got[%d] = %+v, want dur %v", i, got[i], wantDur)
