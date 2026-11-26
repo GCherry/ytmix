@@ -223,9 +223,7 @@ func TestResourcesAndPrompts(t *testing.T) {
 
 		var wg sync.WaitGroup
 		for range 8 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				resp := reg.HandleMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":10,"method":"resources/read","params":{"uri":"ytmix://presets"}}`))
 				var env struct {
 					Result struct {
@@ -241,7 +239,7 @@ func TestResourcesAndPrompts(t *testing.T) {
 				if err := json.Unmarshal([]byte(env.Result.Contents[0].Text), &payload); err != nil || len(payload.Presets) != 14 {
 					t.Errorf("unexpected presets payload: %s (err=%v)", env.Result.Contents[0].Text, err)
 				}
-			}()
+			})
 		}
 		wg.Wait()
 

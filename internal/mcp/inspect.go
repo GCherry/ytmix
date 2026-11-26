@@ -110,10 +110,10 @@ func RegisterInspectTools(r *Registry, deps InspectDeps) {
 		},
 		Annotations: &ToolAnnotations{
 			Title:           "Inspect Audio Tracks",
-			ReadOnlyHint:    BoolPtr(true),
-			DestructiveHint: BoolPtr(false),
-			IdempotentHint:  BoolPtr(true),
-			OpenWorldHint:   BoolPtr(false),
+			ReadOnlyHint:    new(true),
+			DestructiveHint: new(false),
+			IdempotentHint:  new(true),
+			OpenWorldHint:   new(false),
 		},
 	}, func(ctx context.Context, args json.RawMessage) (CallToolResult, error) {
 		return handleInspectTracks(ctx, args, deps)
@@ -135,10 +135,10 @@ func RegisterInspectTools(r *Registry, deps InspectDeps) {
 		},
 		Annotations: &ToolAnnotations{
 			Title:           "Inspect Background Visual",
-			ReadOnlyHint:    BoolPtr(true),
-			DestructiveHint: BoolPtr(false),
-			IdempotentHint:  BoolPtr(true),
-			OpenWorldHint:   BoolPtr(false),
+			ReadOnlyHint:    new(true),
+			DestructiveHint: new(false),
+			IdempotentHint:  new(true),
+			OpenWorldHint:   new(false),
 		},
 	}, func(ctx context.Context, args json.RawMessage) (CallToolResult, error) {
 		return handleInspectBackground(ctx, args, deps)

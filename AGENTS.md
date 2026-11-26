@@ -4,7 +4,7 @@ Instructions for coding agents working in `ytmix`.
 
 ## Project Overview
 
-`ytmix` is a minimal-dependency Go (`1.24+`) CLI tool (pure Go, zero CGo) that wraps `ffmpeg` and `ffprobe` to compile a directory of `.mp3` audio files and a background visual (static image or looping video/GIF) into a 1080p `.mp4` video with YouTube chapter timestamps (`timestamps.txt`).
+`ytmix` is a minimal-dependency Go (`1.27+`) CLI tool (pure Go, zero CGo) that wraps `ffmpeg` and `ffprobe` to compile a directory of `.mp3` audio files and a background visual (static image or looping video/GIF) into a 1080p `.mp4` video with YouTube chapter timestamps (`timestamps.txt`).
 
 ## Source-of-Truth Docs
 
@@ -14,14 +14,16 @@ Instructions for coding agents working in `ytmix`.
 
 ## Build, Test & Verification
 
-Prerequisite: `go` (`1.24+`), `ffmpeg`, and `ffprobe` must be available on `PATH`.
+Prerequisite: `go` (`1.27+`), `ffmpeg`, and `ffprobe` must be available on `PATH`. Install `golangci-lint` (`v2.15+`, matching `.github/workflows/ci.yml`) on `PATH` to run CI-parity linting locally.
 
 ```powershell
 # Build binary
 go build -o ytmix.exe ./cmd/ytmix
 
-# Static checks & unit tests
+# Format, static checks, lint & unit tests
+gofmt -l .
 go vet ./...
+golangci-lint run
 go test ./...
 ```
 

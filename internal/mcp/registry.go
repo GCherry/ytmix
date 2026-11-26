@@ -63,8 +63,10 @@ func ResourceNotFoundError(uri string) *RPCError {
 }
 
 // BoolPtr returns a pointer to v for optional ToolAnnotations hint fields.
+//
+//go:fix inline
 func BoolPtr(v bool) *bool {
-	return &v
+	return new(v)
 }
 
 // ToolAnnotations provides optional behavioral hints for MCP clients.
@@ -517,8 +519,7 @@ func DecodeToolArgs[T any](args json.RawMessage) (T, error) {
 }
 
 func mapHandlerRPCError(err error) *RPCError {
-	var rpcErr *RPCError
-	if errors.As(err, &rpcErr) {
+	if rpcErr, ok := errors.AsType[*RPCError](err); ok {
 		return rpcErr
 	}
 	return &RPCError{Code: ErrCodeInternal, Message: err.Error()}
@@ -646,8 +647,7 @@ func (r *Registry) handleToolsCall(ctx context.Context, params json.RawMessage) 
 
 	res, err := entry.handler(ctx, args)
 	if err != nil {
-		var rpcErr *RPCError
-		if errors.As(err, &rpcErr) {
+		if rpcErr, ok := errors.AsType[*RPCError](err); ok {
 			return nil, rpcErr
 		}
 		return ErrorToolResult(err.Error()), nil

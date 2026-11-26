@@ -339,11 +339,9 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 	}
 	keepJobDir = true
 
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	s.wg.Go(func() {
 		s.runRenderJob(jobCtx, job, mixCfg, tracks)
-	}()
+	})
 
 	writeJSON(w, http.StatusAccepted, renderStartResponse{
 		JobID:         jobID,
@@ -998,7 +996,7 @@ func writeSSEEvent(w io.Writer, ev sseEvent) error {
 	if _, err := fmt.Fprintf(w, "event: %s\n", ev.name); err != nil {
 		return err
 	}
-	for _, line := range strings.Split(ev.data, "\n") {
+	for line := range strings.SplitSeq(ev.data, "\n") {
 		if _, err := fmt.Fprintf(w, "data: %s\n", line); err != nil {
 			return err
 		}

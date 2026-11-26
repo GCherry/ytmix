@@ -1501,10 +1501,7 @@ type stageBounds struct {
 }
 
 func computeStageBounds(weights render.StageWeights) stageBounds {
-	audioSpan := int(math.Round(93.0 * weights.Audio))
-	if audioSpan < 4 {
-		audioSpan = 4
-	}
+	audioSpan := max(int(math.Round(93.0*weights.Audio)), 4)
 	if audioSpan > 89 {
 		audioSpan = 89
 	}
@@ -1994,10 +1991,7 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, artProbed bool
 			if est.AudioSec > 0 {
 				normShare = est.NormalizeSec / est.AudioSec
 			}
-			pct := bounds.step2Start + int(math.Round(float64(bounds.audioSpan)*normShare*(float64(completed)/float64(total))))
-			if pct > bounds.step3Start-1 {
-				pct = bounds.step3Start - 1
-			}
+			pct := min(bounds.step2Start+int(math.Round(float64(bounds.audioSpan)*normShare*(float64(completed)/float64(total)))), bounds.step3Start-1)
 			rem := math.Max(0, est.PointSec-time.Since(start).Seconds())
 			emitTelemetry(sink, TelemetryEvent{
 				Kind:              EventProgress,
@@ -2103,10 +2097,7 @@ func runPipeline(ctx context.Context, cfg Config, tracks []Track, artProbed bool
 			if sink == nil {
 				return
 			}
-			pct := bounds.step5Start + int(math.Round(u.Fraction*float64(bounds.step5Span)))
-			if pct < bounds.step5Start {
-				pct = bounds.step5Start
-			}
+			pct := max(bounds.step5Start+int(math.Round(u.Fraction*float64(bounds.step5Span))), bounds.step5Start)
 			if pct > 99 {
 				pct = 99
 			}

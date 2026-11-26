@@ -137,10 +137,10 @@ func RegisterPlanTools(r *Registry, deps PlanDeps) {
 func readOnlyLocalAnnotations(title string) *ToolAnnotations {
 	return &ToolAnnotations{
 		Title:           title,
-		ReadOnlyHint:    BoolPtr(true),
-		DestructiveHint: BoolPtr(false),
-		IdempotentHint:  BoolPtr(true),
-		OpenWorldHint:   BoolPtr(false),
+		ReadOnlyHint:    new(true),
+		DestructiveHint: new(false),
+		IdempotentHint:  new(true),
+		OpenWorldHint:   new(false),
 	}
 }
 
@@ -370,8 +370,7 @@ func mapToolError(err error) (CallToolResult, error) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return CallToolResult{}, err
 	}
-	var rpcErr *RPCError
-	if errors.As(err, &rpcErr) {
+	if rpcErr, ok := errors.AsType[*RPCError](err); ok {
 		return CallToolResult{}, rpcErr
 	}
 	return ErrorToolResult(err.Error()), nil

@@ -27,10 +27,7 @@ func FormatASSTime(seconds float64) string {
 	if math.IsNaN(seconds) || math.IsInf(seconds, -1) || seconds <= 0 {
 		return "0:00:00.00"
 	}
-	totalCs := int64(math.Round(seconds * 100))
-	if totalCs < 0 {
-		totalCs = 0
-	}
+	totalCs := max(int64(math.Round(seconds*100)), 0)
 	cs := totalCs % 100
 	totalSec := totalCs / 100
 	sec := totalSec % 60

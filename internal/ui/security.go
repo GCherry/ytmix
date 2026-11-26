@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -27,10 +28,8 @@ func (s *Server) addAllowedRoot(label, canonicalPath string) {
 	}
 	s.rootsMu.Lock()
 	defer s.rootsMu.Unlock()
-	for _, existing := range s.allowedRoots {
-		if existing == canonicalPath {
-			return
-		}
+	if slices.Contains(s.allowedRoots, canonicalPath) {
+		return
 	}
 	if strings.TrimSpace(label) == "" {
 		label = canonicalPath
@@ -216,7 +215,7 @@ func (s *Server) resolveAllowedRootAndRel(raw string, mustExist bool) (string, s
 		}
 		if !mustExist {
 			cur := root
-			for _, seg := range strings.Split(rel, sep) {
+			for seg := range strings.SplitSeq(rel, sep) {
 				if seg == "" || seg == "." {
 					continue
 				}

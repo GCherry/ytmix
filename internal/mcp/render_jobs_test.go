@@ -349,8 +349,8 @@ func TestStartRenderExplicitTracksDisplayTitleOverridesAndOrder(t *testing.T) {
 					const prefix = "subtitles='"
 					if idx := strings.Index(args[i+1], prefix); idx >= 0 {
 						rest := args[i+1][idx+len(prefix):]
-						if end := strings.Index(rest, "'"); end >= 0 {
-							assPath := strings.ReplaceAll(rest[:end], `\:`, `:`)
+						if before, _, ok := strings.Cut(rest, "'"); ok {
+							assPath := strings.ReplaceAll(before, `\:`, `:`)
 							if b, err := os.ReadFile(assPath); err == nil {
 								capturedASS = string(b)
 							}
@@ -609,7 +609,7 @@ func TestRenderJobRingEvictionUnregistersResources(t *testing.T) {
 	defer mgr.Close()
 
 	var jobIDs []string
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		res, rpcErr, raw := callToolRPC(t, reg, "start_render", map[string]any{
 			"tracks": []map[string]any{{"path": trackPath, "durationSec": 10}},
 			"bg":     bgPath,
@@ -736,7 +736,7 @@ func TestVerifyMix(t *testing.T) {
 			ffprobeJSON:    `{"format":{"duration":"180.0"},"streams":[{"index":0,"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"pix_fmt":"yuv420p","r_frame_rate":"30/1","avg_frame_rate":"30/1"},{"index":1,"codec_type":"audio","codec_name":"aac"}]}`,
 			timestampsBody: "00:00 First Track\n01:30 Second Track\n",
 			wantValid:      true,
-			wantTSValid:    BoolPtr(true),
+			wantTSValid:    new(true),
 			wantChapters:   2,
 			wantAudioCount: 1,
 		},
@@ -745,7 +745,7 @@ func TestVerifyMix(t *testing.T) {
 			ffprobeJSON:    `{"format":{"duration":"3700.0"},"streams":[{"index":0,"codec_type":"video","codec_name":"h264","width":3840,"height":2160,"pix_fmt":"yuv420p","avg_frame_rate":"30/1"},{"index":1,"codec_type":"audio","codec_name":"aac"}]}`,
 			timestampsBody: "00:00:00 Opening\n00:45:00 Finale\n",
 			wantValid:      true,
-			wantTSValid:    BoolPtr(true),
+			wantTSValid:    new(true),
 			wantChapters:   2,
 			wantAudioCount: 1,
 		},
@@ -787,7 +787,7 @@ func TestVerifyMix(t *testing.T) {
 			ffprobeJSON:    `{"format":{"duration":"120.0"},"streams":[{"index":0,"codec_type":"video","codec_name":"h264","width":1920,"height":1080},{"index":1,"codec_type":"audio","codec_name":"aac"}]}`,
 			timestampsBody: "00:10 Late Start\n",
 			wantValid:      false,
-			wantTSValid:    BoolPtr(false),
+			wantTSValid:    new(false),
 			wantChapters:   1,
 			wantAudioCount: 1,
 			wantErrSubstr:  "00:00",
@@ -797,7 +797,7 @@ func TestVerifyMix(t *testing.T) {
 			ffprobeJSON:    `{"format":{"duration":"100.0"},"streams":[{"index":0,"codec_type":"video","codec_name":"h264","width":1920,"height":1080},{"index":1,"codec_type":"audio","codec_name":"aac"}]}`,
 			timestampsBody: "00:00 First\n02:00 Second\n01:30 Third\n",
 			wantValid:      false,
-			wantTSValid:    BoolPtr(false),
+			wantTSValid:    new(false),
 			wantChapters:   3,
 			wantAudioCount: 1,
 			wantErrSubstr:  "earlier than previous chapter",

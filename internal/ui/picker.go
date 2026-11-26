@@ -64,8 +64,7 @@ func defaultPickerRunCmd(ctx context.Context, name string, args []string, extraE
 	err := cmd.Run()
 	exitCode := 0
 	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			exitCode = exitErr.ExitCode()
 		} else {
 			exitCode = -1
@@ -231,7 +230,7 @@ func pickLinux(ctx context.Context, kind, initialDir string, env pickerEnv) (str
 }
 
 func parseMarkedPickerOutput(stdout string) (string, error) {
-	for _, rawLine := range strings.Split(stdout, "\n") {
+	for rawLine := range strings.SplitSeq(stdout, "\n") {
 		line := strings.TrimSpace(rawLine)
 		if line == "" {
 			continue
@@ -239,8 +238,8 @@ func parseMarkedPickerOutput(stdout string) (string, error) {
 		if line == "CANCELLED" {
 			return "", ErrPickerCancelled
 		}
-		if strings.HasPrefix(line, "PICKED:") {
-			val := strings.TrimSpace(strings.TrimPrefix(line, "PICKED:"))
+		if after, ok := strings.CutPrefix(line, "PICKED:"); ok {
+			val := strings.TrimSpace(after)
 			if val == "" {
 				return "", ErrPickerCancelled
 			}
