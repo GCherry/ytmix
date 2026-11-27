@@ -6,14 +6,17 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/GCherry/ytmix/internal/mcp"
 	"github.com/GCherry/ytmix/internal/mixer"
 )
 
@@ -145,6 +148,21 @@ func TestParseFlags(t *testing.T) {
 		estCfg, estOpts, err := ParseCLIOptions([]string{"--estimate", "--normalize", "--out-dir", "dry-run-out"})
 		if err != nil || !estOpts.Estimate || estOpts.ListVisualizers || !estCfg.Normalize || estCfg.OutDir != "dry-run-out" {
 			t.Fatalf("unexpected --estimate parse result: cfg=%+v opts=%+v err=%v", estCfg, estOpts, err)
+		}
+
+		for _, stray := range [][]string{{"help"}, {"--bg", "cover.png", "extra"}} {
+			if _, _, err := ParseCLIOptions(stray); err == nil {
+				t.Fatalf("expected positional argument error for %v", stray)
+			}
+		}
+
+		var rootHelp bytes.Buffer
+		rootFS := NewCLIFlagSetWithOptions(&mixer.Config{}, &CLIOptions{}, &rootHelp)
+		rootFS.Usage()
+		for _, want := range []string{"ytmix [flags]", "ytmix ui [flags]", "ytmix mcp", "ytmix help", "-audio-dir", "-out-dir"} {
+			if !strings.Contains(rootHelp.String(), want) {
+				t.Fatalf("root usage missing %q:\n%s", want, rootHelp.String())
+			}
 		}
 	})
 }
@@ -469,6 +487,17 @@ func TestParseUIFlags(t *testing.T) {
 		if _, err := ParseUIFlags([]string{"--host", "   "}); err == nil {
 			t.Fatal("expected error for empty host")
 		}
+		if _, err := ParseUIFlags([]string{"extra"}); err == nil {
+			t.Fatal("expected error for unexpected positional argument")
+		}
+		var uiHelp bytes.Buffer
+		uiFS := NewUIFlagSet(&UIConfig{}, &uiHelp)
+		uiFS.Usage()
+		for _, want := range []string{"Usage: ytmix ui [flags]", "-out-dir", "-host"} {
+			if !strings.Contains(uiHelp.String(), want) {
+				t.Fatalf("ui usage missing %q:\n%s", want, uiHelp.String())
+			}
+		}
 	})
 }
 
@@ -576,5 +605,353 @@ func TestRunMCPServer(t *testing.T) {
 		if !strings.Contains(lines[4], `"`+promptName+`"`) {
 			t.Fatalf("prompts/list missing %s: %s", promptName, lines[4])
 		}
+	}
+}
+
+func TestRunCLI(t *testing.T) {
+	t.Run("help flags and help subcommand route cleanly", func(t *testing.T) {
+		cases := []struct {
+			name     string
+			args     []string
+			wantCode int
+			wantOut  []string
+			wantErr  []string
+			emptyOut bool
+			emptyErr bool
+		}{
+			{
+				name:     "root --help prints unified usage to stderr",
+				args:     []string{"--help"},
+				wantCode: 0,
+				wantErr:  []string{"ytmix [flags]", "ytmix ui [flags]", "ytmix mcp", "ytmix help [command]", "-out-dir"},
+				emptyOut: true,
+			},
+			{
+				name:     "root -h prints unified usage to stderr",
+				args:     []string{"-h"},
+				wantCode: 0,
+				wantErr:  []string{"ytmix ui [flags]", "ytmix mcp"},
+				emptyOut: true,
+			},
+			{
+				name:     "help subcommand prints unified usage to stdout",
+				args:     []string{"help"},
+				wantCode: 0,
+				wantOut:  []string{"ytmix [flags]", "ytmix ui [flags]", "ytmix mcp", "ytmix help [command]"},
+				emptyErr: true,
+			},
+			{
+				name:     "help --help prints unified usage to stdout",
+				args:     []string{"help", "--help"},
+				wantCode: 0,
+				wantOut:  []string{"ytmix [flags]", "ytmix ui [flags]"},
+				emptyErr: true,
+			},
+			{
+				name:     "help ui prints ui usage to stdout",
+				args:     []string{"help", "ui"},
+				wantCode: 0,
+				wantOut:  []string{"Usage: ytmix ui [flags]", "-host", "-out-dir"},
+				emptyErr: true,
+			},
+			{
+				name:     "help mcp prints mcp usage to stdout",
+				args:     []string{"help", "mcp"},
+				wantCode: 0,
+				wantOut:  []string{"Usage: ytmix mcp"},
+				emptyErr: true,
+			},
+			{
+				name:     "ui --help prints ui usage to stderr",
+				args:     []string{"ui", "--help"},
+				wantCode: 0,
+				wantErr:  []string{"Usage: ytmix ui [flags]", "-port"},
+				emptyOut: true,
+			},
+			{
+				name:     "mcp --help prints mcp usage to stderr",
+				args:     []string{"mcp", "--help"},
+				wantCode: 0,
+				wantErr:  []string{"Usage: ytmix mcp"},
+				emptyOut: true,
+			},
+			{
+				name:     "help unknown topic exits 2",
+				args:     []string{"help", "unknown"},
+				wantCode: 2,
+				wantErr:  []string{`unknown help topic "unknown"`, "ytmix ui [flags]"},
+				emptyOut: true,
+			},
+			{
+				name:     "help extra args exits 2",
+				args:     []string{"help", "ui", "extra"},
+				wantCode: 2,
+				wantErr:  []string{"unexpected arguments: extra"},
+				emptyOut: true,
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				var out, errOut bytes.Buffer
+				code := run(context.Background(), tc.args, cliDeps{
+					stdout: &out,
+					stderr: &errOut,
+				})
+				if code != tc.wantCode {
+					t.Fatalf("exit code = %d, want %d (stdout=%q stderr=%q)", code, tc.wantCode, out.String(), errOut.String())
+				}
+				if tc.emptyOut && out.Len() != 0 {
+					t.Fatalf("expected empty stdout, got %q", out.String())
+				}
+				if tc.emptyErr && errOut.Len() != 0 {
+					t.Fatalf("expected empty stderr, got %q", errOut.String())
+				}
+				for _, w := range tc.wantOut {
+					if !strings.Contains(out.String(), w) {
+						t.Fatalf("stdout missing %q:\n%s", w, out.String())
+					}
+				}
+				for _, w := range tc.wantErr {
+					if !strings.Contains(errOut.String(), w) {
+						t.Fatalf("stderr missing %q:\n%s", w, errOut.String())
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("flag and positional argument errors exit 2", func(t *testing.T) {
+		for _, args := range [][]string{
+			{"--unknown-flag"},
+			{"stray"},
+			{"--bg", "cover.png", "stray"},
+			{"ui", "--unknown-flag"},
+			{"ui", "stray"},
+			{"mcp", "--unknown-flag"},
+			{"mcp", "stray"},
+		} {
+			var out, errOut bytes.Buffer
+			code := run(context.Background(), args, cliDeps{
+				stdout: &out,
+				stderr: &errOut,
+			})
+			if code != 2 {
+				t.Fatalf("args %v: code = %d, want 2 (stderr=%q)", args, code, errOut.String())
+			}
+			if !strings.Contains(errOut.String(), "Error:") {
+				t.Fatalf("args %v: expected Error prefix on stderr, got %q", args, errOut.String())
+			}
+		}
+	})
+
+	t.Run("dispatches mix, list-visualizers, estimate, ui, and mcp", func(t *testing.T) {
+		// Mix success + backwards compatible flags
+		var gotMixCfg mixer.Config
+		var out, errOut bytes.Buffer
+		code := run(context.Background(), []string{
+			"--audio-dir", "albums/jazz",
+			"--bg", "cover.png",
+			"--out-dir", "dist",
+			"--out", "jazz.mp4",
+			"--timestamps", "jazz.txt",
+		}, cliDeps{
+			stdout: &out,
+			stderr: &errOut,
+			runMix: func(_ context.Context, cfg mixer.Config, _ mixer.TelemetrySink, _ func(string) (string, error), _ mixer.CommandRunner, _ mixer.StreamRunner) error {
+				gotMixCfg = cfg
+				return nil
+			},
+		})
+		if code != 0 || gotMixCfg.AudioDir != "albums/jazz" || gotMixCfg.BG != "cover.png" || gotMixCfg.OutDir != "dist" {
+			t.Fatalf("mix dispatch failed: code=%d cfg=%+v stderr=%q", code, gotMixCfg, errOut.String())
+		}
+
+		// Mix error with TTY prints trailing newline to stdout
+		out.Reset()
+		errOut.Reset()
+		code = run(context.Background(), nil, cliDeps{
+			stdout: &out,
+			stderr: &errOut,
+			isTTY:  true,
+			runMix: func(context.Context, mixer.Config, mixer.TelemetrySink, func(string) (string, error), mixer.CommandRunner, mixer.StreamRunner) error {
+				return errors.New("mix boom")
+			},
+		})
+		if code != 1 || out.String() != "\n" || !strings.Contains(errOut.String(), "mix boom") {
+			t.Fatalf("mix TTY error unexpected: code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+		}
+
+		// --list-visualizers success and error
+		out.Reset()
+		errOut.Reset()
+		code = run(context.Background(), []string{"--list-visualizers"}, cliDeps{
+			stdout: &out,
+			stderr: &errOut,
+			lookPath: func(string) (string, error) {
+				return "", errors.New("no ffmpeg")
+			},
+		})
+		if code != 0 || !strings.Contains(out.String(), "Path D Auto Visualizer Presets") {
+			t.Fatalf("--list-visualizers failed: code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+		}
+
+		errOut.Reset()
+		code = run(context.Background(), []string{"--list-visualizers"}, cliDeps{
+			stdout: &out,
+			stderr: &errOut,
+			printVisualizers: func(context.Context, io.Writer, func(string) (string, error), mixer.CommandRunner) error {
+				return errors.New("write failed")
+			},
+		})
+		if code != 1 || !strings.Contains(errOut.String(), "write failed") {
+			t.Fatalf("--list-visualizers error path unexpected: code=%d stderr=%q", code, errOut.String())
+		}
+
+		// --estimate dispatch (success & error)
+		out.Reset()
+		errOut.Reset()
+		var estCfg mixer.Config
+		code = run(context.Background(), []string{"--estimate", "--out-dir", "preview"}, cliDeps{
+			stdout: &out,
+			stderr: &errOut,
+			runEstimate: func(_ context.Context, cfg mixer.Config, w io.Writer, _ func(string) (string, error), _ mixer.CommandRunner) error {
+				estCfg = cfg
+				_, err := io.WriteString(w, "estimate ok\n")
+				return err
+			},
+		})
+		if code != 0 || estCfg.OutDir != "preview" || !strings.Contains(out.String(), "estimate ok") {
+			t.Fatalf("--estimate dispatch failed: code=%d cfg=%+v stdout=%q", code, estCfg, out.String())
+		}
+
+		errOut.Reset()
+		code = run(context.Background(), []string{"--estimate"}, cliDeps{
+			stdout: &out,
+			stderr: &errOut,
+			runEstimate: func(context.Context, mixer.Config, io.Writer, func(string) (string, error), mixer.CommandRunner) error {
+				return errors.New("estimate boom")
+			},
+		})
+		if code != 1 || !strings.Contains(errOut.String(), "estimate boom") {
+			t.Fatalf("--estimate error unexpected: code=%d stderr=%q", code, errOut.String())
+		}
+
+		// UI dispatch (success & error)
+		var gotUICfg UIConfig
+		out.Reset()
+		errOut.Reset()
+		code = run(context.Background(), []string{"ui", "--host", "127.0.0.1", "--port", "9191", "--no-open", "--out-dir", "exports"}, cliDeps{
+			stdout: &out,
+			stderr: &errOut,
+			runUI: func(_ context.Context, cfg UIConfig, _ io.Writer) error {
+				gotUICfg = cfg
+				return nil
+			},
+		})
+		if code != 0 || gotUICfg.Port != 9191 || !gotUICfg.NoOpen || gotUICfg.OutDir != "exports" {
+			t.Fatalf("ui dispatch failed: code=%d cfg=%+v stderr=%q", code, gotUICfg, errOut.String())
+		}
+
+		errOut.Reset()
+		code = run(context.Background(), []string{"ui"}, cliDeps{
+			stdout: &out,
+			stderr: &errOut,
+			runUI: func(context.Context, UIConfig, io.Writer) error {
+				return errors.New("ui listen boom")
+			},
+		})
+		if code != 1 || !strings.Contains(errOut.String(), "ui listen boom") {
+			t.Fatalf("ui error unexpected: code=%d stderr=%q", code, errOut.String())
+		}
+
+		// MCP dispatch (success, context.Canceled, error)
+		errOut.Reset()
+		code = run(context.Background(), []string{"mcp"}, cliDeps{
+			stdout: &out,
+			stderr: &errOut,
+			runMCP: func(context.Context, io.Reader, io.Writer, io.Writer, func(string) (string, error), mcp.CommandRunner, string) error {
+				return context.Canceled
+			},
+		})
+		if code != 0 || errOut.Len() != 0 {
+			t.Fatalf("mcp cancel unexpected: code=%d stderr=%q", code, errOut.String())
+		}
+
+		errOut.Reset()
+		code = run(context.Background(), []string{"mcp"}, cliDeps{
+			stdout: &out,
+			stderr: &errOut,
+			runMCP: func(context.Context, io.Reader, io.Writer, io.Writer, func(string) (string, error), mcp.CommandRunner, string) error {
+				return errors.New("mcp boom")
+			},
+		})
+		if code != 1 || !strings.Contains(errOut.String(), "mcp boom") {
+			t.Fatalf("mcp error unexpected: code=%d stderr=%q", code, errOut.String())
+		}
+	})
+
+	t.Run("NewFlagSet and NewCLIFlagSet remain backwards compatible", func(t *testing.T) {
+		var cfg mixer.Config
+		var out bytes.Buffer
+		fs := NewFlagSet(&cfg, &out)
+		if err := fs.Parse([]string{"--bg", "art.png"}); err != nil {
+			t.Fatalf("NewFlagSet parse error: %v", err)
+		}
+		if cfg.BG != "art.png" {
+			t.Fatalf("expected cfg.BG=art.png, got %q", cfg.BG)
+		}
+		openBrowserBestEffort(context.Background(), "ftp://not-http")
+	})
+}
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+func TestRunUIServerLifecycle(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var out syncBuffer
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runUIServer(ctx, UIConfig{
+			Host:       "127.0.0.1",
+			Port:       0,
+			NoOpen:     true,
+			AudioDir:   t.TempDir(),
+			OutDir:     t.TempDir(),
+			Out:        "output.mp4",
+			Timestamps: "timestamps.txt",
+		}, &out)
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(out.String(), "Editorial Mix Studio listening on http://127.0.0.1:") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("runUIServer returned error: %v", err)
+	}
+	if !strings.Contains(out.String(), "Editorial Mix Studio listening on http://127.0.0.1:") {
+		t.Fatalf("expected listening banner, got %q", out.String())
 	}
 }
