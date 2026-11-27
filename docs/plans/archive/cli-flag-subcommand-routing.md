@@ -12,11 +12,11 @@ status; write **Phase Summary**; record **Verification Plan** results. When all
 phases are done, fill **Final Recap** and **Deployment Plan**, then archive this
 file to `docs/plans/archive/` per the `real-work` skill (Section 3).
 
-**Repo:** `GCherry/ytmix` (`/home/antigravity/GCherry/ytmix`) — read [AGENTS.md](../../AGENTS.md) before building or testing.
+**Repo:** `GCherry/ytmix` (`/home/antigravity/GCherry/ytmix`) — read [AGENTS.md](../../../AGENTS.md) before building or testing.
 
 **Branch:** `refactor/cli-flag-subcommand-routing` off `main`.
 
-**Domain docs:** [GLOSSARY.md](../../GLOSSARY.md), [ADR 0002](../adr/0002-embedded-http-ui-and-sse-telemetry.md).
+**Domain docs:** [GLOSSARY.md](../../../GLOSSARY.md), [ADR 0002](../../adr/0002-embedded-http-ui-and-sse-telemetry.md).
 
 **Related skills:** `architect` (Stage 2 seam check), `tdd` (red-green verification), `code-review` (Standards + Spec), `real-work` (write-back & archival).
 
