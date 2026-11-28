@@ -70,6 +70,7 @@ type RenderJobSnapshot struct {
 	EstimatedTotalSec     float64             `json:"estimatedTotalSec"`
 	Estimate              *render.MixEstimate `json:"estimate,omitempty"`
 	RenderingPath         string              `json:"renderingPath"`
+	Segmented             bool                `json:"segmented,omitempty"`
 	OutPath               string              `json:"outPath"`
 	TimestampsPath        string              `json:"timestampsPath"`
 	TrackCount            int                 `json:"trackCount"`
@@ -86,6 +87,7 @@ type StartRenderResult struct {
 	JobID                 string             `json:"jobId"`
 	Status                RenderJobStatus    `json:"status"`
 	RenderingPath         string             `json:"renderingPath"`
+	Segmented             bool               `json:"segmented,omitempty"`
 	OutPath               string             `json:"outPath"`
 	TimestampsPath        string             `json:"timestampsPath"`
 	TrackCount            int                `json:"trackCount"`
@@ -142,25 +144,30 @@ type renderTrackInput struct {
 }
 
 type startRenderArgs struct {
-	AudioDir             string             `json:"audioDir"`
-	Tracks               []renderTrackInput `json:"tracks"`
-	BG                   string             `json:"bg"`
-	OutDir               string             `json:"outDir"`
-	Out                  string             `json:"out"`
-	Timestamps           string             `json:"timestamps"`
-	Crossfade            float64            `json:"crossfade"`
-	Normalize            bool               `json:"normalize"`
-	OverlayTitles        bool               `json:"overlayTitles"`
-	TitleDuration        int                `json:"titleDuration"`
-	FontName             string             `json:"fontName"`
-	Shuffle              bool               `json:"shuffle"`
-	Visualizer           string             `json:"visualizer"`
-	VisualizerTheme      string             `json:"visualizerTheme"`
-	VisualizerResolution string             `json:"visualizerResolution"`
-	VisualizerGlow       *bool              `json:"visualizerGlow"`
-	VisualizerBrightness *int               `json:"visualizerBrightness"`
-	FadeToBlack          string             `json:"fadeToBlack"`
-	DimTitles            bool               `json:"dimTitles"`
+	AudioDir             string               `json:"audioDir"`
+	Tracks               []renderTrackInput   `json:"tracks"`
+	BG                   string               `json:"bg"`
+	OutDir               string               `json:"outDir"`
+	Out                  string               `json:"out"`
+	Timestamps           string               `json:"timestamps"`
+	Crossfade            float64              `json:"crossfade"`
+	Normalize            bool                 `json:"normalize"`
+	OverlayTitles        bool                 `json:"overlayTitles"`
+	TitleDuration        int                  `json:"titleDuration"`
+	FontName             string               `json:"fontName"`
+	Shuffle              bool                 `json:"shuffle"`
+	Visualizer           string               `json:"visualizer"`
+	VisualizerTheme      string               `json:"visualizerTheme"`
+	VisualizerResolution string               `json:"visualizerResolution"`
+	VisualizerGlow       *bool                `json:"visualizerGlow"`
+	VisualizerBrightness *int                 `json:"visualizerBrightness"`
+	FadeToBlack          string               `json:"fadeToBlack"`
+	DimTitles            bool                 `json:"dimTitles"`
+	TrackMedia           string               `json:"trackMedia"`
+	Manifest             string               `json:"manifest"`
+	TrackMediaLayout     string               `json:"trackMediaLayout"`
+	TrackTransition      string               `json:"trackTransition"`
+	TrackOverrides       []trackOverrideInput `json:"trackOverrides"`
 }
 
 type jobIDArgs struct {
@@ -175,6 +182,7 @@ type verifyMixArgs struct {
 type renderJob struct {
 	id                    string
 	renderingPath         string
+	segmented             bool
 	outPath               string
 	timestampsPath        string
 	trackCount            int
@@ -233,6 +241,7 @@ func (j *renderJob) snapshot() RenderJobSnapshot {
 		EstimatedTotalSec:     j.estimatedTotalSec,
 		Estimate:              estCopy,
 		RenderingPath:         j.renderingPath,
+		Segmented:             j.segmented,
 		OutPath:               j.outPath,
 		TimestampsPath:        j.timestampsPath,
 		TrackCount:            j.trackCount,
@@ -420,129 +429,131 @@ func (m *RenderJobManager) Close() {
 }
 
 func startRenderToolDefinition() Tool {
-	return Tool{
-		Name:        "start_render",
-		Description: "Pre-flight a Mix configuration and start an asynchronous 5-step Mix render in the background, returning a jobId, Rendering Path, MixEstimate, and live MCP resource URIs immediately without blocking on FFmpeg.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"audioDir": map[string]any{
-					"type":        "string",
-					"description": "Directory containing input .mp3 Tracks (mutually exclusive with tracks).",
-				},
-				"tracks": map[string]any{
-					"type":        "array",
-					"description": "Explicit ordered list of .mp3 Tracks (mutually exclusive with audioDir). Preserves Track order and Display Title overrides without modifying files on disk.",
-					"minItems":    1,
-					"items": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"path": map[string]any{
-								"type":        "string",
-								"description": "Local path to the .mp3 Track file.",
-							},
-							"fileName": map[string]any{
-								"type":        "string",
-								"description": "Optional filename used for fallback Display Title derivation.",
-							},
-							"displayTitle": map[string]any{
-								"type":        "string",
-								"description": "Optional Display Title override for Chapter Timestamps and burned .ass Title Overlays.",
-							},
-							"durationSec": map[string]any{
-								"type":             "number",
-								"description":      "Optional Track duration in seconds (> 0). Probed via ffprobe when omitted.",
-								"exclusiveMinimum": 0,
-							},
-						},
-						"required":             []string{"path"},
-						"additionalProperties": false,
+	props := map[string]any{
+		"audioDir": map[string]any{
+			"type":        "string",
+			"description": "Directory containing input .mp3 Tracks (mutually exclusive with tracks).",
+		},
+		"tracks": map[string]any{
+			"type":        "array",
+			"description": "Explicit ordered list of .mp3 Tracks (mutually exclusive with audioDir). Preserves Track order and Display Title overrides without modifying files on disk.",
+			"minItems":    1,
+			"items": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path": map[string]any{
+						"type":        "string",
+						"description": "Local path to the .mp3 Track file.",
+					},
+					"fileName": map[string]any{
+						"type":        "string",
+						"description": "Optional filename used for fallback Display Title derivation.",
+					},
+					"displayTitle": map[string]any{
+						"type":        "string",
+						"description": "Optional Display Title override for Chapter Timestamps and burned .ass Title Overlays.",
+					},
+					"durationSec": map[string]any{
+						"type":             "number",
+						"description":      "Optional Track duration in seconds (> 0). Probed via ffprobe when omitted.",
+						"exclusiveMinimum": 0,
 					},
 				},
-				"bg": map[string]any{
-					"type":        "string",
-					"description": "Optional Background Visual path (.jpg, .jpeg, .png, .webp, .mp4, .mov, .gif). Omit to use Path D Auto Visualizer.",
-				},
-				"outDir": map[string]any{
-					"type":        "string",
-					"description": "Optional directory where relative out and timestamps paths are written.",
-				},
-				"out": map[string]any{
-					"type":        "string",
-					"description": "Output .mp4 video path (default output.mp4).",
-					"default":     "output.mp4",
-				},
-				"timestamps": map[string]any{
-					"type":        "string",
-					"description": "Output Chapter Timestamps file path (default timestamps.txt).",
-					"default":     "timestamps.txt",
-				},
-				"crossfade": map[string]any{
-					"type":        "number",
-					"description": "Crossfade duration in seconds between Tracks (default 0).",
-					"default":     0,
-					"minimum":     0,
-				},
-				"normalize": map[string]any{
-					"type":        "boolean",
-					"description": "Normalize each Track to -14 LUFS before merging.",
-					"default":     false,
-				},
-				"overlayTitles": map[string]any{
-					"type":        "boolean",
-					"description": "Burn Display Titles into the bottom-left corner via .ass Title Overlays.",
-					"default":     false,
-				},
-				"titleDuration": map[string]any{
-					"type":        "integer",
-					"description": "Seconds to display each Title Overlay (0 = full Track).",
-					"default":     0,
-					"minimum":     0,
-				},
-				"fontName": map[string]any{
-					"type":        "string",
-					"description": "Font family name for .ass Title Overlays (default Arial).",
-					"default":     "Arial",
-				},
-				"shuffle": map[string]any{
-					"type":        "boolean",
-					"description": "Randomize discovered audioDir Track order.",
-					"default":     false,
-				},
-				"visualizer": map[string]any{
-					"type":        "string",
-					"description": "Path D Auto Visualizer preset ID when bg is omitted (default bars).",
-				},
-				"visualizerTheme": map[string]any{
-					"type":        "string",
-					"description": "Path D Color Theme ID (default studio-mint).",
-				},
-				"visualizerResolution": map[string]any{
-					"type":        "string",
-					"description": "Path D output resolution (1080p, 1440p, 4k; default 1080p).",
-				},
-				"visualizerGlow": map[string]any{
-					"type":        "boolean",
-					"description": "Apply subtle glow blur on Path D Auto Visualizer presets (default true).",
-					"default":     true,
-				},
-				"visualizerBrightness": map[string]any{
-					"type":        "integer",
-					"description": "Global Path D visualizer brightness percentage in 10..100 (default 100).",
-					"default":     100,
-					"minimum":     10,
-					"maximum":     100,
-				},
-				"fadeToBlack": map[string]any{
-					"type":        "string",
-					"description": "Go duration string (e.g. \"15m\") to fade Path D video and titles to #000000 black (0 disables).",
-				},
-				"dimTitles": map[string]any{
-					"type":        "boolean",
-					"description": "Use low-luminance translucent warm-gray ASS styling for Title Overlays.",
-					"default":     false,
-				},
+				"required":             []string{"path"},
+				"additionalProperties": false,
 			},
+		},
+		"bg": map[string]any{
+			"type":        "string",
+			"description": "Optional Background Visual path (.jpg, .jpeg, .png, .webp, .mp4, .mov, .gif). Omit to use Path D Auto Visualizer.",
+		},
+		"outDir": map[string]any{
+			"type":        "string",
+			"description": "Optional directory where relative out and timestamps paths are written.",
+		},
+		"out": map[string]any{
+			"type":        "string",
+			"description": "Output .mp4 video path (default output.mp4).",
+			"default":     "output.mp4",
+		},
+		"timestamps": map[string]any{
+			"type":        "string",
+			"description": "Output Chapter Timestamps file path (default timestamps.txt).",
+			"default":     "timestamps.txt",
+		},
+		"crossfade": map[string]any{
+			"type":        "number",
+			"description": "Crossfade duration in seconds between Tracks (default 0).",
+			"default":     0,
+			"minimum":     0,
+		},
+		"normalize": map[string]any{
+			"type":        "boolean",
+			"description": "Normalize each Track to -14 LUFS before merging.",
+			"default":     false,
+		},
+		"overlayTitles": map[string]any{
+			"type":        "boolean",
+			"description": "Burn Display Titles into the bottom-left corner via .ass Title Overlays.",
+			"default":     false,
+		},
+		"titleDuration": map[string]any{
+			"type":        "integer",
+			"description": "Seconds to display each Title Overlay (0 = full Track).",
+			"default":     0,
+			"minimum":     0,
+		},
+		"fontName": map[string]any{
+			"type":        "string",
+			"description": "Font family name for .ass Title Overlays (default Arial).",
+			"default":     "Arial",
+		},
+		"shuffle": map[string]any{
+			"type":        "boolean",
+			"description": "Randomize discovered audioDir Track order.",
+			"default":     false,
+		},
+		"visualizer": map[string]any{
+			"type":        "string",
+			"description": "Path D Auto Visualizer preset ID when bg is omitted (default bars).",
+		},
+		"visualizerTheme": map[string]any{
+			"type":        "string",
+			"description": "Path D Color Theme ID (default studio-mint).",
+		},
+		"visualizerResolution": map[string]any{
+			"type":        "string",
+			"description": "Path D output resolution (1080p, 1440p, 4k; default 1080p).",
+		},
+		"visualizerGlow": map[string]any{
+			"type":        "boolean",
+			"description": "Apply subtle glow blur on Path D Auto Visualizer presets (default true).",
+			"default":     true,
+		},
+		"visualizerBrightness": map[string]any{
+			"type":        "integer",
+			"description": "Global Path D visualizer brightness percentage in 10..100 (default 100).",
+			"default":     100,
+			"minimum":     10,
+			"maximum":     100,
+		},
+		"fadeToBlack": map[string]any{
+			"type":        "string",
+			"description": "Go duration string (e.g. \"15m\") to fade Path D video and titles to #000000 black (0 disables).",
+		},
+		"dimTitles": map[string]any{
+			"type":        "boolean",
+			"description": "Use low-luminance translucent warm-gray ASS styling for Title Overlays.",
+			"default":     false,
+		},
+	}
+	addTrackMediaSchemaProperties(props)
+	return Tool{
+		Name:        "start_render",
+		Description: "Pre-flight a Mix configuration (including optional per-Track media, Dual-Layer overrides, or manifest) and start an asynchronous 5-step Mix render in the background, returning a jobId, Rendering Path, MixEstimate, and live MCP resource URIs immediately without blocking on FFmpeg.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"properties":           props,
 			"additionalProperties": false,
 		},
 		Annotations: &ToolAnnotations{
@@ -937,6 +948,17 @@ func (m *RenderJobManager) handleStartRender(ctx context.Context, args json.RawM
 		return CallToolResult{}, err
 	}
 
+	resolvedTrackMedia, resolvedLayout, resolvedTransition, resolvedOverrides, err := resolveTrackMediaInputs(
+		in.TrackMedia,
+		in.Manifest,
+		in.TrackMediaLayout,
+		in.TrackTransition,
+		in.TrackOverrides,
+	)
+	if err != nil {
+		return CallToolResult{}, err
+	}
+
 	fontName := strings.TrimSpace(in.FontName)
 	if fontName == "" {
 		fontName = "Arial"
@@ -969,6 +991,10 @@ func (m *RenderJobManager) handleStartRender(ctx context.Context, args json.RawM
 		VisualizerBrightness: vizBrightness,
 		FadeToBlack:          fadeToBlack,
 		DimTitles:            in.DimTitles,
+		TrackMedia:           resolvedTrackMedia,
+		TrackMediaLayout:     resolvedLayout,
+		TrackTransition:      resolvedTransition,
+		TrackOverrides:       resolvedOverrides,
 	}
 
 	if bg == "" {
@@ -1035,6 +1061,7 @@ func (m *RenderJobManager) handleStartRender(ctx context.Context, args json.RawM
 	job := &renderJob{
 		id:                    jobID,
 		renderingPath:         string(pathKind),
+		segmented:             preparedCfg.Segmented,
 		outPath:               preparedCfg.Out,
 		timestampsPath:        preparedCfg.Timestamps,
 		trackCount:            len(tracks),
@@ -1071,6 +1098,7 @@ func (m *RenderJobManager) handleStartRender(ctx context.Context, args json.RawM
 		JobID:                 job.id,
 		Status:                RenderJobRunning,
 		RenderingPath:         job.renderingPath,
+		Segmented:             job.segmented,
 		OutPath:               job.outPath,
 		TimestampsPath:        job.timestampsPath,
 		TrackCount:            job.trackCount,

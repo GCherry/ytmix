@@ -35,22 +35,27 @@ type planTrackInput struct {
 }
 
 type planMixArgs struct {
-	AudioDir             string           `json:"audioDir"`
-	Tracks               []planTrackInput `json:"tracks"`
-	BG                   string           `json:"bg"`
-	Crossfade            float64          `json:"crossfade"`
-	Normalize            bool             `json:"normalize"`
-	OverlayTitles        bool             `json:"overlayTitles"`
-	TitleDuration        int              `json:"titleDuration"`
-	FontName             string           `json:"fontName"`
-	Shuffle              bool             `json:"shuffle"`
-	Visualizer           string           `json:"visualizer"`
-	VisualizerTheme      string           `json:"visualizerTheme"`
-	VisualizerResolution string           `json:"visualizerResolution"`
-	VisualizerGlow       *bool            `json:"visualizerGlow"`
-	VisualizerBrightness *int             `json:"visualizerBrightness"`
-	FadeToBlack          string           `json:"fadeToBlack"`
-	DimTitles            bool             `json:"dimTitles"`
+	AudioDir             string               `json:"audioDir"`
+	Tracks               []planTrackInput     `json:"tracks"`
+	BG                   string               `json:"bg"`
+	Crossfade            float64              `json:"crossfade"`
+	Normalize            bool                 `json:"normalize"`
+	OverlayTitles        bool                 `json:"overlayTitles"`
+	TitleDuration        int                  `json:"titleDuration"`
+	FontName             string               `json:"fontName"`
+	Shuffle              bool                 `json:"shuffle"`
+	Visualizer           string               `json:"visualizer"`
+	VisualizerTheme      string               `json:"visualizerTheme"`
+	VisualizerResolution string               `json:"visualizerResolution"`
+	VisualizerGlow       *bool                `json:"visualizerGlow"`
+	VisualizerBrightness *int                 `json:"visualizerBrightness"`
+	FadeToBlack          string               `json:"fadeToBlack"`
+	DimTitles            bool                 `json:"dimTitles"`
+	TrackMedia           string               `json:"trackMedia"`
+	Manifest             string               `json:"manifest"`
+	TrackMediaLayout     string               `json:"trackMediaLayout"`
+	TrackTransition      string               `json:"trackTransition"`
+	TrackOverrides       []trackOverrideInput `json:"trackOverrides"`
 }
 
 // PlannedChapter represents one Crossfade-adjusted entry in the predicted Chapter Timestamps schedule.
@@ -75,6 +80,10 @@ type TitleOverlayPreview struct {
 type PlanMixResult struct {
 	RenderingPath       string              `json:"renderingPath"`
 	RenderingPathDetail string              `json:"renderingPathDetail"`
+	Segmented           bool                `json:"segmented,omitempty"`
+	TrackMedia          string              `json:"trackMedia,omitempty"`
+	TrackMediaLayout    string              `json:"trackMediaLayout,omitempty"`
+	TrackTransition     string              `json:"trackTransition,omitempty"`
 	TrackCount          int                 `json:"trackCount"`
 	TotalDurationSec    float64             `json:"totalDurationSec"`
 	CrossfadeSec        float64             `json:"crossfadeSec"`
@@ -145,114 +154,116 @@ func readOnlyLocalAnnotations(title string) *ToolAnnotations {
 }
 
 func planMixToolDefinition() Tool {
-	return Tool{
-		Name:        "plan_mix",
-		Description: "Dry-run simulator for a Mix without writing output files. Selects the exact Rendering Path (Path A/B/C/D), computes render.MixEstimate and speed trade-offs, and previews Crossfade-adjusted Chapter Timestamps and Title Overlay cue counts.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"audioDir": map[string]any{
-					"type":        "string",
-					"description": "Directory containing input .mp3 Tracks (mutually exclusive with tracks).",
-				},
-				"tracks": map[string]any{
-					"type":        "array",
-					"description": "Explicit ordered list of Tracks to simulate (mutually exclusive with audioDir). Each item requires durationSec > 0 or a local .mp3 path to probe.",
-					"minItems":    1,
-					"items": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"fileName": map[string]any{
-								"type":        "string",
-								"description": "Track filename (used to derive Display Title when displayTitle is omitted).",
-							},
-							"displayTitle": map[string]any{
-								"type":        "string",
-								"description": "Optional override Display Title for Chapter Timestamps and Title Overlays.",
-							},
-							"durationSec": map[string]any{
-								"type":             "number",
-								"description":      "Track duration in seconds (> 0). Optional when path is provided for ffprobe.",
-								"exclusiveMinimum": 0,
-							},
-							"path": map[string]any{
-								"type":        "string",
-								"description": "Optional local path to the .mp3 Track (probed via ffprobe if durationSec is omitted).",
-							},
-						},
-						"additionalProperties": false,
+	props := map[string]any{
+		"audioDir": map[string]any{
+			"type":        "string",
+			"description": "Directory containing input .mp3 Tracks (mutually exclusive with tracks).",
+		},
+		"tracks": map[string]any{
+			"type":        "array",
+			"description": "Explicit ordered list of Tracks to simulate (mutually exclusive with audioDir). Each item requires durationSec > 0 or a local .mp3 path to probe.",
+			"minItems":    1,
+			"items": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"fileName": map[string]any{
+						"type":        "string",
+						"description": "Track filename (used to derive Display Title when displayTitle is omitted).",
+					},
+					"displayTitle": map[string]any{
+						"type":        "string",
+						"description": "Optional override Display Title for Chapter Timestamps and Title Overlays.",
+					},
+					"durationSec": map[string]any{
+						"type":             "number",
+						"description":      "Track duration in seconds (> 0). Optional when path is provided for ffprobe.",
+						"exclusiveMinimum": 0,
+					},
+					"path": map[string]any{
+						"type":        "string",
+						"description": "Optional local path to the .mp3 Track (probed via ffprobe if durationSec is omitted).",
 					},
 				},
-				"bg": map[string]any{
-					"type":        "string",
-					"description": "Optional Background Visual path (.jpg, .jpeg, .png, .webp, .mp4, .mov, .gif). Omit to use Path D Auto Visualizer.",
-				},
-				"crossfade": map[string]any{
-					"type":        "number",
-					"description": "Crossfade duration in seconds between Tracks (default 0).",
-					"default":     0,
-					"minimum":     0,
-				},
-				"normalize": map[string]any{
-					"type":        "boolean",
-					"description": "Simulate -14 LUFS Loudness Normalization per Track.",
-					"default":     false,
-				},
-				"overlayTitles": map[string]any{
-					"type":        "boolean",
-					"description": "Simulate burned-in .ass Title Overlays (switches video Background Visuals from Path A to Path B).",
-					"default":     false,
-				},
-				"titleDuration": map[string]any{
-					"type":        "integer",
-					"description": "Seconds to display each Title Overlay (0 = full Track).",
-					"default":     0,
-					"minimum":     0,
-				},
-				"fontName": map[string]any{
-					"type":        "string",
-					"description": "Font family name for .ass Title Overlays (default Arial).",
-					"default":     "Arial",
-				},
-				"shuffle": map[string]any{
-					"type":        "boolean",
-					"description": "Randomize discovered audioDir Track order.",
-					"default":     false,
-				},
-				"visualizer": map[string]any{
-					"type":        "string",
-					"description": "Path D Auto Visualizer preset ID when bg is omitted (default bars).",
-				},
-				"visualizerTheme": map[string]any{
-					"type":        "string",
-					"description": "Path D Color Theme ID (default studio-mint).",
-				},
-				"visualizerResolution": map[string]any{
-					"type":        "string",
-					"description": "Path D output resolution (1080p, 1440p, 4k; default 1080p).",
-				},
-				"visualizerGlow": map[string]any{
-					"type":        "boolean",
-					"description": "Apply subtle glow blur on Path D Auto Visualizer presets (default true).",
-					"default":     true,
-				},
-				"visualizerBrightness": map[string]any{
-					"type":        "integer",
-					"description": "Global Path D visualizer brightness percentage in 10..100 (default 100).",
-					"default":     100,
-					"minimum":     10,
-					"maximum":     100,
-				},
-				"fadeToBlack": map[string]any{
-					"type":        "string",
-					"description": "Go duration string (e.g. \"15m\") to fade Path D video and titles to #000000 black (0 disables).",
-				},
-				"dimTitles": map[string]any{
-					"type":        "boolean",
-					"description": "Use low-luminance translucent warm-gray ASS styling for Title Overlays.",
-					"default":     false,
-				},
+				"additionalProperties": false,
 			},
+		},
+		"bg": map[string]any{
+			"type":        "string",
+			"description": "Optional Background Visual path (.jpg, .jpeg, .png, .webp, .mp4, .mov, .gif). Omit to use Path D Auto Visualizer.",
+		},
+		"crossfade": map[string]any{
+			"type":        "number",
+			"description": "Crossfade duration in seconds between Tracks (default 0).",
+			"default":     0,
+			"minimum":     0,
+		},
+		"normalize": map[string]any{
+			"type":        "boolean",
+			"description": "Simulate -14 LUFS Loudness Normalization per Track.",
+			"default":     false,
+		},
+		"overlayTitles": map[string]any{
+			"type":        "boolean",
+			"description": "Simulate burned-in .ass Title Overlays (switches video Background Visuals from Path A to Path B).",
+			"default":     false,
+		},
+		"titleDuration": map[string]any{
+			"type":        "integer",
+			"description": "Seconds to display each Title Overlay (0 = full Track).",
+			"default":     0,
+			"minimum":     0,
+		},
+		"fontName": map[string]any{
+			"type":        "string",
+			"description": "Font family name for .ass Title Overlays (default Arial).",
+			"default":     "Arial",
+		},
+		"shuffle": map[string]any{
+			"type":        "boolean",
+			"description": "Randomize discovered audioDir Track order.",
+			"default":     false,
+		},
+		"visualizer": map[string]any{
+			"type":        "string",
+			"description": "Path D Auto Visualizer preset ID when bg is omitted (default bars).",
+		},
+		"visualizerTheme": map[string]any{
+			"type":        "string",
+			"description": "Path D Color Theme ID (default studio-mint).",
+		},
+		"visualizerResolution": map[string]any{
+			"type":        "string",
+			"description": "Path D output resolution (1080p, 1440p, 4k; default 1080p).",
+		},
+		"visualizerGlow": map[string]any{
+			"type":        "boolean",
+			"description": "Apply subtle glow blur on Path D Auto Visualizer presets (default true).",
+			"default":     true,
+		},
+		"visualizerBrightness": map[string]any{
+			"type":        "integer",
+			"description": "Global Path D visualizer brightness percentage in 10..100 (default 100).",
+			"default":     100,
+			"minimum":     10,
+			"maximum":     100,
+		},
+		"fadeToBlack": map[string]any{
+			"type":        "string",
+			"description": "Go duration string (e.g. \"15m\") to fade Path D video and titles to #000000 black (0 disables).",
+		},
+		"dimTitles": map[string]any{
+			"type":        "boolean",
+			"description": "Use low-luminance translucent warm-gray ASS styling for Title Overlays.",
+			"default":     false,
+		},
+	}
+	addTrackMediaSchemaProperties(props)
+	return Tool{
+		Name:        "plan_mix",
+		Description: "Dry-run simulator for a Mix without writing output files. Selects the exact Rendering Path (Path A/B/C/D) or segmented per-Track Dual-Layer pipeline, computes render.MixEstimate and speed trade-offs, and previews Crossfade-adjusted Chapter Timestamps and Title Overlay cue counts.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"properties":           props,
 			"additionalProperties": false,
 		},
 		Annotations: readOnlyLocalAnnotations("Plan Mix (Dry Run)"),
@@ -521,6 +532,17 @@ func handlePlanMix(ctx context.Context, args json.RawMessage, deps PlanDeps) (Ca
 		return CallToolResult{}, err
 	}
 
+	resolvedTrackMedia, resolvedLayout, resolvedTransition, resolvedOverrides, err := resolveTrackMediaInputs(
+		in.TrackMedia,
+		in.Manifest,
+		in.TrackMediaLayout,
+		in.TrackTransition,
+		in.TrackOverrides,
+	)
+	if err != nil {
+		return CallToolResult{}, err
+	}
+
 	fontName := strings.TrimSpace(in.FontName)
 	if fontName == "" {
 		fontName = "Arial"
@@ -542,6 +564,10 @@ func handlePlanMix(ctx context.Context, args json.RawMessage, deps PlanDeps) (Ca
 		VisualizerBrightness: vizBrightness,
 		FadeToBlack:          fadeToBlack,
 		DimTitles:            in.DimTitles,
+		TrackMedia:           resolvedTrackMedia,
+		TrackMediaLayout:     resolvedLayout,
+		TrackTransition:      resolvedTransition,
+		TrackOverrides:       resolvedOverrides,
 	}
 
 	var normVizCfg render.VisualizerConfig
@@ -550,18 +576,20 @@ func handlePlanMix(ctx context.Context, args json.RawMessage, deps PlanDeps) (Ca
 		if err != nil {
 			return CallToolResult{}, InvalidParamsError(err.Error())
 		}
-	} else {
-		if _, _, err := render.ClassifyBackground(bg); err != nil {
-			return ErrorToolResult(err.Error()), nil
-		}
-		if err := mixer.ValidateBackgroundFile(bg); err != nil {
-			return ErrorToolResult(err.Error()), nil
-		}
 	}
 
-	pathKind, err := render.SelectPath(bg, in.OverlayTitles)
+	okLookPath := func(bin string) (string, error) {
+		return "/usr/bin/" + bin, nil
+	}
+	preparedCfg, pathKind, err := mixer.PreflightConfig(cfg, okLookPath, false)
 	if err != nil {
-		return ErrorToolResult(err.Error()), nil
+		return mapToolError(err)
+	}
+	if strings.TrimSpace(preparedCfg.BG) == "" {
+		normVizCfg, err = render.ValidateVisualizerConfig(preparedCfg.VisualizerConfig())
+		if err != nil {
+			return CallToolResult{}, InvalidParamsError(err.Error())
+		}
 	}
 
 	hasFFmpeg := lookPathAvailable(deps.LookPath, "ffmpeg")
@@ -574,7 +602,7 @@ func handlePlanMix(ctx context.Context, args json.RawMessage, deps PlanDeps) (Ca
 
 	var bgMetaPtr *probe.BackgroundMeta
 	if (pathKind == render.PathA || pathKind == render.PathB) && deps.Runner != nil && (deps.LookPath == nil || hasFFprobe) {
-		if probed, probeErr := probe.ProbeBackgroundVisual(ctx, bg, deps.Runner); probeErr == nil {
+		if probed, probeErr := probe.ProbeBackgroundVisual(ctx, preparedCfg.BG, deps.Runner); probeErr == nil {
 			bgMetaPtr = &probed
 		} else if errors.Is(probeErr, context.Canceled) || errors.Is(probeErr, context.DeadlineExceeded) {
 			return CallToolResult{}, probeErr
@@ -585,10 +613,7 @@ func handlePlanMix(ctx context.Context, args json.RawMessage, deps PlanDeps) (Ca
 	if hasFFmpeg && deps.Runner != nil {
 		estRunner = deps.Runner
 	}
-	okLookPath := func(bin string) (string, error) {
-		return "/usr/bin/" + bin, nil
-	}
-	est, err := mixer.EstimateConfig(ctx, cfg, tracks, bgMetaPtr, okLookPath, estRunner)
+	est, err := mixer.EstimateConfig(ctx, preparedCfg, tracks, bgMetaPtr, okLookPath, estRunner)
 	if err != nil {
 		return mapToolError(err)
 	}
@@ -618,9 +643,41 @@ func handlePlanMix(ctx context.Context, args json.RawMessage, deps PlanDeps) (Ca
 		cueCount = len(sched.Cues)
 	}
 
+	var outTrackMedia, outTrackLayout, outTrackTransition string
+	if preparedCfg.Segmented {
+		outTrackMedia = preparedCfg.TrackMedia
+		if outTrackMedia == "" {
+			outTrackMedia = "overrides"
+		}
+		outTrackLayout = preparedCfg.TrackMediaLayout
+		outTrackTransition = preparedCfg.TrackTransition
+		if strings.EqualFold(filepath.Ext(strings.TrimSpace(preparedCfg.TrackMedia)), ".json") {
+			if mf, mfErr := mixer.ParseTrackMediaManifest(preparedCfg.TrackMedia); mfErr == nil {
+				if (outTrackLayout == "" || outTrackLayout == string(mixer.TrackMediaLayoutAuto)) && strings.TrimSpace(mf.Layout) != "" {
+					outTrackLayout = mf.Layout
+				}
+				if (outTrackTransition == "" || outTrackTransition == string(render.TransitionCut)) && strings.TrimSpace(mf.Transition) != "" {
+					outTrackTransition = mf.Transition
+				}
+			}
+		}
+		if outTrackLayout == "" {
+			outTrackLayout = string(mixer.TrackMediaLayoutAuto)
+		}
+		if outTrackTransition == "" {
+			outTrackTransition = string(render.TransitionCut)
+		}
+		preparedCfg.TrackMediaLayout = outTrackLayout
+		preparedCfg.TrackTransition = outTrackTransition
+	}
+
 	result := PlanMixResult{
 		RenderingPath:       string(pathKind),
 		RenderingPathDetail: describeRenderingPath(pathKind),
+		Segmented:           preparedCfg.Segmented,
+		TrackMedia:          outTrackMedia,
+		TrackMediaLayout:    outTrackLayout,
+		TrackTransition:     outTrackTransition,
 		TrackCount:          len(tracks),
 		TotalDurationSec:    sched.TotalDuration,
 		CrossfadeSec:        in.Crossfade,
@@ -636,8 +693,8 @@ func handlePlanMix(ctx context.Context, args json.RawMessage, deps PlanDeps) (Ca
 			TitleDurationSec: in.TitleDuration,
 			FontName:         fontName,
 		},
-		TradeOffNotes: buildPlanTradeOffNotes(tracks, cfg, normVizCfg, pathKind),
-		Warnings:      buildPlanWarnings(tracks, cfg, pathKind, hasFFmpeg),
+		TradeOffNotes: buildPlanTradeOffNotes(tracks, preparedCfg, normVizCfg, pathKind),
+		Warnings:      buildPlanWarnings(tracks, preparedCfg, pathKind, hasFFmpeg),
 	}
 	return JSONToolResult(result)
 }
@@ -679,7 +736,7 @@ func buildPlanWarnings(tracks []probe.Track, cfg mixer.Config, pathKind render.P
 	if cfg.DimTitles && !cfg.OverlayTitles {
 		warnings = append(warnings, "dimTitles is true while overlayTitles is false; Title Overlays will not be burned")
 	}
-	if cfg.FadeToBlack > 0 && pathKind != render.PathD {
+	if cfg.FadeToBlack > 0 && pathKind != render.PathD && !cfg.Segmented {
 		warnings = append(warnings, fmt.Sprintf("fadeToBlack (%s) only applies to Path D Auto Visualizer and is ignored when bg is provided", cfg.FadeToBlack))
 	}
 	if !hasFFmpeg {
@@ -728,6 +785,12 @@ func buildPlanTradeOffNotes(tracks []probe.Track, cfg mixer.Config, normVizCfg r
 		}
 	}
 
+	if cfg.Segmented {
+		notes = append(notes, "Per-Track media activates segmented rendering (Engine Option A): each Track slot renders an independent uniform-FPS H.264 segment in bounded-parallel workers and stitches via -c:v copy concat.")
+		if strings.EqualFold(strings.TrimSpace(cfg.TrackTransition), string(render.TransitionDip)) {
+			notes = append(notes, "Track transition \"dip\" inserts a 0.5s dip-to-black at consecutive Track segment boundaries.")
+		}
+	}
 	if cfg.Normalize {
 		notes = append(notes, "Loudness Normalization (-14 LUFS) runs EBU R128 loudnorm per Track in parallel before merging.")
 	}

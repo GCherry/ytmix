@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/GCherry/ytmix/internal/mixer"
+	"github.com/GCherry/ytmix/internal/render"
 )
 
 func readResourceRPC(t *testing.T, reg *Registry, uri string) ([]ResourceContent, *RPCError, string) {
@@ -885,6 +886,236 @@ func TestVerifyMix(t *testing.T) {
 		res, rpcErr, _ := callToolRPC(t, reg, "verify_mix", map[string]any{"outPath": mp4Path})
 		if rpcErr != nil || !res.IsError || !strings.Contains(res.Content[0].Text, "ffprobe") {
 			t.Fatalf("expected missing ffprobe ErrorToolResult, got rpcErr=%v res=%+v", rpcErr, res)
+		}
+	})
+}
+
+func TestStartRenderTrackMedia(t *testing.T) {
+	dir := t.TempDir()
+	audioDir := filepath.Join(dir, "tracks")
+	if err := os.MkdirAll(audioDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mp3A := filepath.Join(audioDir, "01_intro.mp3")
+	mp3B := filepath.Join(audioDir, "02_outro.mp3")
+	if err := os.WriteFile(mp3A, []byte("mp3"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mp3B, []byte("mp3"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	coverPNG := filepath.Join(dir, "cover.png")
+	if err := os.WriteFile(coverPNG, []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	layer0BG := filepath.Join(dir, "backdrop.jpg")
+	if err := os.WriteFile(layer0BG, []byte("jpg"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(dir, "manifest.json")
+	manifestJSON, err := json.Marshal(map[string]any{
+		"layer0": map[string]any{
+			"mode":   "media",
+			"bgPath": layer0BG,
+		},
+		"layout":     "fullscreen",
+		"transition": "dip",
+		"tracks": []map[string]any{
+			{
+				"file":      "01_intro.mp3",
+				"media":     coverPNG,
+				"layerMode": "card",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	okLookPath := func(bin string) (string, error) { return "/usr/bin/" + bin, nil }
+	stubRunner := func(_ context.Context, name string, args ...string) ([]byte, error) {
+		joined := strings.Join(args, " ")
+		if name == "ffprobe" {
+			return []byte(`{"format":{"duration":"90.0","tags":{"title":"Intro"}}}`), nil
+		}
+		if strings.Contains(joined, "-filters") {
+			return []byte("Filters:\n .. color |->V\n .. showfreqs A->V\n .. gblur V->V\n .. scale V->V\n .. pad V->V\n"), nil
+		}
+		return nil, errors.New("no hw encoder")
+	}
+
+	t.Run("start_render schema exposes per-Track media options", func(t *testing.T) {
+		reg := NewRegistry(ServerInfo{Name: "ytmix", Version: "0.1.0"})
+		mgr := RegisterRenderTools(reg, RenderDeps{LookPath: okLookPath, Runner: stubRunner})
+		defer mgr.Close()
+
+		listResp := reg.HandleMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		var env struct {
+			Result struct {
+				Tools []Tool `json:"tools"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(listResp, &env); err != nil {
+			t.Fatalf("unmarshal tools/list: %v", err)
+		}
+		var startTool *Tool
+		for i := range env.Result.Tools {
+			if env.Result.Tools[i].Name == "start_render" {
+				startTool = &env.Result.Tools[i]
+				break
+			}
+		}
+		if startTool == nil {
+			t.Fatal("start_render not found in tools/list")
+		}
+		schema, ok := startTool.InputSchema.(map[string]any)
+		if !ok {
+			t.Fatalf("unexpected inputSchema type: %T", startTool.InputSchema)
+		}
+		props, ok := schema["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("unexpected properties type: %T", schema["properties"])
+		}
+		for _, key := range []string{"trackMedia", "manifest", "trackMediaLayout", "trackTransition", "trackOverrides"} {
+			if _, exists := props[key]; !exists {
+				t.Fatalf("start_render schema missing property %q", key)
+			}
+		}
+	})
+
+	t.Run("rejects invalid per-Track media arguments", func(t *testing.T) {
+		reg := NewRegistry(ServerInfo{Name: "ytmix", Version: "0.1.0"})
+		mgr := RegisterRenderTools(reg, RenderDeps{LookPath: okLookPath, Runner: stubRunner})
+		defer mgr.Close()
+
+		for _, args := range []map[string]any{
+			{"audioDir": audioDir, "trackMedia": "auto", "manifest": manifestPath},
+			{"audioDir": audioDir, "trackMedia": "auto", "trackMediaLayout": "invalid"},
+			{"audioDir": audioDir, "trackMedia": "auto", "trackTransition": "invalid"},
+			{"audioDir": audioDir, "trackOverrides": []map[string]any{{"layerMode": "card"}}},
+		} {
+			_, rpcErr, raw := callToolRPC(t, reg, "start_render", args)
+			if rpcErr == nil || rpcErr.Code != ErrCodeInvalidParams {
+				t.Fatalf("expected -32602 invalid params, got rpcErr=%v raw=%s", rpcErr, raw)
+			}
+		}
+	})
+
+	t.Run("dispatches RunFn with per-Track media config and overrides", func(t *testing.T) {
+		var gotCfg mixer.Config
+		done := make(chan struct{})
+
+		reg := NewRegistry(ServerInfo{Name: "ytmix", Version: "0.1.0"})
+		mgr := RegisterRenderTools(reg, RenderDeps{
+			LookPath: okLookPath,
+			Runner:   stubRunner,
+			RunFn: func(_ context.Context, cfg mixer.Config, _ mixer.TelemetrySink, _ func(string) (string, error), _ mixer.CommandRunner, _ mixer.StreamRunner) error {
+				gotCfg = cfg
+				close(done)
+				return nil
+			},
+		})
+		defer mgr.Close()
+
+		outDir := filepath.Join(dir, "out-auto")
+		res, rpcErr, raw := callToolRPC(t, reg, "start_render", map[string]any{
+			"audioDir":         audioDir,
+			"outDir":           outDir,
+			"trackMedia":       "auto",
+			"trackMediaLayout": "card",
+			"trackTransition":  "dip",
+			"trackOverrides": []map[string]any{
+				{"trackIndex": 0, "mediaPath": coverPNG, "layerMode": "card"},
+				{"trackFile": "02_outro.mp3", "layerMode": "backdrop"},
+			},
+		})
+		if rpcErr != nil || res.IsError {
+			t.Fatalf("start_render failed: rpcErr=%v res=%+v raw=%s", rpcErr, res, raw)
+		}
+
+		var startRes StartRenderResult
+		if err := json.Unmarshal([]byte(res.Content[0].Text), &startRes); err != nil {
+			t.Fatal(err)
+		}
+		if !startRes.Segmented {
+			t.Fatalf("expected StartRenderResult.Segmented=true, got %+v", startRes)
+		}
+
+		<-done
+		if !gotCfg.Segmented || gotCfg.TrackMedia != "auto" || gotCfg.TrackMediaLayout != "card" || gotCfg.TrackTransition != "dip" {
+			t.Fatalf("unexpected RunFn mixer.Config: %+v", gotCfg)
+		}
+		if len(gotCfg.TrackOverrides) != 2 {
+			t.Fatalf("expected 2 TrackOverrides, got %+v", gotCfg.TrackOverrides)
+		}
+		if gotCfg.TrackOverrides[0].MediaPath != coverPNG || gotCfg.TrackOverrides[0].LayerMode != render.LayerArtCard || gotCfg.TrackOverrides[0].MediaKind != render.BackgroundKindImage {
+			t.Fatalf("unexpected first override: %+v", gotCfg.TrackOverrides[0])
+		}
+		if gotCfg.TrackOverrides[1].TrackFile != "02_outro.mp3" || gotCfg.TrackOverrides[1].LayerMode != render.LayerBackdrop || !gotCfg.TrackOverrides[1].ExplicitEmpty {
+			t.Fatalf("unexpected second override: %+v", gotCfg.TrackOverrides[1])
+		}
+
+		statusRes, rpcErr, raw := callToolRPC(t, reg, "get_render_status", map[string]any{"jobId": startRes.JobID})
+		if rpcErr != nil || statusRes.IsError {
+			t.Fatalf("get_render_status failed: rpcErr=%v res=%+v raw=%s", rpcErr, statusRes, raw)
+		}
+		var snap RenderJobSnapshot
+		if err := json.Unmarshal([]byte(statusRes.Content[0].Text), &snap); err != nil {
+			t.Fatal(err)
+		}
+		if !snap.Segmented {
+			t.Fatalf("expected RenderJobSnapshot.Segmented=true, got %+v", snap)
+		}
+	})
+
+	t.Run("dispatches RunWithTracksFn with manifest and applies layer0", func(t *testing.T) {
+		var gotCfg mixer.Config
+		var gotTracks []mixer.Track
+		done := make(chan struct{})
+
+		reg := NewRegistry(ServerInfo{Name: "ytmix", Version: "0.1.0"})
+		mgr := RegisterRenderTools(reg, RenderDeps{
+			LookPath: okLookPath,
+			Runner:   stubRunner,
+			RunWithTracksFn: func(_ context.Context, cfg mixer.Config, tracks []mixer.Track, _ mixer.TelemetrySink, _ func(string) (string, error), _ mixer.CommandRunner, _ mixer.StreamRunner) error {
+				gotCfg = cfg
+				gotTracks = tracks
+				close(done)
+				return nil
+			},
+		})
+		defer mgr.Close()
+
+		outDir := filepath.Join(dir, "out-manifest")
+		res, rpcErr, raw := callToolRPC(t, reg, "start_render", map[string]any{
+			"tracks": []map[string]any{
+				{"path": mp3A, "durationSec": 90},
+				{"path": mp3B, "durationSec": 90},
+			},
+			"outDir":   outDir,
+			"manifest": manifestPath,
+		})
+		if rpcErr != nil || res.IsError {
+			t.Fatalf("start_render manifest failed: rpcErr=%v res=%+v raw=%s", rpcErr, res, raw)
+		}
+
+		var startRes StartRenderResult
+		if err := json.Unmarshal([]byte(res.Content[0].Text), &startRes); err != nil {
+			t.Fatal(err)
+		}
+		if !startRes.Segmented || startRes.RenderingPath != "Path C" {
+			t.Fatalf("expected Segmented=true and RenderingPath=Path C from manifest layer0, got %+v", startRes)
+		}
+
+		<-done
+		if !gotCfg.Segmented || gotCfg.TrackMedia != manifestPath || gotCfg.BG != layer0BG {
+			t.Fatalf("unexpected RunWithTracksFn mixer.Config: %+v", gotCfg)
+		}
+		if len(gotTracks) != 2 {
+			t.Fatalf("expected 2 tracks dispatched, got %d", len(gotTracks))
 		}
 	})
 }

@@ -691,3 +691,254 @@ func TestPreviewVisualizerFrame(t *testing.T) {
 		}
 	})
 }
+
+func TestPlanMixTrackMedia(t *testing.T) {
+	dir := t.TempDir()
+	coverPNG := filepath.Join(dir, "cover.png")
+	if err := os.WriteFile(coverPNG, []byte("fake-png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	layer0BG := filepath.Join(dir, "backdrop.jpg")
+	if err := os.WriteFile(layer0BG, []byte("fake-jpg"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(dir, "mix-manifest.json")
+	manifestJSON, err := json.Marshal(map[string]any{
+		"layer0": map[string]any{
+			"mode":   "media",
+			"bgPath": layer0BG,
+		},
+		"layout":     "card",
+		"transition": "dip",
+		"tracks": []map[string]any{
+			{
+				"file":      "01_intro.mp3",
+				"media":     coverPNG,
+				"layerMode": "card",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, manifestJSON, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := NewRegistry(ServerInfo{Name: "ytmix", Version: "0.1.0"})
+	RegisterPlanTools(reg, PlanDeps{
+		LookPath: func(bin string) (string, error) { return "/usr/bin/" + bin, nil },
+		Runner: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			if strings.Contains(strings.Join(args, " "), "-filters") {
+				return []byte("Filters:\n .. color |->V\n .. showfreqs A->V\n .. gblur V->V\n .. scale V->V\n .. pad V->V\n"), nil
+			}
+			return nil, errors.New("no hw encoder")
+		},
+	})
+
+	t.Run("plan_mix schema exposes per-Track media options", func(t *testing.T) {
+		listResp := reg.HandleMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		var env struct {
+			Result struct {
+				Tools []Tool `json:"tools"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(listResp, &env); err != nil {
+			t.Fatalf("unmarshal tools/list: %v", err)
+		}
+		var planTool *Tool
+		for i := range env.Result.Tools {
+			if env.Result.Tools[i].Name == "plan_mix" {
+				planTool = &env.Result.Tools[i]
+				break
+			}
+		}
+		if planTool == nil {
+			t.Fatal("plan_mix not found in tools/list")
+		}
+		schema, ok := planTool.InputSchema.(map[string]any)
+		if !ok {
+			t.Fatalf("unexpected inputSchema type: %T", planTool.InputSchema)
+		}
+		props, ok := schema["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("unexpected properties type: %T", schema["properties"])
+		}
+		for _, key := range []string{"trackMedia", "manifest", "trackMediaLayout", "trackTransition", "trackOverrides"} {
+			if _, exists := props[key]; !exists {
+				t.Fatalf("plan_mix schema missing property %q", key)
+			}
+		}
+	})
+
+	t.Run("validates per-Track media arguments", func(t *testing.T) {
+		baseTracks := []map[string]any{
+			{"fileName": "01_intro.mp3", "durationSec": 120},
+		}
+		badCases := []struct {
+			name string
+			args map[string]any
+		}{
+			{
+				name: "trackMedia and manifest are mutually exclusive",
+				args: map[string]any{
+					"tracks":     baseTracks,
+					"trackMedia": "auto",
+					"manifest":   manifestPath,
+				},
+			},
+			{
+				name: "invalid trackMedia value",
+				args: map[string]any{
+					"tracks":     baseTracks,
+					"trackMedia": "not-a-manifest.txt",
+				},
+			},
+			{
+				name: "manifest rejects auto keyword",
+				args: map[string]any{
+					"tracks":   baseTracks,
+					"manifest": "auto",
+				},
+			},
+			{
+				name: "invalid trackMediaLayout",
+				args: map[string]any{
+					"tracks":           baseTracks,
+					"trackMedia":       "auto",
+					"trackMediaLayout": "grid",
+				},
+			},
+			{
+				name: "invalid trackTransition",
+				args: map[string]any{
+					"tracks":          baseTracks,
+					"trackMedia":      "auto",
+					"trackTransition": "wipe",
+				},
+			},
+			{
+				name: "trackOverride missing trackIndex and trackFile",
+				args: map[string]any{
+					"tracks": baseTracks,
+					"trackOverrides": []map[string]any{
+						{"layerMode": "backdrop"},
+					},
+				},
+			},
+			{
+				name: "trackOverride negative trackIndex",
+				args: map[string]any{
+					"tracks": baseTracks,
+					"trackOverrides": []map[string]any{
+						{"trackIndex": -1, "layerMode": "backdrop"},
+					},
+				},
+			},
+			{
+				name: "trackOverride invalid layerMode",
+				args: map[string]any{
+					"tracks": baseTracks,
+					"trackOverrides": []map[string]any{
+						{"trackIndex": 0, "layerMode": "pip"},
+					},
+				},
+			},
+			{
+				name: "trackOverride invalid mediaPath extension",
+				args: map[string]any{
+					"tracks": baseTracks,
+					"trackOverrides": []map[string]any{
+						{"trackIndex": 0, "mediaPath": filepath.Join(dir, "bad.txt")},
+					},
+				},
+			},
+			{
+				name: "trackOverride explicitEmpty conflicts with mediaPath",
+				args: map[string]any{
+					"tracks": baseTracks,
+					"trackOverrides": []map[string]any{
+						{"trackIndex": 0, "mediaPath": coverPNG, "explicitEmpty": true},
+					},
+				},
+			},
+		}
+
+		for _, tc := range badCases {
+			t.Run(tc.name, func(t *testing.T) {
+				_, rpcErr, raw := callToolRPC(t, reg, "plan_mix", tc.args)
+				if rpcErr == nil || rpcErr.Code != ErrCodeInvalidParams {
+					t.Fatalf("expected -32602 invalid params for %s, got rpcErr=%v raw=%s", tc.name, rpcErr, raw)
+				}
+			})
+		}
+
+		resMissing, rpcErr, raw := callToolRPC(t, reg, "plan_mix", map[string]any{
+			"tracks": baseTracks,
+			"trackOverrides": []map[string]any{
+				{"trackIndex": 0, "mediaPath": filepath.Join(dir, "does-not-exist.png"), "layerMode": "card"},
+			},
+		})
+		if rpcErr != nil || !resMissing.IsError {
+			t.Fatalf("expected ErrorToolResult for missing override media file, got rpcErr=%v res=%+v raw=%s", rpcErr, resMissing, raw)
+		}
+	})
+
+	t.Run("dry-run plan with trackMedia auto, dip transition, and trackOverrides", func(t *testing.T) {
+		res, rpcErr, raw := callToolRPC(t, reg, "plan_mix", map[string]any{
+			"tracks": []map[string]any{
+				{"fileName": "01_intro.mp3", "durationSec": 120},
+				{"fileName": "02_outro.mp3", "durationSec": 180},
+			},
+			"trackMedia":       "auto",
+			"trackMediaLayout": "card",
+			"trackTransition":  "dip",
+			"trackOverrides": []map[string]any{
+				{"trackIndex": 0, "mediaPath": coverPNG, "layerMode": "card"},
+				{"trackFile": "02_outro.mp3", "layerMode": "backdrop"},
+			},
+		})
+		if rpcErr != nil || res.IsError {
+			t.Fatalf("plan_mix failed: rpcErr=%v res=%+v raw=%s", rpcErr, res, raw)
+		}
+		var got PlanMixResult
+		if err := json.Unmarshal([]byte(res.Content[0].Text), &got); err != nil {
+			t.Fatal(err)
+		}
+		if !got.Segmented || got.TrackMedia != "auto" || got.TrackMediaLayout != "card" || got.TrackTransition != "dip" {
+			t.Fatalf("unexpected segmented plan fields: %+v", got)
+		}
+		if got.Estimate.PointSec <= 0 {
+			t.Fatalf("expected positive estimate, got %+v", got.Estimate)
+		}
+		notesJoined := strings.Join(got.TradeOffNotes, "\n")
+		if !strings.Contains(notesJoined, "segmented rendering") || !strings.Contains(notesJoined, "dip") {
+			t.Fatalf("expected segmented and dip trade-off notes, got %v", got.TradeOffNotes)
+		}
+	})
+
+	t.Run("dry-run plan with manifest applies layer0, layout, and transition", func(t *testing.T) {
+		res, rpcErr, raw := callToolRPC(t, reg, "plan_mix", map[string]any{
+			"tracks": []map[string]any{
+				{"fileName": "01_intro.mp3", "durationSec": 120},
+				{"fileName": "02_outro.mp3", "durationSec": 120},
+			},
+			"manifest":    manifestPath,
+			"fadeToBlack": "30s",
+		})
+		if rpcErr != nil || res.IsError {
+			t.Fatalf("plan_mix manifest failed: rpcErr=%v res=%+v raw=%s", rpcErr, res, raw)
+		}
+		var got PlanMixResult
+		if err := json.Unmarshal([]byte(res.Content[0].Text), &got); err != nil {
+			t.Fatal(err)
+		}
+		if !got.Segmented || got.RenderingPath != "Path C" || got.TrackMedia != manifestPath ||
+			got.TrackMediaLayout != "card" || got.TrackTransition != "dip" {
+			t.Fatalf("unexpected manifest plan result: %+v", got)
+		}
+		if strings.Contains(strings.Join(got.Warnings, "\n"), "fadeToBlack") {
+			t.Fatalf("did not expect fadeToBlack warning for segmented mix, got %v", got.Warnings)
+		}
+	})
+}
