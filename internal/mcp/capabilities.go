@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/GCherry/ytmix/internal/mixer"
 	"github.com/GCherry/ytmix/internal/render"
 )
 
@@ -36,6 +37,17 @@ type VisualizerCapability struct {
 	MissingFilter string `json:"missingFilter,omitempty"`
 }
 
+// TrackMediaCapabilities describes supported per-Track media, Dual-Layer composition, and transition options.
+type TrackMediaCapabilities struct {
+	Modes             []string              `json:"modes"`
+	ManifestSupported bool                  `json:"manifestSupported"`
+	Layouts           []string              `json:"layouts"`
+	LayerModes        []string              `json:"layerModes"`
+	Transitions       []string              `json:"transitions"`
+	Layer0Modes       []string              `json:"layer0Modes"`
+	SupportedExts     render.BackgroundExts `json:"supportedExts"`
+}
+
 // CapabilitiesResult is the structured payload returned by the get_capabilities MCP tool.
 type CapabilitiesResult struct {
 	Status                  string                  `json:"status"`
@@ -45,6 +57,7 @@ type CapabilitiesResult struct {
 	Encoder                 EncoderCapability       `json:"encoder"`
 	PathDEncoder            EncoderCapability       `json:"pathDEncoder"`
 	SupportedBackgroundExts render.BackgroundExts   `json:"supportedBackgroundExts"`
+	TrackMedia              TrackMediaCapabilities  `json:"trackMedia"`
 	Visualizers             []VisualizerCapability  `json:"visualizers"`
 	VisualizerThemes        []render.ThemeSpec      `json:"visualizerThemes"`
 	VisualizerResolutions   []render.ResolutionSpec `json:"visualizerResolutions"`
@@ -124,7 +137,7 @@ func RegisterCapabilitiesTool(r *Registry, deps CapabilitiesDeps) {
 	var cache capabilitiesProbeCache
 	r.RegisterTool(Tool{
 		Name:        "get_capabilities",
-		Description: "Inspect local FFmpeg/FFprobe availability, hardware H.264 encoders, Path D Auto Visualizer presets, Color Themes, resolutions, and supported Background Visual extensions.",
+		Description: "Inspect local FFmpeg/FFprobe availability, hardware H.264 encoders, Path D Auto Visualizer presets, Color Themes, resolutions, supported Background Visual extensions, and per-Track media / Dual-Layer options.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"properties":           map[string]any{},
@@ -209,6 +222,7 @@ func buildCapabilitiesWithCache(ctx context.Context, deps CapabilitiesDeps, cach
 		}
 	}
 
+	supportedExts := render.SupportedBackgroundExts()
 	return CapabilitiesResult{
 		Status:                  status,
 		FFmpeg:                  hasFFmpeg,
@@ -216,9 +230,36 @@ func buildCapabilitiesWithCache(ctx context.Context, deps CapabilitiesDeps, cach
 		GOOS:                    goos,
 		Encoder:                 enc,
 		PathDEncoder:            pathDEnc,
-		SupportedBackgroundExts: render.SupportedBackgroundExts(),
-		Visualizers:             visualizers,
-		VisualizerThemes:        render.ListThemes(),
-		VisualizerResolutions:   render.ListResolutions(),
+		SupportedBackgroundExts: supportedExts,
+		TrackMedia: TrackMediaCapabilities{
+			Modes: []string{
+				string(mixer.TrackMediaOff),
+				string(mixer.TrackMediaAuto),
+			},
+			ManifestSupported: true,
+			Layouts: []string{
+				string(mixer.TrackMediaLayoutAuto),
+				string(mixer.TrackMediaLayoutFullscreen),
+				string(mixer.TrackMediaLayoutCard),
+			},
+			LayerModes: []string{
+				string(render.LayerFullscreen),
+				string(render.LayerArtCard),
+				string(render.LayerBackdrop),
+			},
+			Transitions: []string{
+				string(render.TransitionCut),
+				string(render.TransitionDip),
+			},
+			Layer0Modes: []string{
+				string(render.Layer0Black),
+				string(render.Layer0Media),
+				string(render.Layer0Visualizer),
+			},
+			SupportedExts: supportedExts,
+		},
+		Visualizers:           visualizers,
+		VisualizerThemes:      render.ListThemes(),
+		VisualizerResolutions: render.ListResolutions(),
 	}
 }

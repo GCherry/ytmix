@@ -237,6 +237,16 @@ func TestGetCapabilities(t *testing.T) {
 			if fromText.Encoder.Name != got.Encoder.Name || len(fromText.Visualizers) != len(got.Visualizers) {
 				t.Fatalf("text JSON and structuredContent diverged")
 			}
+			if !got.TrackMedia.ManifestSupported ||
+				len(got.TrackMedia.Modes) != 2 ||
+				len(got.TrackMedia.Layouts) != 3 ||
+				len(got.TrackMedia.LayerModes) != 3 ||
+				len(got.TrackMedia.Transitions) != 2 ||
+				len(got.TrackMedia.Layer0Modes) != 3 ||
+				len(got.TrackMedia.SupportedExts.Image) == 0 ||
+				len(got.TrackMedia.SupportedExts.Video) == 0 {
+				t.Fatalf("unexpected TrackMedia capabilities: %+v", got.TrackMedia)
+			}
 		})
 	}
 
